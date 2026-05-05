@@ -14,6 +14,8 @@ Date: 2026-05-05
 - Host workflow in active use: Linux-style NuttX flow, tested from local setup
 - Real-hardware executable ELF loading: done
 - Real-hardware shared-object loading via `sotest`: done
+- Reproducible XIAO `elf` config: build-validated
+- Reproducible XIAO `sotest` config: build-validated
 - Package-layer implementation: not started
 
 ## Scope Rules
@@ -44,7 +46,7 @@ Date: 2026-05-05
 - [x] Keep upstream and local work separated from older long-lived branches
 - [x] Record board, branch, and runtime decisions
 - [x] Start a versioned progress log for later reports
-- [ ] Keep tracker updated after every milestone or blocker
+- [x] Keep tracker updated after every milestone or blocker
 - [ ] Keep commits small and scoped by purpose
 
 ### Phase 1: Executable ELF Baseline
@@ -74,32 +76,32 @@ Date: 2026-05-05
 
 ### Phase 3: Reproducibility And Upstreamability
 
-- [ ] Convert the proven local XIAO ELF settings into a reproducible board config
-- [ ] Decide whether XIAO needs a dedicated `elf` config in-tree
-- [ ] Decide whether XIAO needs a dedicated `sotest` config in-tree
-- [ ] Separate true source fixes from temporary local test config edits
-- [ ] Keep the XIAO linker-script fix as an isolated upstreamable change
-- [ ] Write down exact flash and runtime steps for repeat testing
-- [ ] Capture expected success output for `elf`
-- [ ] Capture expected success output for `sotest`
+- [x] Convert the proven local XIAO ELF settings into a reproducible board config
+- [x] Decide whether XIAO needs a dedicated `elf` config in-tree
+- [x] Decide whether XIAO needs a dedicated `sotest` config in-tree
+- [x] Separate true source fixes from temporary local test config edits
+- [x] Keep the XIAO linker-script fix as an isolated upstreamable change
+- [x] Write down exact flash and runtime steps for repeat testing
+- [x] Capture expected success output for `elf`
+- [x] Capture expected success output for `sotest`
 
 ### Phase 4: Loader Assumptions Freeze
 
-- [ ] Write a short loader/runtime assumptions note
-- [ ] Record how applications are stored and discovered in the current proof path
-- [ ] Record which symbol-table path is currently required
-- [ ] Record what the package layer may assume about startup and cleanup
-- [ ] Record remaining runtime risks and open questions
+- [x] Write a short loader/runtime assumptions note
+- [x] Record how applications are stored and discovered in the current proof path
+- [x] Record which symbol-table path is currently required
+- [x] Record what the package layer may assume about startup and cleanup
+- [x] Record remaining runtime risks and open questions
 
 ### Phase 5: Package MVP Definition
 
-- [ ] Define the first package-layer MVP strictly on top of the proven loader path
-- [ ] Keep the MVP limited to essential lifecycle operations
-- [ ] Decide the minimal manifest/metadata needs
-- [ ] Decide where package payloads live on device
-- [ ] Define what "install" means in MVP terms
-- [ ] Define what "run" means in MVP terms
-- [ ] Explicitly defer update/rollback/network features if not required for MVP
+- [x] Define the first package-layer MVP strictly on top of the proven loader path
+- [x] Keep the MVP limited to essential lifecycle operations
+- [x] Decide the minimal manifest/metadata needs
+- [x] Decide where package payloads live on device
+- [x] Define what "install" means in MVP terms
+- [x] Define what "run" means in MVP terms
+- [x] Explicitly defer update/rollback/network features if not required for MVP
 
 ### Phase 6: Package MVP Implementation
 
@@ -119,13 +121,14 @@ Date: 2026-05-05
 
 ## Immediate Next Steps
 
-1. Clean up the proven XIAO `elf` and `sotest` path into reproducible board-side
-   configuration instead of relying on ad hoc local `.config` changes.
-2. Isolate which changes are true source fixes and which are test-only
-   configuration adjustments.
-3. Write the loader/runtime assumptions note using the now-proven hardware path.
-4. Define the first package-layer MVP strictly around the behavior already
-   validated on hardware.
+1. Commit the isolated XIAO linker-script fix together with the dedicated XIAO
+   `elf` and `sotest` board configs.
+2. Commit the GSoC tracker docs, runtime notes, loader assumptions, and package
+   MVP definition as the reporting baseline.
+3. Start the thin `system/pkg` skeleton in `nuttx-apps` with command dispatch,
+   Kconfig, Makefile, and CMake integration only.
+4. Implement the first local-only install/list path before touching update and
+   rollback execution paths.
 
 ## Milestone Exit Criteria
 
@@ -148,4 +151,3 @@ Date: 2026-05-05
 - Shared object milestone complete
 - Reproducible board configuration path documented
 - Loader assumptions written down
-

@@ -23,6 +23,12 @@ and final reporting.
 - Found and fixed a XIAO-specific ELF linker-script path issue in:
   `boards/xtensa/esp32s3/esp32s3-xiao/scripts/Make.defs`
 - Validated shared-object loading on hardware through `sotest`.
+- Added dedicated XIAO `elf` and `sotest` board defconfigs.
+- Build-validated both dedicated XIAO defconfigs from clean configure flows.
+- Wrote runtime notes and loader-assumptions notes for later reporting and MVP
+  scoping.
+- Wrote the first package-layer MVP definition, keeping it aligned with the
+  proposal's thin lifecycle-helper scope.
 
 #### Evidence
 
@@ -45,12 +51,17 @@ and final reporting.
 - Some local `.config` combinations were used only to make runtime output
   visible during validation; these should not be treated as final upstream
   board configuration without cleanup.
+- The dedicated board defconfigs are now the reproducible path; the remaining
+  local source change is the isolated XIAO linker-script fix.
+- The first package-layer slice is now explicitly constrained to local-safe
+  lifecycle behavior before broader fetch/update polish.
 
 #### Next
 
-- Convert the proven local test setup into a reproducible board config path.
-- Separate true source changes from temporary test-only config changes.
-- Freeze loader/runtime assumptions before touching the package-layer MVP.
+- Commit the isolated XIAO linker-script fix and the dedicated board defconfigs.
+- Commit the tracker docs and MVP definition as the reportable baseline.
+- Start the thin `system/pkg` skeleton with integration files and command
+  dispatch only.
 
 ## Update Format
 
@@ -61,4 +72,3 @@ For future entries, use:
 - Evidence
 - Blockers or Risks
 - Next
-
