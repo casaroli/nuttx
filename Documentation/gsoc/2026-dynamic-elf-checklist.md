@@ -8,7 +8,7 @@ changes must remain aligned with the proposal and with maintainer guidance.
 
 ## Current Status
 
-Date: 2026-05-05
+Date: 2026-05-06
 
 - Board in active use: Seeed XIAO ESP32S3 Sense
 - Host workflow in active use: Linux-style NuttX flow, tested from local setup
@@ -16,7 +16,10 @@ Date: 2026-05-05
 - Real-hardware shared-object loading via `sotest`: done
 - Reproducible XIAO `elf` config: build-validated
 - Reproducible XIAO `sotest` config: build-validated
-- Package-layer implementation: not started
+- `pkg` skeleton and metadata/store foundation: done
+- Local `pkg install` / `pkg list` implementation: build-validated
+- Local `pkg install` / `pkg list` runtime validation on writable `/data`:
+  pending
 
 ## Scope Rules
 
@@ -105,8 +108,11 @@ Date: 2026-05-05
 
 ### Phase 6: Package MVP Implementation
 
-- [ ] Create the thin package helper or command boundary
-- [ ] Support loading a packaged executable artifact
+- [x] Create the thin package helper or command boundary
+- [x] Implement the local metadata/store substrate for package state
+- [x] Implement the local-only `install` and `list` command path
+- [ ] Validate install/list behavior on a writable `/data` mount
+- [ ] Support loading a packaged executable artifact on target hardware
 - [ ] Support loading a packaged shared-library artifact if required by MVP
 - [ ] Validate error handling for missing payloads or invalid modules
 - [ ] Validate that successful load/run paths are reproducible on hardware
@@ -121,14 +127,12 @@ Date: 2026-05-05
 
 ## Immediate Next Steps
 
-1. Commit the isolated XIAO linker-script fix together with the dedicated XIAO
-   `elf` and `sotest` board configs.
-2. Commit the GSoC tracker docs, runtime notes, loader assumptions, and package
-   MVP definition as the reporting baseline.
-3. Start the thin `system/pkg` skeleton in `nuttx-apps` with command dispatch,
-   Kconfig, Makefile, and CMake integration only.
-4. Implement the first local-only install/list path before touching update and
-   rollback execution paths.
+1. Provision a writable `/data` mount for the XIAO runtime path.
+2. Validate `pkg list` and `pkg install <name>` against local repository
+   metadata on target.
+3. Record the exact runtime setup steps needed for new users.
+4. Keep update/rollback execution for the next unit only after install/list is
+   proven end to end.
 
 ## Milestone Exit Criteria
 

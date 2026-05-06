@@ -18,6 +18,9 @@ Already completed ahead of package-layer coding:
 - Shared-object hardware baseline
 - Reproducible XIAO `elf` and `sotest` board configs
 - Runtime notes, loader assumptions, and package MVP definition
+- `system/pkg` skeleton
+- metadata and local store foundation
+- local `install` / `list` implementation, build-validated
 
 ## Delivery Sequence
 
@@ -83,6 +86,12 @@ Why separate:
 - gives the first end-to-end package milestone
 - easier to validate before update/rollback complexity is added
 
+Current status:
+
+- implemented
+- clean-build validated on `esp32s3-xiao:elf`
+- still needs target-side runtime validation with writable `/data`
+
 ### Unit 5: Update And Rollback
 
 Scope:
@@ -141,5 +150,6 @@ For every delivery unit, record:
 
 ## Immediate Next Unit
 
-Start `Unit 4: install and list path`, and do not mix update/rollback
-execution into the same commit.
+Finish `Unit 4` runtime validation on target by provisioning writable package
+storage under `/data`, then keep `Unit 5: update and rollback` as the next
+separate change only after `install` / `list` are proven end to end.

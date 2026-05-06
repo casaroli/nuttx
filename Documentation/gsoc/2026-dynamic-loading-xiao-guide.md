@@ -33,6 +33,13 @@ Not covered:
 - network repository sync
 - richer shared-library packaging policies
 
+Current package-helper status:
+
+- the local `pkg install` / `pkg list` path is implemented and build-validated
+- target-side runtime validation still needs writable storage mounted at
+  `/data`
+- update/rollback execution is intentionally deferred to the next unit
+
 ## Source-Level Prerequisite
 
 The XIAO board path needed a linker-script fix for the ELF test path:
@@ -223,3 +230,77 @@ The package-layer work depends on exactly these loader properties:
 
 Because those facts are now proven on hardware, later `pkg` work can build on
 measured behavior instead of assumptions.
+
+## Current `pkg` Local-First Model
+
+The current `pkg` work is intentionally local-first. It does not depend on
+network transport yet.
+
+### Expected Paths
+
+- repository index: `/data/repo/index.json`
+- installed state: `/data/repo/installed.json`
+- package payloads: `/data/pkgs/<name>/<version>/`
+- active pointer file: `/data/pkgs/<name>/current`
+- previous pointer file: `/data/pkgs/<name>/previous`
+- transaction state file: `/data/pkgs/<name>/.txn`
+- temporary download/staging artifact:
+  `/data/tmp/pkg/<name>-<version>.npkg`
+
+### Writable Storage Requirement
+
+The current XIAO `elf` validation path already proves the loader runtime, but
+the package helper adds a new requirement: writable storage under `/data`.
+
+This means that before validating `pkg install` on target, the board needs a
+real writable filesystem mounted there, for example:
+
+- tmpfs for early validation
+- or another writable persistent filesystem later
+
+Without that writable mount, `pkg` can build correctly but cannot complete its
+local metadata and staging flow on hardware.
+
+### Current Index Schema
+
+The local index currently expects package records with the minimum activation
+fields:
+
+```json
+{
+  "packages": [
+    {
+      "name": "demo",
+      "version": "1.0.0",
+      "arch": "xtensa",
+      "compat": "esp32s3-xiao",
+      "artifact": "demo.elf",
+      "sha256": "<64-hex-digest>",
+      "type": "elf"
+    }
+  ]
+}
+```
+
+`artifact` may be:
+
+- an absolute path
+- or a path relative to `/data/repo`
+
+### Current Installed-State Shape
+
+The installed-state file currently records:
+
+- package name
+- current version
+- previous version
+- architecture
+- compatibility identifier
+- payload type
+- installed version list
+
+This is enough for:
+
+- `pkg list`
+- future pointer-based rollback work
+- future reporting/debugging of the staged package state

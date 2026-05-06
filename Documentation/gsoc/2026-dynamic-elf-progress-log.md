@@ -80,6 +80,15 @@ and final reporting.
   configuration.
 - Wrote a draft XIAO dynamic-loading guide intended to preserve development
   knowledge for future tutorial cleanup.
+- Added the next `pkg` implementation unit in `nuttx-apps`:
+  local metadata-backed `install` and `list`.
+- Added local JSON-backed repository/index handling and installed-state
+  persistence.
+- Added self-contained SHA-256 verification inside `pkg` so the install path
+  does not depend on unresolved kernel-side crypto symbols.
+- Added local compatibility gating against the current board/runtime identity.
+- Clean-build validated the new `install`/`list` unit on top of the XIAO `elf`
+  configuration.
 
 #### Evidence
 
@@ -90,17 +99,35 @@ and final reporting.
   - BOOT/RESET flashing procedure
   - expected `elf` and `sotest` success markers
   - common bring-up failures and fixes
+- The XIAO ELF build still completes after the `install`/`list` unit and
+  produces `nuttx.bin`.
+- The local `pkg` command now builds with:
+  - local `index.json` parsing
+  - local `installed.json` persistence
+  - artifact copy/stage helpers
+  - pointer file updates for `current` and `previous`
+  - script-friendly `pkg list` output
 
 #### Notes
 
-- This unit still does not implement install/update/list/rollback behavior.
-- The purpose of this step was to create the filesystem/metadata substrate
-  without mixing command semantics into the same change.
+- `pkg update` and `pkg rollback` are still intentionally deferred.
+- This unit adds only the first local executable package lifecycle path:
+  `install` plus `list`.
+- The first executable package lifecycle path is now implemented in code, but
+  hardware runtime validation still needs a writable `/data` mount on the
+  target board.
+- The current install path assumes:
+  - `/data/repo/index.json`
+  - `/data/repo/installed.json`
+  - package payload artifacts available via absolute or repo-relative paths
+- Because the current XIAO `elf` path proves loader behavior through ROMFS and
+  USB CDC, the remaining runtime gap for `pkg install` is writable package
+  storage, not loader capability.
 
 #### Next
 
-- Start the first real lifecycle slice: local metadata-backed install/list
-  behavior.
+- Provision a writable `/data` mount for the XIAO runtime path and validate
+  `pkg list` / `pkg install` on target.
 - Keep update/rollback execution for the following unit, not the same one.
 
 ## Update Format
