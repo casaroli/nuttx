@@ -63,6 +63,46 @@ and final reporting.
 - Start the thin `system/pkg` skeleton with integration files and command
   dispatch only.
 
+### 2026-05-06
+
+#### Completed
+
+- Kept the package-layer work split into small proposal-aligned units rather
+  than expanding multiple milestones at once.
+- Added the next `pkg` implementation unit in `nuttx-apps`:
+  metadata and local store foundation.
+- Added shared internal `pkg` structures and helpers for:
+  - manifest field validation
+  - on-device repository and storage path layout
+  - transaction state naming
+  - basic package logging
+- Clean-build validated the `pkg` foundation on top of the XIAO `elf`
+  configuration.
+- Wrote a draft XIAO dynamic-loading guide intended to preserve development
+  knowledge for future tutorial cleanup.
+
+#### Evidence
+
+- `pkg` continues to register as a builtin command in the XIAO ELF build path.
+- The XIAO ELF build still completes successfully with `CONFIG_SYSTEM_PKG=y`.
+- The new guide records:
+  - reproducible build commands
+  - BOOT/RESET flashing procedure
+  - expected `elf` and `sotest` success markers
+  - common bring-up failures and fixes
+
+#### Notes
+
+- This unit still does not implement install/update/list/rollback behavior.
+- The purpose of this step was to create the filesystem/metadata substrate
+  without mixing command semantics into the same change.
+
+#### Next
+
+- Start the first real lifecycle slice: local metadata-backed install/list
+  behavior.
+- Keep update/rollback execution for the following unit, not the same one.
+
 ## Update Format
 
 For future entries, use:

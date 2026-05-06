@@ -141,5 +141,5 @@ For every delivery unit, record:
 
 ## Immediate Next Unit
 
-Start `Unit 2: system/pkg skeleton`, and do not mix it with metadata/store or
-rollback logic in the same commit.
+Start `Unit 4: install and list path`, and do not mix update/rollback
+execution into the same commit.
