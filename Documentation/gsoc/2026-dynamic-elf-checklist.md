@@ -8,7 +8,7 @@ changes must remain aligned with the proposal and with maintainer guidance.
 
 ## Current Status
 
-Date: 2026-05-06
+Date: 2026-05-08
 
 - Board in active use: Seeed XIAO ESP32S3 Sense
 - Host workflow in active use: Linux-style NuttX flow, tested from local setup
@@ -19,7 +19,8 @@ Date: 2026-05-06
 - `pkg` skeleton and metadata/store foundation: done
 - Local `pkg install` / `pkg list` implementation: build-validated
 - Local `pkg install` / `pkg list` runtime validation on writable `/data`:
-  pending
+  done
+- Meeting follow-up items captured and phased: done
 
 ## Scope Rules
 
@@ -111,11 +112,24 @@ Date: 2026-05-06
 - [x] Create the thin package helper or command boundary
 - [x] Implement the local metadata/store substrate for package state
 - [x] Implement the local-only `install` and `list` command path
-- [ ] Validate install/list behavior on a writable `/data` mount
-- [ ] Support loading a packaged executable artifact on target hardware
+- [x] Validate install/list behavior on a writable `/data` mount
+- [x] Support loading a packaged executable artifact on target hardware
 - [ ] Support loading a packaged shared-library artifact if required by MVP
 - [ ] Validate error handling for missing payloads or invalid modules
-- [ ] Validate that successful load/run paths are reproducible on hardware
+- [x] Validate that successful load/run paths are reproducible on hardware
+
+### Phase 6A: Mentor Follow-Up Integration
+
+- [x] Capture mentor meeting follow-up items in versioned notes
+- [x] Audit menuconfig application/module coverage for Dynamic ELF workflows
+- [x] Convert the first eligible application Kconfig subset from `bool` to
+      `tristate`
+- [ ] Add `MODULE = $(CONFIG_...)` coverage where executable applications still
+      miss it
+- [ ] Validate representative builtin/module dual-mode application flows
+- [x] Add a host-side export/publish script for repository artifacts
+- [ ] Extend export flow to support library/module artifacts
+- [ ] Replace temporary local SHA-256 logic with the NuttX crypto subsystem
 
 ### Phase 7: Evidence, Reporting, And Demo Readiness
 
@@ -127,12 +141,15 @@ Date: 2026-05-06
 
 ## Immediate Next Steps
 
-1. Provision a writable `/data` mount for the XIAO runtime path.
-2. Validate `pkg list` and `pkg install <name>` against local repository
-   metadata on target.
-3. Record the exact runtime setup steps needed for new users.
-4. Keep update/rollback execution for the next unit only after install/list is
+1. Close the next application/module gap subset:
+   missing `MODULE = $(CONFIG_...)` coverage for real executable apps.
+2. Record the exact runtime setup steps needed for new users.
+3. Keep update/rollback execution for the next unit only after install/list is
    proven end to end.
+4. Extend the local executable-package validation path toward library/module
+   artifacts as required by the proposal and mentor follow-up.
+5. Replace the temporary SHA-256 implementation with the NuttX crypto
+   subsystem.
 
 ## Milestone Exit Criteria
 

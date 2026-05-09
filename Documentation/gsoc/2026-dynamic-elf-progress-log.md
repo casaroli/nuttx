@@ -130,6 +130,103 @@ and final reporting.
   `pkg list` / `pkg install` on target.
 - Keep update/rollback execution for the following unit, not the same one.
 
+### 2026-05-08
+
+#### Completed
+
+- Captured the mentor meeting follow-up in a dedicated versioned note.
+- Converted the handwritten/meeting direction into phased engineering units:
+  - application module-support audit and gap closure
+  - host-side export/publish script
+  - later library support
+  - later crypto-subsystem migration
+- Added a host-side audit helper in `apps/tools/audit_module_support.py` to
+  classify app-side module readiness based on:
+  - `MAINSRC`
+  - `MODULE = $(CONFIG_...)`
+  - backing Kconfig symbol type (`bool` vs `tristate`)
+- Converted the first real application subset from `bool` to `tristate` where
+  Makefiles already supported `MODULE = $(CONFIG_...)`.
+- Added a host-side repository export helper in
+  `apps/tools/export_pkg_repo.py`.
+- Closed the first end-to-end target-side `pkg install` / `pkg list`
+  validation on the XIAO runtime path using writable `tmpfs`-backed `/data`.
+- Confirmed that the ROMFS-backed local package fixture can install the `hello`
+  ELF payload on target and persist installed-state metadata.
+- Fixed a real runtime stability issue in `pkg` by moving large metadata
+  structures out of the task stack and onto heap allocations.
+- Fixed a post-success logging bug in `pkg_install()` where the final success
+  log referenced manifest data after its backing index buffer had been freed.
+
+#### Evidence
+
+- The new meeting follow-up note preserves the explicit mentor asks:
+  - menuconfig module support for applications
+  - script to export binaries to server
+  - library support as an extra step
+- The audit helper gives a repeatable way to identify remaining application
+  Kconfig/Makefile gaps rather than guessing from manual tree scans.
+- Initial audit result shows that applications already using
+  `MODULE = $(CONFIG_...)` are largely backed by `tristate` symbols already,
+  so the remaining work is a targeted gap-closure pass rather than a blind
+  whole-tree conversion.
+- After the first conversion pass, the `BOOL_NEEDS_TRISTATE` bucket dropped to
+  zero in the audit helper output.
+- The export helper was validated against the built `hello` ELF payload and
+  emitted:
+  - copied repository artifact under `artifacts/<compat>/<name>/<version>/`
+  - package `index.json`
+  - SHA-256 value matching the current local fixture/runtime path
+- Final target-side runtime validation on the XIAO produced:
+  - `pkg: info: layout prepared`
+  - `pkg: info: loading index from /data/repo/index.json`
+  - `pkg: info: index read complete (213 bytes)`
+  - `pkg: info: cJSON_Parse returned success`
+  - `pkg: info: parsed manifest hello 1.0.0`
+  - `pkg: info: selected hello version 1.0.0`
+  - `pkg: info: artifact source /mnt/elf/romfs/hello`
+  - `pkg: info: artifact copied to staging`
+  - `pkg: info: sha256 computed: 5f66871b19ec24d7d685ce78660fc8039cebb179fb00821a6affde3513ec7e8e`
+  - `pkg: info: sha256 verified`
+  - `pkg: info: payload staged at /data/pkgs/hello/1.0.0/hello`
+  - `pkg: info: manifest written`
+  - `pkg: info: compatibility check passed`
+  - `pkg: info: installed metadata updated`
+  - `pkg: info: installed hello version 1.0.0`
+  - `hello current=1.0.0 previous=- type=elf arch=xtensa compat=esp32s3-xiao versions=1.0.0`
+- `pkg list` on target returned the same installed-state record after the
+  install completed.
+
+#### Notes
+
+- This meeting follow-up changes the order of the next units slightly:
+  install/list runtime closure still comes first, but the application-module
+  audit is now an explicit workstream rather than an implicit cleanup item.
+- Pure libraries should not be mass-converted to `tristate`; the mentor ask
+  applies to packageable applications.
+- The temporary local SHA-256 implementation should be treated as prototype
+  code and replaced later by the NuttX crypto subsystem.
+- The current validation build in the XIAO worktree is affected by an existing
+  local tree inconsistency around the top-level `chip/` path, so build
+  verification for this specific pass should not be interpreted as a failure of
+  the `bool -> tristate` conversion itself.
+- The main runtime blocker in the first `pkg install` path was not JSON parsing
+  itself, but package-task stack pressure. The `pkg_index_s` and installed-db
+  structures were large enough to make the original task-stack allocation
+  unstable on target.
+- Serial automation on the XIAO CDC ACM console is sensitive to stale host-side
+  file handles. pyserial-based probing was more reliable than the earlier raw
+  nonblocking probe method for end-to-end scripted verification.
+
+#### Next
+
+- Close the next concrete application/module gap subset:
+  executable apps that still miss `MODULE = $(CONFIG_...)`.
+- Extend the export/publish path to shared-library artifacts after the
+  executable install/list path is stable.
+- Replace the temporary SHA-256 implementation with the NuttX crypto
+  subsystem, following mentor feedback.
+
 ## Update Format
 
 For future entries, use:
