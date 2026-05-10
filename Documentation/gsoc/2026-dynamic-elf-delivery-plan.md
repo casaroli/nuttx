@@ -43,7 +43,7 @@ Why separate:
 
 Scope:
 
-- `apps/system/pkg/`
+- `apps/system/nxpkg/`
 - `Kconfig`
 - `Make.defs`
 - `Makefile`
@@ -79,7 +79,7 @@ Scope:
 - integrity verification
 - compatibility gate
 - staged activation
-- `pkg list`
+- `nxpkg list`
 
 Why separate:
 

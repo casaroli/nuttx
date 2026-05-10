@@ -31,7 +31,7 @@ Alan explicitly requested:
 
 Halysson additionally recommended:
 
-- Replace the temporary local SHA-256 implementation in `pkg` with the NuttX
+- Replace the temporary local SHA-256 implementation in `nxpkg` with the NuttX
   cryptographic subsystem.
 
 ## Interpretation For The Current Project
@@ -50,7 +50,7 @@ before expanding into more complex module/library packaging cases.
 
 This means:
 
-- close the current `pkg install` / `pkg list` target validation path
+- close the current `nxpkg install` / `nxpkg list` target validation path
 - keep the local-first repository/index flow
 - avoid jumping to advanced dependency or remote sync logic yet
 
@@ -122,7 +122,7 @@ Reasoning:
 
 ## Current Priority Order
 
-1. Close the target-side `pkg install` / `pkg list` validation path.
+1. Close the target-side `nxpkg install` / `nxpkg list` validation path.
 2. Start the module-support audit/gap closure work.
 3. Add the export/publish script.
 4. Add library support after executable packaging is stable.

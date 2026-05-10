@@ -69,22 +69,22 @@ and final reporting.
 
 - Kept the package-layer work split into small proposal-aligned units rather
   than expanding multiple milestones at once.
-- Added the next `pkg` implementation unit in `nuttx-apps`:
+- Added the next `nxpkg` implementation unit in `nuttx-apps`:
   metadata and local store foundation.
-- Added shared internal `pkg` structures and helpers for:
+- Added shared internal `nxpkg` structures and helpers for:
   - manifest field validation
   - on-device repository and storage path layout
   - transaction state naming
   - basic package logging
-- Clean-build validated the `pkg` foundation on top of the XIAO `elf`
+- Clean-build validated the `nxpkg` foundation on top of the XIAO `elf`
   configuration.
 - Wrote a draft XIAO dynamic-loading guide intended to preserve development
   knowledge for future tutorial cleanup.
-- Added the next `pkg` implementation unit in `nuttx-apps`:
+- Added the next `nxpkg` implementation unit in `nuttx-apps`:
   local metadata-backed `install` and `list`.
 - Added local JSON-backed repository/index handling and installed-state
   persistence.
-- Added self-contained SHA-256 verification inside `pkg` so the install path
+- Added self-contained SHA-256 verification inside `nxpkg` so the install path
   does not depend on unresolved kernel-side crypto symbols.
 - Added local compatibility gating against the current board/runtime identity.
 - Clean-build validated the new `install`/`list` unit on top of the XIAO `elf`
@@ -92,8 +92,8 @@ and final reporting.
 
 #### Evidence
 
-- `pkg` continues to register as a builtin command in the XIAO ELF build path.
-- The XIAO ELF build still completes successfully with `CONFIG_SYSTEM_PKG=y`.
+- `nxpkg` continues to register as a builtin command in the XIAO ELF build path.
+- The XIAO ELF build still completes successfully with `CONFIG_SYSTEM_NXPKG=y`.
 - The new guide records:
   - reproducible build commands
   - BOOT/RESET flashing procedure
@@ -101,16 +101,16 @@ and final reporting.
   - common bring-up failures and fixes
 - The XIAO ELF build still completes after the `install`/`list` unit and
   produces `nuttx.bin`.
-- The local `pkg` command now builds with:
+- The local `nxpkg` command now builds with:
   - local `index.json` parsing
   - local `installed.json` persistence
   - artifact copy/stage helpers
   - pointer file updates for `current` and `previous`
-  - script-friendly `pkg list` output
+  - script-friendly `nxpkg list` output
 
 #### Notes
 
-- `pkg update` and `pkg rollback` are still intentionally deferred.
+- `nxpkg update` and `nxpkg rollback` are still intentionally deferred.
 - This unit adds only the first local executable package lifecycle path:
   `install` plus `list`.
 - The first executable package lifecycle path is now implemented in code, but
@@ -121,13 +121,13 @@ and final reporting.
   - `/data/repo/installed.json`
   - package payload artifacts available via absolute or repo-relative paths
 - Because the current XIAO `elf` path proves loader behavior through ROMFS and
-  USB CDC, the remaining runtime gap for `pkg install` is writable package
+  USB CDC, the remaining runtime gap for `nxpkg install` is writable package
   storage, not loader capability.
 
 #### Next
 
 - Provision a writable `/data` mount for the XIAO runtime path and validate
-  `pkg list` / `pkg install` on target.
+  `nxpkg list` / `nxpkg install` on target.
 - Keep update/rollback execution for the following unit, not the same one.
 
 ### 2026-05-08
@@ -149,11 +149,13 @@ and final reporting.
   Makefiles already supported `MODULE = $(CONFIG_...)`.
 - Added a host-side repository export helper in
   `apps/tools/export_pkg_repo.py`.
-- Closed the first end-to-end target-side `pkg install` / `pkg list`
+- Closed the first end-to-end target-side `nxpkg install` / `nxpkg list`
   validation on the XIAO runtime path using writable `tmpfs`-backed `/data`.
+- Renamed the command and integration path from `pkg` to `nxpkg` following
+  maintainer feedback, and revalidated the renamed command on hardware.
 - Confirmed that the ROMFS-backed local package fixture can install the `hello`
   ELF payload on target and persist installed-state metadata.
-- Fixed a real runtime stability issue in `pkg` by moving large metadata
+- Fixed a real runtime stability issue in `nxpkg` by moving large metadata
   structures out of the task stack and onto heap allocations.
 - Fixed a post-success logging bug in `pkg_install()` where the final success
   log referenced manifest data after its backing index buffer had been freed.
@@ -194,8 +196,13 @@ and final reporting.
   - `pkg: info: installed metadata updated`
   - `pkg: info: installed hello version 1.0.0`
   - `hello current=1.0.0 previous=- type=elf arch=xtensa compat=esp32s3-xiao versions=1.0.0`
-- `pkg list` on target returned the same installed-state record after the
+- `nxpkg list` on target returned the same installed-state record after the
   install completed.
+- After the rename rebuild, the board-side runtime path confirmed:
+  - `nxpkg` appears in NSH builtin apps
+  - `nxpkg` prints the expected usage line
+  - the ROMFS fixture runs `nxpkg install hello`
+  - `nxpkg list` still reports the installed package state on target
 
 #### Notes
 
@@ -210,13 +217,19 @@ and final reporting.
   local tree inconsistency around the top-level `chip/` path, so build
   verification for this specific pass should not be interpreted as a failure of
   the `bool -> tristate` conversion itself.
-- The main runtime blocker in the first `pkg install` path was not JSON parsing
+- The main runtime blocker in the first `nxpkg install` path was not JSON parsing
   itself, but package-task stack pressure. The `pkg_index_s` and installed-db
   structures were large enough to make the original task-stack allocation
   unstable on target.
 - Serial automation on the XIAO CDC ACM console is sensitive to stale host-side
   file handles. pyserial-based probing was more reliable than the earlier raw
   nonblocking probe method for end-to-end scripted verification.
+- The rename was carried through:
+  - app path: `system/nxpkg`
+  - config symbol: `CONFIG_SYSTEM_NXPKG`
+  - builtin program name: `nxpkg`
+  - XIAO `elf` validation config
+  - ROMFS fixture generation and export tooling references
 
 #### Next
 

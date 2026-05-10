@@ -35,7 +35,7 @@ Not covered:
 
 Current package-helper status:
 
-- the local `pkg install` / `pkg list` path is implemented and build-validated
+- the local `nxpkg install` / `nxpkg list` path is implemented and build-validated
 - target-side runtime validation still needs writable storage mounted at
   `/data`
 - update/rollback execution is intentionally deferred to the next unit
@@ -228,12 +228,12 @@ The package-layer work depends on exactly these loader properties:
 - shared libraries can be loaded and resolved
 - the board can return cleanly to NSH after the operation
 
-Because those facts are now proven on hardware, later `pkg` work can build on
+Because those facts are now proven on hardware, later `nxpkg` work can build on
 measured behavior instead of assumptions.
 
-## Current `pkg` Local-First Model
+## Current `nxpkg` Local-First Model
 
-The current `pkg` work is intentionally local-first. It does not depend on
+The current `nxpkg` work is intentionally local-first. It does not depend on
 network transport yet.
 
 ### Expected Paths
@@ -252,13 +252,13 @@ network transport yet.
 The current XIAO `elf` validation path already proves the loader runtime, but
 the package helper adds a new requirement: writable storage under `/data`.
 
-This means that before validating `pkg install` on target, the board needs a
+This means that before validating `nxpkg install` on target, the board needs a
 real writable filesystem mounted there, for example:
 
 - tmpfs for early validation
 - or another writable persistent filesystem later
 
-Without that writable mount, `pkg` can build correctly but cannot complete its
+Without that writable mount, `nxpkg` can build correctly but cannot complete its
 local metadata and staging flow on hardware.
 
 ### Current Index Schema
@@ -301,6 +301,6 @@ The installed-state file currently records:
 
 This is enough for:
 
-- `pkg list`
+- `nxpkg list`
 - future pointer-based rollback work
 - future reporting/debugging of the staged package state

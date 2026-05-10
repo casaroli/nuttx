@@ -16,9 +16,9 @@ Date: 2026-05-08
 - Real-hardware shared-object loading via `sotest`: done
 - Reproducible XIAO `elf` config: build-validated
 - Reproducible XIAO `sotest` config: build-validated
-- `pkg` skeleton and metadata/store foundation: done
-- Local `pkg install` / `pkg list` implementation: build-validated
-- Local `pkg install` / `pkg list` runtime validation on writable `/data`:
+- `nxpkg` skeleton and metadata/store foundation: done
+- Local `nxpkg install` / `nxpkg list` implementation: build-validated
+- Local `nxpkg install` / `nxpkg list` runtime validation on writable `/data`:
   done
 - Meeting follow-up items captured and phased: done
 

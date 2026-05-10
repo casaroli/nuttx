@@ -7,8 +7,8 @@ loader/runtime behavior that is already proven on hardware.
 
 ## Scope Anchor
 
-The proposal keeps `pkg` as a thin lifecycle helper under
-`nuttx-apps/system/pkg`. It is not a full distro-style manager. The first MVP
+The proposal keeps `nxpkg` as a thin lifecycle helper under
+`nuttx-apps/system/nxpkg`. It is not a full distro-style manager. The first MVP
 must stay limited to lifecycle orchestration on top of existing NuttX
 services.
 
@@ -16,14 +16,14 @@ services.
 
 The MVP command surface stays limited to:
 
-- `pkg install <name>`
-- `pkg update <name>`
-- `pkg list`
-- `pkg rollback <name>`
+- `nxpkg install <name>`
+- `nxpkg update <name>`
+- `nxpkg list`
+- `nxpkg rollback <name>`
 
 Not part of the primary MVP command set:
 
-- `pkg run`
+- `nxpkg run`
 - SAT-style dependency resolution
 - full remove policy
 - graphical browser or richer UI
@@ -81,7 +81,7 @@ strictly necessary.
 
 ### Install
 
-`pkg install <name>` in MVP terms means:
+`nxpkg install <name>` in MVP terms means:
 
 1. resolve the target version from local index metadata
 2. acquire transaction lock
@@ -95,23 +95,23 @@ strictly necessary.
 
 ### Update
 
-`pkg update <name>` means the same pipeline, but only for a newer compatible
+`nxpkg update <name>` means the same pipeline, but only for a newer compatible
 version selected from index metadata.
 
 ### List
 
-`pkg list` reads installed metadata and reports package name, installed
+`nxpkg list` reads installed metadata and reports package name, installed
 versions, and current/previous pointers in a script-friendly way.
 
 ### Rollback
 
-`pkg rollback <name>` validates that a previous version exists, performs an
+`nxpkg rollback <name>` validates that a previous version exists, performs an
 atomic pointer reversal, updates installed metadata, and confirms that the
 active pointer now references the last-known-good version.
 
 ### Run
 
-`pkg run` is intentionally not part of the MVP. Runtime invocation continues to
+`nxpkg run` is intentionally not part of the MVP. Runtime invocation continues to
 use the already-proven NSH and loader path directly.
 
 ## Compatibility Gate
