@@ -16,7 +16,7 @@ and final reporting.
 
 ### 2026-05-05
 
-#### Completed
+#### Additional Completed
 
 - Established real-hardware validation on XIAO ESP32S3 Sense.
 - Validated executable Dynamic ELF loading on hardware.
@@ -30,7 +30,7 @@ and final reporting.
 - Wrote the first package-layer MVP definition, keeping it aligned with the
   proposal's thin lifecycle-helper scope.
 
-#### Evidence
+#### Additional Evidence
 
 - `elf` path executed successfully on hardware and returned to `nsh>`.
 - `sotest` path executed successfully on hardware with visible output:
@@ -43,7 +43,7 @@ and final reporting.
   - `module_uninitialize`
 - Shell remained alive after completion.
 
-#### Notes
+#### Additional Notes
 
 - USB flash flow on this board requires deliberate BOOT/RESET handling.
 - Console interaction on the XIAO CDC ACM path is sensitive to serial control
@@ -291,6 +291,12 @@ and final reporting.
   - `MAKEFILE_NEEDS_MODULE: 19`
 - The follow-up XIAO build still completed successfully and regenerated
   `nuttx.bin`.
+- A further nested-tool pass moved the audit again from:
+  - `MAKEFILE_NEEDS_MODULE: 19`
+  to:
+  - `MAKEFILE_NEEDS_MODULE: 18`
+- The representative XIAO build still completed successfully after that
+  pass as well.
 
 #### Notes
 
@@ -308,6 +314,42 @@ and final reporting.
 - The audit helper itself needed to be corrected before the second pass;
   otherwise valid `:=` and `+=` module assignments would continue to appear as
   false positives.
+- The next remaining bucket is now mostly made of:
+  - parent package toggles with nested runnable tools
+  - pure library directories
+  - bootloader-focused apps
+  - mixed multi-command layouts
+  These need per-directory judgment instead of more mechanical conversion.
+
+#### Completed
+
+- Added another small application/module-support pass focused only on nested
+  runnable tools:
+  - `NETUTILS_BARE_TEST` was changed from `bool` to `tristate`
+  - `baretest` now uses `MODULE = $(CONFIG_NETUTILS_BARE_TEST)` instead of a
+    hard-coded builtin-only assignment
+  - `TFLITEMICRO_TOOL` was changed from `bool` to `tristate`
+  - the TFLite Micro GNU Make path now uses
+    `MODULE = $(CONFIG_TFLITEMICRO_TOOL)`
+  - the TFLite Micro CMake path now passes
+    `MODULE ${CONFIG_TFLITEMICRO_TOOL}` to `nuttx_add_application(...)`
+- Rebuild-validated the XIAO `esp32s3-xiao:elf` path after the nested-tool
+  changes.
+
+#### Evidence
+
+- The module-support audit now reports:
+  - `MAKEFILE_NEEDS_MODULE: 18`
+  - `READY: 376`
+- The representative XIAO ELF build still completed successfully and
+  regenerated `nuttx.bin` after the `baretest` and `tflm` changes.
+
+#### Notes
+
+- This pass deliberately targeted nested runnable tools instead of the parent
+  package toggles, because that better matches the maintainer request to add
+  module support for applications while leaving pure libraries and bootloader
+  infrastructure alone.
 
 #### Next
 
