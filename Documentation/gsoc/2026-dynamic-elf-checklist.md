@@ -129,6 +129,10 @@ Date: 2026-05-12
       `tristate`
 - [ ] Add `MODULE = $(CONFIG_...)` coverage where executable applications still
       miss it
+  Progress:
+  - audit helper updated to recognize `=`, `:=`, and `+=` assignment styles
+  - first two safe Makefile/Kconfig subsets completed
+  - remaining `MAKEFILE_NEEDS_MODULE` bucket reduced from 34 to 19
 - [ ] Validate representative builtin/module dual-mode application flows
 - [x] Add a host-side export/publish script for repository artifacts
 - [ ] Extend export flow to support library/module artifacts
@@ -145,7 +149,8 @@ Date: 2026-05-12
 ## Immediate Next Steps
 
 1. Close the next application/module gap subset:
-   missing `MODULE = $(CONFIG_...)` coverage for real executable apps.
+   the remaining ambiguous `MODULE = $(CONFIG_...)` coverage for real
+   executable apps after excluding library- and layout-driven false positives.
 2. Extend the export/publish path toward the server/repository flow requested
    in mentor feedback.
 3. Keep update/rollback execution for the next unit only after install/list is

@@ -259,6 +259,18 @@ and final reporting.
 - Re-validated the existing host-side export helper against the built `hello`
   ELF payload and confirmed that it emits a repository layout and `index.json`
   matching the current `nxpkg` metadata parser.
+- Closed two additional application/module gap-closure passes in `apps/`:
+  - corrected missing `MODULE = $(CONFIG_...)` wiring for a first set of
+    already-`tristate` executable applications and tests
+  - converted a second set of clear executable apps/tests from `bool` to
+    `tristate` and added matching `MODULE = $(CONFIG_...)` wiring
+- Fixed the module-support audit helper so it now recognizes valid Makefile
+  assignment styles already used in-tree:
+  - `MODULE = $(CONFIG_...)`
+  - `MODULE := $(CONFIG_...)`
+  - `MODULE += $(CONFIG_...)`
+- Rebuild-validated the XIAO `esp32s3-xiao:elf` path after both module-support
+  cleanup passes.
 
 #### Evidence
 
@@ -273,6 +285,12 @@ and final reporting.
 - The export helper produced:
   - `artifacts/esp32s3-xiao/hello/1.0.0/hello`
   - `index.json` with a SHA-256 digest matching the exported payload
+- The module-support audit moved from:
+  - `MAKEFILE_NEEDS_MODULE: 34`
+  to:
+  - `MAKEFILE_NEEDS_MODULE: 19`
+- The follow-up XIAO build still completed successfully and regenerated
+  `nuttx.bin`.
 
 #### Notes
 
@@ -281,10 +299,20 @@ and final reporting.
 - Broader package-system architecture topics, such as BASE vs USERLAND
   separation and future dependency solving, should stay in design discussion
   and later documentation rather than being overloaded into this first page.
+- A significant portion of the remaining `MAKEFILE_NEEDS_MODULE` audit bucket
+  is now mixed with:
+  - library-like directories
+  - path/config helper directories
+  - multi-command layouts that need per-directory review instead of
+    mechanical conversion
+- The audit helper itself needed to be corrected before the second pass;
+  otherwise valid `:=` and `+=` module assignments would continue to appear as
+  false positives.
 
 #### Next
 
-- Continue with the remaining application module-support gap closure.
+- Continue with the remaining application module-support gap closure, but keep
+  the next subset limited to entries whose executable/module intent is clear.
 - Prepare the next documentation/design follow-up if the dev@ discussion turns
   the broader package architecture into a separate design note.
 - Extend the export/publish flow toward shared-library artifacts in line with
