@@ -240,6 +240,56 @@ and final reporting.
 - Replace the temporary SHA-256 implementation with the NuttX crypto
   subsystem, following mentor feedback.
 
+### 2026-05-12
+
+#### Completed
+
+- Added the first upstream-facing `nxpkg` application documentation page under
+  `Documentation/applications/system/nxpkg/index.rst`.
+- Kept the page scoped to the current MVP instead of the full future package
+  system:
+  - local-first install/list flow
+  - current on-device layout
+  - configuration knobs
+  - host-side repository generation with `export_pkg_repo.py`
+  - validated runtime flow on the XIAO board
+  - explicit current limitations
+- Recorded the new documentation requirement in the checklist and meeting
+  follow-up notes.
+- Re-validated the existing host-side export helper against the built `hello`
+  ELF payload and confirmed that it emits a repository layout and `index.json`
+  matching the current `nxpkg` metadata parser.
+
+#### Evidence
+
+- The new page documents:
+  - the current `nxpkg` command surface
+  - default repository/store paths under `/data`
+  - a host-side `export_pkg_repo.py` invocation for the `hello` payload
+  - the ROMFS-backed fixture script used during runtime validation
+  - the observed board-side `nxpkg list` output
+- The page lives under `Documentation/applications/system/`, so it is picked up
+  automatically by the existing `system/index.rst` globbed toctree.
+- The export helper produced:
+  - `artifacts/esp32s3-xiao/hello/1.0.0/hello`
+  - `index.json` with a SHA-256 digest matching the exported payload
+
+#### Notes
+
+- This new Applications-page documentation is intentionally user-facing and
+  smaller than the GSoC report/tracker notes.
+- Broader package-system architecture topics, such as BASE vs USERLAND
+  separation and future dependency solving, should stay in design discussion
+  and later documentation rather than being overloaded into this first page.
+
+#### Next
+
+- Continue with the remaining application module-support gap closure.
+- Prepare the next documentation/design follow-up if the dev@ discussion turns
+  the broader package architecture into a separate design note.
+- Extend the export/publish flow toward shared-library artifacts in line with
+  the earlier mentor feedback.
+
 ## Update Format
 
 For future entries, use:

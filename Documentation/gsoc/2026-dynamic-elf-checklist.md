@@ -8,7 +8,7 @@ changes must remain aligned with the proposal and with maintainer guidance.
 
 ## Current Status
 
-Date: 2026-05-08
+Date: 2026-05-12
 
 - Board in active use: Seeed XIAO ESP32S3 Sense
 - Host workflow in active use: Linux-style NuttX flow, tested from local setup
@@ -21,6 +21,7 @@ Date: 2026-05-08
 - Local `nxpkg install` / `nxpkg list` runtime validation on writable `/data`:
   done
 - Meeting follow-up items captured and phased: done
+- Initial upstream `nxpkg` Applications documentation: done
 
 ## Scope Rules
 
@@ -121,6 +122,8 @@ Date: 2026-05-08
 ### Phase 6A: Mentor Follow-Up Integration
 
 - [x] Capture mentor meeting follow-up items in versioned notes
+- [x] Add an initial upstream `nxpkg` application page under
+      `nuttx/Documentation/applications/`
 - [x] Audit menuconfig application/module coverage for Dynamic ELF workflows
 - [x] Convert the first eligible application Kconfig subset from `bool` to
       `tristate`
@@ -143,7 +146,8 @@ Date: 2026-05-08
 
 1. Close the next application/module gap subset:
    missing `MODULE = $(CONFIG_...)` coverage for real executable apps.
-2. Record the exact runtime setup steps needed for new users.
+2. Extend the export/publish path toward the server/repository flow requested
+   in mentor feedback.
 3. Keep update/rollback execution for the next unit only after install/list is
    proven end to end.
 4. Extend the local executable-package validation path toward library/module

@@ -34,6 +34,11 @@ Halysson additionally recommended:
 - Replace the temporary local SHA-256 implementation in `nxpkg` with the NuttX
   cryptographic subsystem.
 
+Additional maintainer follow-up after the first upstream `nxpkg` submission:
+
+- Add an initial `nxpkg` documentation page under the Applications section of
+  `nuttx/Documentation`.
+
 ## Interpretation For The Current Project
 
 ### Already Proved
