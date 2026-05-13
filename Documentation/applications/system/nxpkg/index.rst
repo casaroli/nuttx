@@ -24,7 +24,8 @@ ELF loading. The current implementation assumes that:
 
 - ELF payloads are produced separately from the base firmware image
 - package metadata is available locally on the target
-- a writable filesystem is mounted at ``/data``
+- the repository index can be written under ``/etc/nxpkg``
+- the package store and cache live under a writable ``/var`` hierarchy
 
 The package lifecycle handled by the current MVP is intentionally simple:
 
@@ -53,10 +54,10 @@ On-Device Layout
 
 The current implementation uses the following default paths:
 
-- repository metadata: ``/data/repo/index.json``
-- installed package database: ``/data/repo/installed.json``
-- package payload store: ``/data/pkgs``
-- temporary staging area: ``/data/tmp/pkg``
+- repository metadata: ``/etc/nxpkg/index.json``
+- installed package database: ``/var/lib/nxpkg/installed.json``
+- package payload store: ``/var/lib/nxpkg/pkgs``
+- temporary staging area: ``/var/cache/nxpkg/pkg``
 
 Each manifest entry currently describes:
 
@@ -84,7 +85,8 @@ The application also selects:
 Useful runtime prerequisites for the current MVP are:
 
 - Dynamic ELF support enabled in the target configuration
-- a writable filesystem mounted at ``/data``
+- a writable ``/etc`` mount for the local repository index
+- a writable ``/var`` mount for the package store/cache
 
 The command name, task priority, and stack size can be adjusted with:
 
@@ -104,7 +106,7 @@ To inspect installed package state::
 
   nsh> nxpkg list
 
-The local install path expects a repository index at ``/data/repo/index.json``.
+The local install path expects a repository index at ``/etc/nxpkg/index.json``.
 For the initial validation flow described below, the index is copied from the
 ELF ROMFS fixture generated at build time.
 
@@ -156,10 +158,10 @@ ELF ROMFS image was used to provide a local package fixture for ``nxpkg``.
 
 The ROMFS-backed validation script used on the board was::
 
-  mkdir /data
-  mount -t tmpfs /data
-  mkdir /data/repo
-  cp /mnt/elf/romfs/index.json /data/repo/index.json
+  mount -t tmpfs /etc
+  mount -t tmpfs /var
+  mkdir /etc/nxpkg
+  cp /mnt/elf/romfs/index.json /etc/nxpkg/index.json
   nxpkg install hello
   nxpkg list
 
@@ -185,6 +187,11 @@ The observed target-side result was::
 
   nsh> nxpkg list
   hello current=1.0.0 previous=- type=elf arch=xtensa compat=esp32s3-xiao versions=1.0.0
+
+During this validation, the XIAO ``esp32s3-xiao:elf`` configuration needed
+explicit writable mounts for both ``/etc`` and ``/var``. The fixture mounted
+``tmpfs`` on those paths first, created ``/etc/nxpkg``, and then copied the
+local ``index.json`` into place before running ``nxpkg install``.
 
 Current Limitations
 ===================
