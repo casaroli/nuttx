@@ -360,6 +360,99 @@ and final reporting.
 - Extend the export/publish flow toward shared-library artifacts in line with
   the earlier mentor feedback.
 
+### 2026-05-16
+
+#### Completed
+
+- Addressed the remaining actionable code-review feedback on the upstream
+  `nxpkg` app PR by replacing the last unbounded metadata-side string
+  comparisons with bounded helpers.
+- Fixed the module-support audit helper so it no longer reports valid indented
+  `MODULE = $(CONFIG_...)` assignments as false positives.
+- Added another small application/module-support cleanup pass for clear
+  single-symbol executable/test commands:
+  - `CRYPTO_CONTROLSE`
+  - `NETUTILS_CJSON_TEST`
+  - `TESTING_X86_64_ABI`
+  - `OPTEE_SUPPLICANT`
+- Validated a representative builtin/module dual-mode flow using the XIAO ELF
+  configuration and the `cachespeed` benchmark.
+- Re-entered the XIAO `sotest` build path long enough to regenerate a real
+  shared-library artifact (`modprint`) and validated the exporter against it.
+- Replaced the temporary local SHA-256 code in `nxpkg` with the NuttX crypto
+  subsystem (`crypto/sha2.h`) and rebuilt the XIAO `elf` image successfully.
+- Added an explicit failure-path fixture (`bad-index.json` + `pkgfail.nsh`) and
+  validated on hardware that a missing payload returns `-ENOENT` without
+  corrupting the installed package state.
+
+#### Evidence
+
+- The upstream app PR fix was pushed on
+  `aviralgarg05/nuttx-apps:gsoc/nxpkg-app-pr1`, and the remaining review
+  thread on `system/nxpkg/pkg_metadata.c` was resolved after the change.
+- The corrected module-support audit now reports:
+  - `BOOL_NEEDS_TRISTATE: 0`
+  - `MAKEFILE_NEEDS_MODULE: 12`
+  - `READY: 382`
+- Builtin-mode validation for the representative dual-mode app still completed
+  successfully on `esp32s3-xiao:elf` with:
+  - `CONFIG_BENCHMARK_CACHESPEED=y`
+  - visible registration of `cachespeed` during the build
+- Module-mode validation for the same app also completed successfully on
+  `esp32s3-xiao:elf` with:
+  - `CONFIG_BENCHMARK_CACHESPEED=m`
+  - generated artifact:
+    `/Users/aviralgarg/Everything/gsoc-dynamic-elf-baseline/apps/bin/cachespeed`
+- The regenerated XIAO `sotest` app-side build path produced:
+  - `/Users/aviralgarg/Everything/gsoc-dynamic-elf-baseline/apps/bin/modprint`
+  - `/Users/aviralgarg/Everything/gsoc-dynamic-elf-baseline/apps/bin/sotest`
+- Export validation for the shared-library path produced:
+  - `artifacts/xtensa/esp32s3/esp32s3-xiao/modprint/1.0.0/modprint`
+  - `index.json` entry with:
+    - `type: shared-lib`
+    - `arch: xtensa`
+    - `compat: esp32s3-xiao`
+- The crypto-subsystem migration rebuilt cleanly on `esp32s3-xiao:elf`, and
+  the regenerated `nuttx.bin` was flashed and exercised on the board.
+- The success-path runtime flow still completed after the hashing change:
+  - `elf`
+  - `source /mnt/elf/romfs/pkgtest.nsh`
+  - `nxpkg list`
+- The failure-path runtime flow now returns the expected error when the payload
+  is missing:
+  - fixture copy:
+    `/mnt/elf/romfs/bad-index.json -> /etc/nxpkg/index.json`
+  - command:
+    `nxpkg install hello-missing`
+  - observed result:
+    `nxpkg: error: install failed for 'hello-missing': -2`
+  - `nxpkg list` still shows only the previously installed `hello` package
+    after the failed install attempt.
+
+#### Blockers or Risks
+
+- The remaining module-support audit bucket is no longer mechanical. The 12
+  remaining entries are mostly parent-package toggles, pure libraries,
+  bootloader-focused apps, or mixed multi-command layouts that need manual
+  judgment.
+- Reusing the same shared `apps/` output tree across `elf` and `sotest`
+  configure/build paths can leave stale objects behind; the baseline XIAO
+  `elf` tree must be rebuilt cleanly after temporary `sotest` artifact
+  generation before claiming the final state is restored.
+- The remaining module-support audit bucket is still the hardest manual-review
+  set; none of the 12 entries look safe for a bulk mechanical conversion.
+- The current target validation still covers a missing-payload failure path,
+  but not yet richer invalid-module cases such as a structurally broken ELF or
+  mismatched shared-library payload.
+
+#### Next
+
+- Continue the remaining application/module gap closure only for entries whose
+  executable/module intent is unambiguous.
+- Extend the package/runtime validation path toward packaged shared-library
+  install/use now that the local executable success/failure slices are both
+  covered.
+
 ## Update Format
 
 For future entries, use:

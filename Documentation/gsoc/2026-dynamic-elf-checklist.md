@@ -8,7 +8,7 @@ changes must remain aligned with the proposal and with maintainer guidance.
 
 ## Current Status
 
-Date: 2026-05-12
+Date: 2026-05-16
 
 - Board in active use: Seeed XIAO ESP32S3 Sense
 - Host workflow in active use: Linux-style NuttX flow, tested from local setup
@@ -22,6 +22,11 @@ Date: 2026-05-12
   done
 - Meeting follow-up items captured and phased: done
 - Initial upstream `nxpkg` Applications documentation: done
+- Multi-target repository selection and `arch/chip/board` exporter layout:
+  done
+- Representative builtin/module dual-mode application validation: done
+- Crypto-subsystem SHA-256 migration for `nxpkg`: done
+- Missing-payload install failure path on target: done
 
 ## Scope Rules
 
@@ -134,11 +139,17 @@ Date: 2026-05-12
   - first two safe Makefile/Kconfig subsets completed
   - nested tool/test module support added for `baretest` and the `tflm`
     command-line tool, including the TFLite Micro CMake path
-  - remaining `MAKEFILE_NEEDS_MODULE` bucket reduced from 34 to 18
-- [ ] Validate representative builtin/module dual-mode application flows
+  - additional single-symbol executable/test coverage added for:
+    - `controlse`
+    - `cjson_test`
+    - `x86-64-ABI`
+    - `optee_supplicant`
+  - remaining `MAKEFILE_NEEDS_MODULE` bucket reduced from 34 to 12
+- [x] Validate representative builtin/module dual-mode application flows
+- [x] Validate target-aware package selection with a mixed-target repository
 - [x] Add a host-side export/publish script for repository artifacts
-- [ ] Extend export flow to support library/module artifacts
-- [ ] Replace temporary local SHA-256 logic with the NuttX crypto subsystem
+- [x] Extend export flow to support library/module artifacts
+- [x] Replace temporary local SHA-256 logic with the NuttX crypto subsystem
 
 ### Phase 7: Evidence, Reporting, And Demo Readiness
 
@@ -153,16 +164,16 @@ Date: 2026-05-12
 1. Close the next application/module gap subset:
    the remaining ambiguous `MODULE = $(CONFIG_...)` coverage for real
    executable apps after excluding library- and layout-driven false positives.
-   The remaining bucket is now dominated by parent package toggles, libraries,
-   bootloader apps, and mixed multi-command layouts that need manual review.
-2. Extend the export/publish path toward the server/repository flow requested
-   in mentor feedback.
-3. Keep update/rollback execution for the next unit only after install/list is
+   The remaining bucket is now down to 12 entries and is dominated by parent
+   package toggles, libraries, bootloader apps, and mixed multi-command
+   layouts that need manual review.
+2. Keep update/rollback execution for the next unit only after install/list is
    proven end to end.
-4. Extend the local executable-package validation path toward library/module
-   artifacts as required by the proposal and mentor follow-up.
-5. Replace the temporary SHA-256 implementation with the NuttX crypto
-   subsystem.
+3. Extend the local executable-package runtime path toward packaged
+   shared-library install/use once the current MVP error-path and crypto
+   follow-up work are closed.
+4. Continue the remaining application/module gap closure only for entries whose
+   executable/module intent is unambiguous.
 
 ## Milestone Exit Criteria
 
