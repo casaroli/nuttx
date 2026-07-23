@@ -27,7 +27,20 @@ nuttx_mod_compile_options(-fvisibility=hidden -mlong-calls)
 nuttx_elf_compile_options_ifdef(CONFIG_UNWINDER_ARM -fno-unwind-tables
                                 -fno-asynchronous-unwind-tables)
 
-nuttx_elf_compile_options_ifdef(CONFIG_PIC --fixed-r10 -mpic-register=r10)
+# A PIC module reaches its own data through r10, which -mpic-register=r10
+# already reserves for it.  --fixed-r10 must not be added alongside: GCC rejects
+# the combination with "unable to use 'r10' for PIC register" as soon as -fpic
+# is in effect, and reserves r10 for nothing when it is not.
+#
+# --fixed-r10 belongs on the base firmware, not on the module -- it is what
+# stops the firmware allocating r10, so that a callback from firmware into
+# module code arrives with the module's data base intact.  The Makefile build
+# adds it to CFLAGS for exactly that reason and filters it back out of the
+# module flags.  The CMake build does not add it anywhere yet, which is a
+# separate gap: adding it with add_compile_options() would reach these
+# application targets too and reintroduce the same rejected combination.
+
+nuttx_elf_compile_options_ifdef(CONFIG_PIC -mpic-register=r10)
 
 nuttx_elf_link_options_ifdef(
   CONFIG_PIC --unresolved-symbols=ignore-in-object-files --emit-relocs)
