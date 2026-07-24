@@ -135,6 +135,27 @@ SECTIONS
     *libkarch.a:cache_utils.*(.literal .literal.* .text .text.*)
     *libkarch.a:memspi_host_driver.*(.literal .literal.* .text .text.*)
 
+    /* Octal (OPI) flash + MMU/timing helpers must be IRAM-resident so they are
+     * safe to execute while the flash mapping is being (re)configured.  Without
+     * this, e.g. esp_rom_opiflash_cache_mode_config() ends up in mapped flash
+     * and faults during octal-flash bring-up.  Mirrors the flat linker.
+     */
+
+    *libkarch.a:*esp_rom_spiflash.*(.literal .text .literal.* .text.*)
+    *libkarch.a:*mmu_hal.*(.literal .text .literal.* .text.*)
+    *libkarch.a:*mspi_timing_tuning.*(.literal .text .literal.* .text.*)
+    *libkarch.a:*mspi_timing_config.*(.literal .text .literal.* .text.*)
+    *libkarch.a:esp32s3_spi_timing.*(.literal .text .literal.* .text.*)
+    *libkarch.a:*spi_flash_oct_flash_init.*(.literal .text .literal.* .text.*)
+    *libkarch.a:*spi_flash_hpm_enable.*(.literal .text .literal.* .text.*)
+    *libkarch.a:*flash_qio_mode.*(.literal .text .literal.* .text.*)
+    *libkarch.a:*bootloader_flash.*(.literal .text .literal.* .text.*)
+    *libkarch.a:*bootloader_flash_config_esp32s3.*(.literal .text .literal.* .text.*)
+    *libkarch.a:*bootloader_efuse.*(.literal .text .literal.* .text.*)
+    *libkarch.a:*efuse_hal.*(.literal .text .literal.* .text.*)
+    *libkarch.a:*efuse_utility.*(.literal .text .literal.* .text.*)
+    *libkarch.a:*esp_mmu_map.*(.literal .text .literal.* .text.*)
+
     *libsched.a:sched_suspendscheduler.*(.literal .text .literal.* .text.*)
     *libsched.a:sched_note.*(.literal .text .literal.* .text.*)
     *libsched.a:sched_thistask.*(.literal .text .literal.* .text.*)
