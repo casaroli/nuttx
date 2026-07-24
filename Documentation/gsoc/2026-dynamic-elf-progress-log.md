@@ -618,6 +618,14 @@ ESP32-S3-WROOM-2 (N32R8V) module — 32 MB octal flash + 8 MB octal PSRAM.
 - MMU-table probe (board late-init): `va=0x3c000000 -> valid`;
   `0x3c800000 / 0x3d000000 / 0x3d800000 -> INVALID (0x4000)`, each reading 0
   with no fault and a clean boot to `nsh`.
+- Copy-on-write was probed directly too (async-PMS "retry the blocked store"):
+  a WORLD1 store to a kernel-DRAM scratch word was serviced from the PMS
+  interrupt by granting access and returning without advancing PC, to re-run
+  the store.  It does not work -- the async interrupt is delivered with
+  `PC` **three instructions past the store** (disasm: store `s32i.n@0x4211ce41`,
+  interrupt `PC=0x4211ce48`), so the store is never retried and the blocked
+  write is lost (read-back = 0).  `memw` does not help.  COW/fork (Unit H) is
+  therefore also blocked.
 - (An earlier probe that actively invalidated an entry with cache
   suspend/resume + an exception-context MMU restore wedged the board into a
   reboot loop; that was the unsafe cache manipulation / re-entrancy -- the
