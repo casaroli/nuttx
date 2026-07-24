@@ -555,6 +555,45 @@ ESP32-S3-WROOM-2 (N32R8V) module — 32 MB octal flash + 8 MB octal PSRAM.
   cache-attribute recoverable path as the basis for `up_addrenv_*` (Units C–F)
   and Variant B demand paging (Unit G).
 
+### 2026-07-25 — Per-task abort (SIGSEGV) + async PMS ISR fix
+
+#### Completed
+
+- Turned the proven fault primitive into a working feature: an unprivileged
+  (WORLD1) task that faults is now terminated on its own instead of panicking
+  the whole system. Two paths, both gated by `CONFIG_ESP32S3_PAGEFAULT_ABORT`
+  (default on; selects `SIG_DEFAULT` + `SIG_SIGKILL_ACTION`):
+  - **Synchronous** cache-attribute faults (EXCCAUSE 28/29/20): `xtensa_user()`
+    calls `esp32s3_pagefault_abort()`, which delivers a fatal SIGSEGV and
+    returns the signal-trampoline frame (no kernel stack required).
+  - **Asynchronous** PMS-monitor violations: `pms_violation_isr()` now
+    acknowledges/re-arms every monitor latch and delivers SIGSEGV to the
+    interrupted WORLD1 task, replacing the previous unconditional `PANIC()`
+    (whose panic path also crashed in `up_saveusercontext`).
+  - Kernel-mode (WORLD0) faults still panic.
+
+#### Evidence (ESP32-S3-DevKitC WROOM-2)
+
+- `pffault r 0x0` / `pffault w 0x0` (NULL deref, EXCCAUSE 28/29) and
+  `pffault r 0x3fc98000` / `pffault w 0x3fc98000` (user access to kernel DRAM,
+  async PMS) each terminate only the pffault task; `nsh` stays interactive.
+- Repeatable and clean: `free` unchanged after 10+ aborts (no leak), `ps`
+  shows no lingering pffault tasks, and no monitor re-fire / reboot loop.
+- No regression: `ostest` exits with status 0; the synchronous abort, the async
+  abort, and the RFE-restart self-test all coexist.
+
+#### Blockers or Risks
+
+- The async-PMS abort assumes the interrupted task is the violator (true for a
+  level-triggered violation taken with interrupts enabled); it confirms
+  user-vs-kernel from the interruptee's saved PS before acting.
+
+#### Next
+
+- The BUILD_KERNEL address-environment arc (Kconfig plumbing, `arch_addrenv_s`,
+  `up_addrenv_*`) and Variant B demand paging on the proven cache-attribute
+  fault primitive.
+
 ## Update Format
 
 For future entries, use:
