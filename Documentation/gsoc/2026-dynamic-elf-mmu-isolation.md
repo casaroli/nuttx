@@ -23,6 +23,25 @@ package-layer deliverable.
 > one. Where the text below says "PMS `*Prohibited`", read "cache-attribute
 > `*Prohibited`". See `2026-dynamic-elf-progress-log.md` (2026-07-24, Unit B).
 
+> **On-silicon correction #2 (2026-07-25, Unit G go/no-go — demand paging is NOT
+> viable).** A follow-up probe settled whether a *present* cache-mapped page can
+> be made to fault precisely and restartably (the demand-paging primitive).
+> Result: **no.** Invalidating a page's MMU entry (`SOC_MMU_INVALID`, bit 14)
+> makes an access **read 0 silently — it does not fault** (confirmed by reading
+> the MMU table: the "reads-0" in-window DBUS slots already carry invalid entries
+> yet return 0 with no exception, for both worlds). So a not-present page yields
+> no fault to trigger a fill. The only precise, restartable `*Prohibited` faults
+> are for addresses with **no cache region at all** (e.g. `0x0`, `0x8000_0000`),
+> which cannot be "filled" to become present. Net: **no in-window mechanism gives
+> a precise, restartable present-but-gated fault** — MMU-invalid is silent, PMS
+> is asynchronous. **Variant B demand paging and copy-on-write (fork) are not
+> achievable on this silicon.** What survives: real isolation (WORLD0/WORLD1 +
+> PMS), precise-fault detection, and guard-page / segfault-kill (deliver SIGSEGV,
+> terminate just the faulting task) — all implemented and validated. A
+> `BUILD_KERNEL` address environment is still possible but only with **static**
+> per-process memory (no lazy stack/heap growth, no demand fill). See
+> `2026-dynamic-elf-progress-log.md` (2026-07-25, Unit G).
+
 This is a **stretch / future-work** track. It sits well above the thin
 lifecycle-helper scope of `nxpkg` and should not block or expand the current
 package milestones. See `2026-dynamic-elf-pkg-mvp.md` and
