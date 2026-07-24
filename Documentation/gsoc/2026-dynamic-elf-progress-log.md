@@ -453,6 +453,49 @@ and final reporting.
   install/use now that the local executable success/failure slices are both
   covered.
 
+### 2026-07-24
+
+Start of the MMU/address-environment stretch track (see
+`2026-dynamic-elf-mmu-isolation.md`). Hardware: ESP32-S3-DevKitC-1 v1.1 with an
+ESP32-S3-WROOM-2 (N32R8V) module — 32 MB octal flash + 8 MB octal PSRAM.
+
+#### Completed
+
+- **Unit A — expose the ESP32-S3 MMU/WCL/PMS primitives as a callable arch
+  API.** Lifted the cache-MMU, World-Controller and PMS (memory-protection)
+  helpers out of the file-static scope of `esp32s3_userspace.c` into three new
+  reviewable modules — `esp32s3_mmu.{c,h}`, `esp32s3_wcl.{c,h}`,
+  `esp32s3_pms.{c,h}` — leaving the protected-mode layout *policy* in
+  `esp32s3_userspace.c`. Pure refactor, no behavior change. This is the
+  primitive layer the later `up_addrenv_*` select/remap work builds on.
+- **Brought BUILD_PROTECTED up on the WROOM-2 board.** Root-caused (with GDB
+  over the built-in USB-JTAG) a WROOM-2-specific early-boot crash: the protected
+  kernel linker `boards/xtensa/esp32s3/common/scripts/kernel-space.ld` placed
+  the octal-flash (OPI) init helpers in mapped flash, so calling them while the
+  flash mapping is reconfigured in `__start` faulted (illegal instruction).
+  Fixed by IRAM-residing those functions (mirrors the flat sections script).
+  WROOM-1 quad-flash configs never hit this, which is why `knsh` "worked" there.
+
+#### Evidence
+
+- `esp32s3-devkit:knsh` (retargeted to WROOM2N32R8V + octal flash + a
+  config-matched ESP-IDF second-stage bootloader) boots to an interactive
+  `nsh>`; `free` shows the separate `Kmem`/`Umem` kernel/user heaps (protected
+  isolation active) and `ostest` passes.
+- Unit A additionally validated by byte-identical on-silicon behavior against
+  the pristine (pre-refactor) build.
+
+#### Blockers or Risks
+
+- Protected mode on ESP32-S3 requires the LEGACY app format + a second-stage
+  bootloader; the config-matched bootloader needs an ESP-IDF build environment.
+
+#### Next
+
+- Unit B: prove the precise-fault → `RFE`-restart primitive on silicon (guard
+  page / stack-overflow demo) — the go/no-go gate for the address-environment
+  work — then the BUILD_KERNEL units.
+
 ## Update Format
 
 For future entries, use:
