@@ -34,6 +34,11 @@
 #include <nuttx/userspace.h>
 
 #include <arch/board/board_memorymap.h>
+#ifdef CONFIG_ESP32S3_PAGEFAULT_ABORT
+#include <signal.h>
+#include <arch/irq.h>
+#include <arch/xtensa/xtensa_corebits.h>
+#endif
 
 #include "chip.h"
 #include "xtensa.h"
@@ -49,6 +54,11 @@
 #include "hardware/esp32s3_soc.h"
 
 #include "soc/extmem_reg.h"
+
+#ifdef CONFIG_ESP32S3_PAGEFAULT_ABORT
+#include "sched/sched.h"
+#include "signal/signal.h"
+#endif
 
 #ifdef CONFIG_BUILD_PROTECTED
 
@@ -313,8 +323,85 @@ static void initialize_iram(void)
  *
  ****************************************************************************/
 
+#ifdef CONFIG_ESP32S3_PAGEFAULT_ABORT
+/****************************************************************************
+ * Name: pms_clear_violations
+ *
+ * Description:
+ *   Acknowledge and re-arm every PMS violation monitor.  The monitors raise
+ *   a level-triggered interrupt, so the latch must be cleared (pulse the CLR
+ *   bit) before returning from the ISR or the interrupt re-fires forever.
+ *
+ ****************************************************************************/
+
+static void IRAM_ATTR pms_clear_violations(void)
+{
+  /* IRAM0 / DRAM0 / PIF monitors: pulse VIOLATE_CLR (keeping VIOLATE_EN). */
+
+  modifyreg32(SENSITIVE_CORE_0_IRAM0_PMS_MONITOR_1_REG, 0,
+              SENSITIVE_CORE_0_IRAM0_PMS_MONITOR_VIOLATE_CLR_M);
+  modifyreg32(SENSITIVE_CORE_0_IRAM0_PMS_MONITOR_1_REG,
+              SENSITIVE_CORE_0_IRAM0_PMS_MONITOR_VIOLATE_CLR_M, 0);
+
+  modifyreg32(SENSITIVE_CORE_0_DRAM0_PMS_MONITOR_1_REG, 0,
+              SENSITIVE_CORE_0_DRAM0_PMS_MONITOR_VIOLATE_CLR_M);
+  modifyreg32(SENSITIVE_CORE_0_DRAM0_PMS_MONITOR_1_REG,
+              SENSITIVE_CORE_0_DRAM0_PMS_MONITOR_VIOLATE_CLR_M, 0);
+
+  modifyreg32(SENSITIVE_CORE_0_PIF_PMS_MONITOR_1_REG, 0,
+              SENSITIVE_CORE_0_PIF_PMS_MONITOR_VIOLATE_CLR_M);
+  modifyreg32(SENSITIVE_CORE_0_PIF_PMS_MONITOR_1_REG,
+              SENSITIVE_CORE_0_PIF_PMS_MONITOR_VIOLATE_CLR_M, 0);
+
+  /* Flash instruction/data cache reject monitors. */
+
+  modifyreg32(EXTMEM_CORE0_ACS_CACHE_INT_CLR_REG, 0,
+              EXTMEM_CORE0_IBUS_REJECT_INT_CLR_M |
+              EXTMEM_CORE0_DBUS_REJECT_INT_CLR_M);
+  modifyreg32(EXTMEM_CORE0_ACS_CACHE_INT_CLR_REG,
+              EXTMEM_CORE0_IBUS_REJECT_INT_CLR_M |
+              EXTMEM_CORE0_DBUS_REJECT_INT_CLR_M, 0);
+}
+#endif
+
 static int IRAM_ATTR pms_violation_isr(int cpuint, void *context, void *arg)
 {
+#ifdef CONFIG_ESP32S3_PAGEFAULT_ABORT
+  uint32_t *regs = (uint32_t *)context;
+
+  /* Acknowledge and re-arm the monitors first so the level-triggered
+   * interrupt does not immediately re-fire while we handle it.
+   */
+
+  pms_clear_violations();
+
+  /* An ESP32-S3 PMS permission violation is asynchronous (unlike the precise
+   * cache-attribute faults).  If the interruptee was an unprivileged (user)
+   * WORLD1 task -- its saved PS carries the User Mode bit -- terminate only
+   * that task with SIGSEGV instead of the whole system.  The IRQ dispatch
+   * return path applies the up_schedule_sigaction() redirect.
+   */
+
+  if (regs != NULL && (regs[REG_PS] & PS_UM) != 0)
+    {
+      struct tcb_s *tcb = this_task();
+      siginfo_t     info;
+
+      _alert("SIGSEGV (PMS) task %s: PC=%08x\n",
+             get_task_name(tcb), (unsigned)regs[REG_PC]);
+
+      info.si_signo           = SIGSEGV;
+      info.si_code            = SI_USER;
+      info.si_errno           = 0;
+      info.si_value.sival_ptr = NULL;
+
+      nxsig_tcbdispatch(tcb, &info, false);
+      return OK;
+    }
+#endif
+
+  /* Privileged (WORLD0) violation, or abort disabled: not survivable. */
+
   PANIC();
 
   return OK;
