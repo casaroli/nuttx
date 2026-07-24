@@ -496,6 +496,65 @@ ESP32-S3-WROOM-2 (N32R8V) module — 32 MB octal flash + 8 MB octal PSRAM.
   page / stack-overflow demo) — the go/no-go gate for the address-environment
   work — then the BUILD_KERNEL units.
 
+### 2026-07-24 — Unit B (recoverable-fault primitive)
+
+#### Completed
+
+- Added the recoverable-fault path (`CONFIG_ESP32S3_PAGEFAULT`, default off):
+  `xtensa_user()` (esp32s3_user.c) routes the precise Load/Store/InstrFetch
+  Prohibited causes (EXCCAUSE 28/29/20) to a new dispatcher
+  `esp32s3_pagefault_dispatch()` (esp32s3_pagefault.{c,h}); on "serviced" it
+  returns the register frame so the exception vector's `RFE` re-executes the
+  faulting instruction. Non-invasive when off (all three config combinations
+  build; `knsh` default is unchanged).
+- Added `apps/examples/pffault`, a WORLD1 user task that reads/writes an
+  arbitrary address, as the on-target fault-injection harness.
+- **Proved the go/no-go gate on silicon** and, in doing so, corrected a key
+  assumption: on the ESP32-S3, **PMS (World Controller) memory-protection
+  violations are asynchronous** (the level-triggered DRAM0/IRAM0 PMS-monitor
+  interrupt), **not** precise restartable exceptions. The precise, restartable
+  primitive the address-environment work needs comes instead from the
+  **cache-attribute** faults (EXCCAUSE 28/29/20). This re-sources demand
+  paging from PMS to the cache-MMU attribute layer, but the primitive itself
+  is proven.
+
+#### Evidence
+
+- Address sweep (`pffault`): a WORLD1 load of an out-of-cache-region address
+  (`0x0`, `0x4`, `0x80000000`) raises a **precise LoadProhibited (EXCCAUSE 28)
+  whose EXCVADDR tracks the accessed address exactly**; PMS-protected regions
+  instead take the async PMS-monitor path; in-cache-window unmapped pages read
+  0 without faulting.
+- RFE-restart proof (`CONFIG_ESP32S3_PAGEFAULT_SELFTEST`, `pffault r
+  0x80000000`): the dispatcher returns "serviced" without fixing the address,
+  and the console shows the **identical** faulting instruction re-executed
+  three times (`restart #1/#2/#3 ... PC=4211cd0f` unchanged) — RFE cleanly
+  restarts a faulted precise access — then steps past it and the task resumes;
+  `nsh` stays interactive afterward.
+- No regression: `esp32s3-devkit:knsh` (WROOM-2) with the feature enabled
+  boots to `nsh>` and `ostest` completes with `ostest_main: Exiting with
+  status 0` (0 assertion failures, 0 dispatcher faults during the run).
+- A genuine unhandled user fault (`pffault r 0x0`) is reported by the
+  dispatcher (`EXCCAUSE=28 EXCVADDR=00000000 task=pffault`) and then declined
+  to the existing panic path.
+
+#### Blockers or Risks
+
+- Per-task abort (terminate just the faulting WORLD1 task instead of a
+  whole-system panic) is not yet implemented; today an unhandled user fault
+  still panics. The async PMS-monitor ISR currently `PANIC()`s and its panic
+  path crashes in `up_saveusercontext` — both are follow-on work.
+- Demand paging (Unit G) must *create* the fault via the cache access-attribute
+  mechanism (in-window unmapped pages silently read 0), then service by
+  restoring the attribute + mapping a PSRAM page — the core physics are proven,
+  that specific mechanism is the remaining build.
+
+#### Next
+
+- Wire the corrected two-path design: async-PMS abort-task isolation, and the
+  cache-attribute recoverable path as the basis for `up_addrenv_*` (Units C–F)
+  and Variant B demand paging (Unit G).
+
 ## Update Format
 
 For future entries, use:
