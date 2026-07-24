@@ -41,6 +41,7 @@ endif
 
 ifeq ($(CONFIG_BUILD_PROTECTED),y)
 CHIP_CSRCS += esp32s3_userspace.c
+CHIP_CSRCS += esp32s3_mmu.c esp32s3_pms.c esp32s3_wcl.c
 endif
 
 ifeq ($(CONFIG_SMP),y)
