@@ -44,6 +44,10 @@ CHIP_CSRCS += esp32s3_userspace.c
 CHIP_CSRCS += esp32s3_mmu.c esp32s3_pms.c esp32s3_wcl.c
 endif
 
+ifeq ($(CONFIG_ESP32S3_PAGEFAULT),y)
+CHIP_CSRCS += esp32s3_pagefault.c
+endif
+
 ifeq ($(CONFIG_SMP),y)
 CHIP_CSRCS += esp32s3_cpuidlestack.c esp32s3_cpustart.c esp32s3_intercpu_interrupt.c
 endif
