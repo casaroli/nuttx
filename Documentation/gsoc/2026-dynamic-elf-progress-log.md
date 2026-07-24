@@ -594,6 +594,49 @@ ESP32-S3-WROOM-2 (N32R8V) module — 32 MB octal flash + 8 MB octal PSRAM.
   `up_addrenv_*`) and Variant B demand paging on the proven cache-attribute
   fault primitive.
 
+### 2026-07-25 — Unit G go/no-go: demand paging is not viable on ESP32-S3
+
+#### Completed
+
+- Answered the last open physics question for the address-environment arc:
+  can a *present* cache-mapped page be made to fault precisely and restartably
+  (the demand-paging primitive)? **No.**
+- A read-only probe of the flash MMU table showed that the in-window DBUS
+  addresses observed to "read 0" already carry **invalid** entries
+  (`SOC_MMU_INVALID`, 0x4000) and yet return 0 with **no exception** — for both
+  the kernel and user worlds. So a not-present page is read silently; there is
+  no fault to trigger a demand fill.
+- The only precise, restartable `*Prohibited` faults are for addresses outside
+  any cache region (e.g. `0x0`, `0x80000000`), which cannot be filled to become
+  present. Combined with the earlier finding that PMS gating is asynchronous,
+  **no in-window mechanism yields a precise, restartable present-but-gated
+  fault**. Variant B demand paging (Unit G) and COW/fork (Unit H) are therefore
+  **not achievable** on this silicon.
+
+#### Evidence
+
+- MMU-table probe (board late-init): `va=0x3c000000 -> valid`;
+  `0x3c800000 / 0x3d000000 / 0x3d800000 -> INVALID (0x4000)`, each reading 0
+  with no fault and a clean boot to `nsh`.
+- (An earlier probe that actively invalidated an entry with cache
+  suspend/resume + an exception-context MMU restore wedged the board into a
+  reboot loop; that was the unsafe cache manipulation / re-entrancy -- the
+  design note's flagged highest-risk area -- not the invalid access itself,
+  which is benign. That throwaway probe was reverted.)
+
+#### Blockers or Risks
+
+- Demand paging / COW are off the table. A `BUILD_KERNEL` address environment
+  remains possible but only with **static** per-process memory (no lazy
+  stack/heap growth, no demand fill), which bounds it to a few static sandboxes.
+
+#### Next
+
+- Revise the deliverable to: isolation + precise-fault detection + guard-page /
+  segfault-kill abort (done), plus optionally a static-memory `BUILD_KERNEL`
+  address environment (Units C-F, scoped to no demand paging). Units G/H are
+  documented as blocked.
+
 ## Update Format
 
 For future entries, use:
