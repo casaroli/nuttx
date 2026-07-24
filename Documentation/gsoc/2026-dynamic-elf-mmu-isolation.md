@@ -35,7 +35,13 @@ package-layer deliverable.
 > which cannot be "filled" to become present. Net: **no in-window mechanism gives
 > a precise, restartable present-but-gated fault** — MMU-invalid is silent, PMS
 > is asynchronous. **Variant B demand paging and copy-on-write (fork) are not
-> achievable on this silicon.** What survives: real isolation (WORLD0/WORLD1 +
+> achievable on this silicon.** (Copy-on-write was also probed directly: a WORLD1
+> store blocked by PMS was serviced from the async monitor interrupt by granting
+> access and returning without advancing PC, to try to re-run the store. It
+> cannot -- the interrupt arrives **~3 instructions past the store** (the CPU had
+> already executed the blocked store and the following instructions), so there is
+> no store left to retry and the blocked write is lost; `memw` does not help.)
+> What survives: real isolation (WORLD0/WORLD1 +
 > PMS), precise-fault detection, and guard-page / segfault-kill (deliver SIGSEGV,
 > terminate just the faulting task) — all implemented and validated. A
 > `BUILD_KERNEL` address environment is still possible but only with **static**
