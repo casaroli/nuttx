@@ -645,6 +645,51 @@ ESP32-S3-WROOM-2 (N32R8V) module — 32 MB octal flash + 8 MB octal PSRAM.
   address environment (Units C-F, scoped to no demand paging). Units G/H are
   documented as blocked.
 
+### 2026-07-25 — On-target loader validation on the octal-flash devkit
+
+#### Completed
+
+- Re-validated the dynamic-ELF loader (`elf`) and the shared-object loader
+  (`sotest`) on hardware, this time on the **octal-flash ESP32-S3 devkit**
+  (32MB Macronix octal flash `c2:8039` + 8MB octal PSRAM, a WROOM-2-class
+  module), not the XIAO used for the earlier loader runs.
+- Added two board configs that boot this octal module out of the box:
+  `esp32s3-devkit:elf_oct` and `esp32s3-devkit:sotest_oct`. Each is the stock
+  `elf` / `sotest` defconfig plus `CONFIG_ESP32S3_FLASH_MODE_OCT` and
+  `CONFIG_ESP32S3_SPI_FLASH_USE_32BIT_ADDRESS` (octal DTR sampling and the
+  32-bit-address flash driver follow from those). The stock DIO/4MB configs
+  do not boot on this module.
+
+#### Evidence
+
+- `nsh> elf`: all ROMFS payloads load, execute, and unload with the reported
+  memory returning to baseline after each — `errno`, `hello`, `signal`,
+  `struct` (every field PASS + function-pointer call), `hello++1/2/3`,
+  `mutex` (0 errors), `pthread`, `task`. Clean return to `nsh>`, no asserts.
+- `nsh> sotest`: `module_initialize` → `testfunc1/2/3` with their caller
+  responses → `module_uninitialize`, shell alive afterwards, no abort —
+  matching the markers in `2026-dynamic-elf-runtime-notes.md`.
+- Flash path: `CONFIG_ESPRESSIF_SIMPLE_BOOT` image (`elf2image
+  --ram-only-header`) written at `0x0` over the CP2102 UART bridge with
+  esptool auto-reset; no separate 2nd-stage bootloader.
+
+#### Blockers or Risks
+
+- Octal init is order-sensitive at the build level: after switching flash mode
+  in the config you must `make clean`, because incremental make does not
+  recompile the pre-cloned `esp-hal-3rdparty` component objects on a
+  `config.h` change. A stale `esp_flash_spi_init.o` keeps `octal_mode_en=0`
+  and asserts at `esp_flash_spi_init.c:657`.
+- The flash-SIZE symbol (`ESP32S3CUSTOM_FLASH_32M`) is only selectable under
+  `ARCH_CHIP_ESP32S3CUSTOM`, so the config keeps the 4MB size symbol;
+  `CONFIG_ESP32S3_FLASH_DETECT` sizes the chip at runtime and it boots anyway.
+
+#### Next
+
+- Optionally exercise `nxpkg` install/list end-to-end on this module (the
+  `elf_oct` image already bundles it) to extend loader validation into the
+  package layer on real octal hardware.
+
 ## Update Format
 
 For future entries, use:
