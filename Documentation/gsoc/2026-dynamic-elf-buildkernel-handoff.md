@@ -45,9 +45,28 @@ An `apps/bin/init` (NSH) comes out as `ET_EXEC` with `.text` at `0x42800000`
 PT_LOAD segments matching the two cache-MMU windows, and its 369 664-byte
 ROMFS image lands in the kernel's `.flash.rodata`.
 
-**NEXT — boot wiring and first on-target boot.** See "Remaining work"; the
-memory map below is still a first guess and the PSRAM/PMS boot path is not
-written yet.
+**★ IT BOOTS.** On 2026-07-25 the ESP32-S3 reached an interactive NSH under
+`CONFIG_BUILD_KERNEL`, with `/system/bin/init` running as a user ELF process
+in its own address environment out of PSRAM:
+
+```
+load_absmodule: Successfully loaded module /system/bin/init
+exec_module: Initialize the user heap (heapsize=1048576)
+
+NuttShell (NSH)
+nsh> uname -a
+NuttX 0.0.0 ... xtensa esp32s3-devkit
+nsh> free
+      total       used       free  ...  name
+     386080       9608     376472  ...  Kmem
+    4194304    1245184    2949120  ...  Page
+```
+
+`Kmem` is the internal DRAM kernel heap; `Page` is the PSRAM pool, with
+1 245 184 bytes (19 × 64 KB) held by init's text, data and heap.
+
+**NEXT — the kernel stack.** A *second* user process cannot be spawned yet;
+the cause is diagnosed exactly and is the first item under "Remaining work".
 
 ## Hardware / build environment
 
@@ -227,8 +246,48 @@ kconfig-tweak --enable  CONFIG_SYSTEM_NSH
 kconfig-tweak --set-str CONFIG_SYSTEM_NSH_PROGNAME "init"
 kconfig-tweak --enable  CONFIG_NSH_FILE_APPS
 
+# Real hardware: WROOM-2 octal flash + octal PSRAM, and a single self-
+# contained image.  ESP32S3_APP_FORMAT_LEGACY is only "default y if
+# BUILD_PROTECTED"; a kernel build is one image, so turning it off selects
+# SIMPLE_BOOT and the image flashes whole at 0x0 with no ESP-IDF bootloader.
+# Note this board wants STR sampling, not FLASH_SAMPLE_MODE_DTR, which
+# esp32s3_spiflash.c rejects outright for octal mode.
+
+kconfig-tweak --disable CONFIG_ARCH_CHIP_ESP32S3WROOM1N4
+kconfig-tweak --enable  CONFIG_ARCH_CHIP_ESP32S3WROOM2N32R8V
+kconfig-tweak --disable CONFIG_ESP32S3_FLASH_MODE_DIO
+kconfig-tweak --enable  CONFIG_ESP32S3_FLASH_MODE_OCT
+kconfig-tweak --enable  CONFIG_ESP32S3_SPI_FLASH_USE_32BIT_ADDRESS
+kconfig-tweak --disable CONFIG_ESP32S3_APP_FORMAT_LEGACY
+kconfig-tweak --enable  CONFIG_ESP32S3_SPIFLASH
+kconfig-tweak --enable  CONFIG_ESP32S3_SPIRAM
+kconfig-tweak --enable  CONFIG_ESP32S3_SPIRAM_MODE_OCT
+
+# The page pool's physical base is the PSRAM *offset* of its virtual base,
+# and PSRAM lands at 0x3c0a0000 on this image -- see below.
+
+kconfig-tweak --set-val CONFIG_ARCH_PGPOOL_PBASE 0x360000
+
+# The 2048-byte defaults are too small once NSH is a user process.
+
+kconfig-tweak --set-val CONFIG_INIT_STACKSIZE 8192
+kconfig-tweak --set-val CONFIG_POSIX_SPAWN_DEFAULT_STACKSIZE 8192
+kconfig-tweak --set-val CONFIG_ELF_STACKSIZE 8192
+
 make olddefconfig && make -j8
 ```
+
+Flash the whole image at 0x0 (kill OpenOCD first if it is attached, it holds
+the target halted):
+
+```sh
+esptool.py -c esp32s3 -p /dev/cu.usbserial-2140 -b 460800 \
+           write_flash 0x0 nuttx.bin
+```
+
+**Changing any of the flash/PSRAM options needs `make clean`.** The
+esp-hal-3rdparty objects do not depend on `sdkconfig.h`, so an incremental
+build silently keeps the old settings.
 
 `INIT_MOUNT_SOURCE` and `INIT_MOUNT_FSTYPE` default to `/dev/ram0` and
 `romfs`, which is what the board's romdisk registration provides.
@@ -267,9 +326,52 @@ its MMU paddr directly.
 
 ## Remaining work
 
-### Next unit — the memory map (the real remaining design question)
+### Next unit — the kernel stack (precisely diagnosed on target)
 
-Everything below hangs on this, and it is not a detail. The ESP32-S3 has
+Spawning a **second** user process crashes in `_window_overflow12`, called
+from `addrenv_select()` (`sched/addrenv/addrenv.c:355`), storing to
+`0xffffffd0` — a frame pointer of zero, minus the `s32e` offset.
+
+The cause is a design decision that turns out to be wrong. With
+`CONFIG_ARCH_KERNEL_STACK=n` the kernel runs on the **user** stack, and
+`addrenv_select()` reprograms the data-bus window part way through its own
+execution: the stack disappears from under the kernel's feet, and the next
+register-window spill writes into whatever the new process has there. A
+kernel build needs a stack that does not move when the address environment
+does.
+
+So: implement `up_addrenv_kstackalloc()` and `up_addrenv_kstackfree()`
+(mirror `riscv_addrenv_kstack.c`) and enable `CONFIG_ARCH_KERNEL_STACK`.
+Note it *defaults* to `CONFIG_LIBC_EXECFUNCS`, so it turns itself on — it
+was only forced off earlier because nothing implemented the allocator. The
+earlier "user stacks come from the process heap, kernel stack off" decision
+recorded in this document is superseded for that reason.
+
+### The memory map — measured, still worth tidying
+
+The map is no longer guesswork — it was read off the hardware over JTAG. The
+cache-MMU table base is `0x600c5000`, entry `i` at `+i*4`, each entry being
+`physical_page | 0x8000` (PSRAM) with `0x4000` marking it invalid. On the
+booting image:
+
+- PSRAM is mapped at **`0x3c0a0000`-`0x3c8a0000`**, i.e. entries **10-137**
+  (`mmu_valid_space()` picks the first entry after the flash mappings, which
+  end at index 9). Entry 10 reads `0x8000` — PSRAM page 0. So the page pool
+  at VA `0x3c400000` is PSRAM offset `0x360000`, which is what
+  `CONFIG_ARCH_PGPOOL_PBASE` must be.
+- User `.text` at IBUS `0x42800000` is entry **128**, which reads `0x8040`
+  (PSRAM page 64) after `up_addrenv_select()` — while its neighbour entry
+  129 still reads `0x8077`, PSRAM page 119, the kernel's own mapping.
+
+**That is the collision this section warned about, confirmed:** entry 128
+lies inside the kernel's PSRAM window, so mapping user text there destroys
+the kernel's view of PSRAM page 118. It is harmless only by luck — the pool
+(PSRAM `0x360000`-`0x760000`, pages 54-117) stops just short of it. The
+windows should still be moved to indices above 137, or the pool and the
+kernel window shrunk to make room, before anything else depends on this.
+
+The rest of this section is the reasoning that led there, kept because it
+explains why the layout has to be chosen deliberately. The ESP32-S3 has
 **one** 512-entry cache-MMU table **shared by both buses**: the entry index is
 `(vaddr & SOC_MMU_VADDR_MASK) >> 16` with `SOC_MMU_VADDR_MASK == 0x1FFFFFF`,
 and `ext_mem_defs.h` carries a `_Static_assert` that the IRAM0 and DRAM0
