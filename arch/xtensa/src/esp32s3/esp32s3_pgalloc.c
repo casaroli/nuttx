@@ -38,12 +38,57 @@
 #include "sched/sched.h"
 
 #include "esp32s3_addrenv.h"
+#include "esp32s3_mmu.h"
 
 #ifdef CONFIG_ESP32S3_SPIRAM
 #  include "esp32s3_spiram.h"
 #endif
 
 #ifdef CONFIG_MM_PGALLOC
+
+#if defined(CONFIG_ESP32S3_SPIRAM) && defined(CONFIG_ARCH_ADDRENV)
+
+/****************************************************************************
+ * Private Functions
+ ****************************************************************************/
+
+/****************************************************************************
+ * Name: check_window_clear
+ *
+ * Description:
+ *   Panic if one of the user cache-MMU windows overlaps the kernel's PSRAM
+ *   window, which they would otherwise do silently: the instruction and the
+ *   data bus share one entry per 64 KB, so mapping a user page into an entry
+ *   the kernel window covers takes away the kernel's view of the PSRAM page
+ *   underneath.  The comparison is by entry, since that is what actually
+ *   collides, and it belongs at run time because the kernel window starts
+ *   wherever the flash mappings end and so moves as the image grows.
+ *
+ * Input Parameters:
+ *   name   - The window's name, for the failure message.
+ *   vbase  - The window's virtual base address.
+ *   npages - The window's size in 64 KB pages.
+ *   kfirst - First cache-MMU entry of the kernel's PSRAM window.
+ *   klast  - Last cache-MMU entry of the kernel's PSRAM window.
+ *
+ ****************************************************************************/
+
+static void check_window_clear(FAR const char *name, uintptr_t vbase,
+                               uint32_t npages, uint32_t kfirst,
+                               uint32_t klast)
+{
+  uint32_t first = MMU_ENTRY_OF(vbase);
+  uint32_t last  = first + npages - 1;
+
+  if (first <= klast && last >= kfirst)
+    {
+      _err("ERROR: user %s window (MMU entries %" PRIu32 "-%" PRIu32 ") "
+           "overlaps the kernel PSRAM window (entries %" PRIu32 "-%" PRIu32
+           ")\n", name, first, last, kfirst, klast);
+      PANIC();
+    }
+}
+#endif
 
 /****************************************************************************
  * Public Functions
@@ -105,6 +150,45 @@ void up_allocate_pgheap(void **heap_start, size_t *heap_size)
                ramstart, ramend);
           PANIC();
         }
+
+      /* Lying inside the window is not enough: mm_pgalloc() hands out
+       * physical addresses starting at CONFIG_ARCH_PGPOOL_PBASE, and
+       * esp32s3_pgvaddr() translates those back by assuming PBASE is the
+       * physical address the window maps at CONFIG_ARCH_PGPOOL_VBASE.  Ask
+       * the cache MMU what it actually maps there rather than deriving it,
+       * because being off by a single page here is almost silent: every page
+       * is still wiped and reachable, just not the one that was allocated,
+       * so what shows up is one unwiped page per region -- the previous
+       * tenant's data, in a new process's own address space.
+       */
+
+        {
+          uint32_t poolpaddr;
+
+          if (!esp32s3_mmu_paddr(CONFIG_ARCH_PGPOOL_VBASE, &poolpaddr) ||
+              poolpaddr != (uint32_t)CONFIG_ARCH_PGPOOL_PBASE)
+            {
+              _err("ERROR: page pool vbase %08x maps physical %08" PRIx32
+                   ", but CONFIG_ARCH_PGPOOL_PBASE is %08x\n",
+                   CONFIG_ARCH_PGPOOL_VBASE, poolpaddr,
+                   CONFIG_ARCH_PGPOOL_PBASE);
+              PANIC();
+            }
+        }
+
+#ifdef CONFIG_ARCH_ADDRENV
+        {
+          uint32_t kfirst = MMU_ENTRY_OF(ramstart);
+          uint32_t klast  = MMU_ENTRY_OF(ramend - 1);
+
+          check_window_clear("text", ESP32S3_TEXT_VBASE,
+                             CONFIG_ARCH_TEXT_NPAGES, kfirst, klast);
+          check_window_clear("data", ESP32S3_DATA_VBASE,
+                             CONFIG_ARCH_DATA_NPAGES, kfirst, klast);
+          check_window_clear("heap", ESP32S3_HEAP_VBASE,
+                             CONFIG_ARCH_HEAP_NPAGES, kfirst, klast);
+        }
+#endif
     }
 #endif
 
