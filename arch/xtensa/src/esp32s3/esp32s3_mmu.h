@@ -204,4 +204,39 @@ bool esp32s3_mmu_paddr(uint32_t vaddr, uint32_t *paddr);
 
 void esp32s3_mmu_unmap(uint32_t vaddr, uint32_t npages);
 
+/****************************************************************************
+ * Name: esp32s3_mmu_scratch_map
+ *
+ * Description:
+ *   Point one 64 KB data-bus entry at a PSRAM page and make it usable, doing
+ *   the cache maintenance itself and confining it to that page.  This is the
+ *   kernel's way of reaching a page-pool page, which is otherwise not mapped
+ *   at all (see esp32s3_pgmap()).
+ *
+ *   The caller must already hold the scratch slot -- these entries are
+ *   reachable by the unprivileged world like any other external memory
+ *   address, so a mapping must not outlive the operation that needs it.
+ *
+ * Input Parameters:
+ *   vaddr - 64 KB-aligned scratch virtual address.
+ *   paddr - 64 KB-aligned PSRAM physical address.
+ *
+ ****************************************************************************/
+
+void esp32s3_mmu_scratch_map(uint32_t vaddr, uint32_t paddr);
+
+/****************************************************************************
+ * Name: esp32s3_mmu_scratch_unmap
+ *
+ * Description:
+ *   Take a scratch mapping away again: write back what was written through
+ *   it, invalidate the entry, and drop the page's cache lines.
+ *
+ * Input Parameters:
+ *   vaddr - The scratch virtual address returned when it was mapped.
+ *
+ ****************************************************************************/
+
+void esp32s3_mmu_scratch_unmap(uint32_t vaddr);
+
 #endif /* __ARCH_XTENSA_SRC_ESP32S3_ESP32S3_MMU_H */
