@@ -970,6 +970,78 @@ the kernel stack bounds.
 
 Unchanged: the PMS permissions.
 
+### 2026-07-25 — The kernel/user boundary is enforced
+
+#### Completed
+
+`568f377c15` — the permission control programmed for a kernel build.  The
+unprivileged world is left with exactly one thing in internal memory, the
+WORLD1 vector table, execute-only; the rest of instruction RAM, all of data
+RAM, both cache-backed RAMs, cached flash and every peripheral are denied.  A
+process needs nothing more: its text, data, heap and stacks are in PSRAM
+behind the cache MMU.
+
+Two changes were needed to make that expressible, and the second is the one
+that mattered:
+
+- The WORLD1 vector table moved to the end of the kernel's IRAM.  It has to
+  be in Internal SRAM1, since the permission control divides SRAM0 into two
+  16 KB blocks and can say nothing finer; a table there would have dragged
+  the kernel's own vectors and the start of its IRAM code into whatever the
+  table was granted.  SRAM1 is split at 256-byte granularity.
+- **The world switch was never compiled into a kernel build.**  `ESP32S3_WCL`
+  selected `XTENSA_HAVE_GENERAL_EXCEPTION_HOOKS` only `if BUILD_PROTECTED`,
+  and those hooks are what read the interruptee's world on the way into an
+  exception and restore it on the way out.  Without them `set_next_world()`
+  never runs and every task goes on executing in WORLD0 whatever
+  `xtensa_lowerprivilege()` writes into its context.
+
+`CONFIG_ESP32S3_PAGEFAULT` is no longer confined to BUILD_PROTECTED, so a
+kernel build gets the per-task abort, and `esp32s3-devkit:kernel_oct` now
+enables it along with `examples/pffault`.
+
+#### Evidence
+
+On the WROOM-2, each of these kills only the offending task and leaves the
+shell running:
+
+```
+pffault r 0x3fc90954   kernel data           SIGSEGV (PMS) task pffault
+pffault w 0x3fc90954   kernel data           SIGSEGV
+pffault r 0x40374000   kernel vectors        SIGSEGV
+pffault r 0x4037dc00   the WORLD1 table      SIGSEGV   (execute-only)
+pffault r 0x600d0000   the World Controller  SIGSEGV
+```
+
+Before the change every one of them returned the real contents -- the read of
+0x3fc90954 gave `3fc90954`, which is what that word holds.  After five kills
+`ps` shows only Idle, lpwork and init, and `Kmem` and the page pool are at
+their baselines.  `ostest` still reaches "Exiting with status 0" and
+`getprime` still runs, both with the permissions enforced.
+`esp32s3-devkit:knsh` and `esp32s3-devkit:elf_oct` build clean.
+
+#### Blockers or Risks
+
+Worth recording how the missing world switch presented, because it is the
+shape of failure to expect in this area: the permission registers were
+programmed correctly, the World Controller registers read back correctly over
+JTAG, the system booted and ran -- and a user task could still read kernel
+memory, because nothing had ever entered WORLD1.  What settled it was printing
+the world the hardware recorded for the interruptee (`REG_INT_CTX`) on a
+system call made from user text.  It read 0.
+
+**Processes are still not isolated from each other.**  Every user page comes
+from one pool the kernel keeps mapped at 0x3c0a0000, and the external-memory
+permissions are indexed by physical address, so one process can reach
+another's pages through the kernel's own PSRAM window.  That needs the
+deferred window-invalidation item.
+
+#### Next
+
+Invalidate the unused window entries in `up_addrenv_select()`, which is both
+the remaining isolation gap and the map cleanup already on the list.  Then
+eager `fork()`.
+
 ## Update Format
 
 For future entries, use:
