@@ -32,6 +32,7 @@
 
 #include <arch/xtensa/xtensa_specregs.h>
 #include <nuttx/arch.h>
+#include <nuttx/addrenv.h>
 #include <sys/syscall.h>
 
 #include "sched/sched.h"
@@ -275,7 +276,11 @@ int xtensa_swint(int irq, void *context, void *arg)
            * unprivileged mode.
            */
 
+#if defined(CONFIG_BUILD_PROTECTED)
           regs[REG_PC]        = (uintptr_t)USERSPACE->signal_handler;
+#else
+          regs[REG_PC]        = (uintptr_t)ARCH_DATA_RESERVE->ar_sigtramp;
+#endif
 
           xtensa_lowerprivilege(regs);        /* User mode */
 
