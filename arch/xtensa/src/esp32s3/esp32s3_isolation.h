@@ -1,5 +1,5 @@
 /****************************************************************************
- * arch/xtensa/src/esp32s3/esp32s3_userspace.h
+ * arch/xtensa/src/esp32s3/esp32s3_isolation.h
  *
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements.  See the NOTICE file distributed with
@@ -18,8 +18,8 @@
  *
  ****************************************************************************/
 
-#ifndef __ARCH_XTENSA_SRC_ESP32S3_ESP32S3_USERSPACE_H
-#define __ARCH_XTENSA_SRC_ESP32S3_ESP32S3_USERSPACE_H
+#ifndef __ARCH_XTENSA_SRC_ESP32S3_ESP32S3_ISOLATION_H
+#define __ARCH_XTENSA_SRC_ESP32S3_ESP32S3_ISOLATION_H
 
 /****************************************************************************
  * Included Files
@@ -31,19 +31,44 @@
  * Public Functions Prototypes
  ****************************************************************************/
 
+#ifndef CONFIG_BUILD_FLAT
+
 /****************************************************************************
- * Name: esp32s3_userspace
+ * Name: esp32s3_isolation_revoke_peripherals
  *
  * Description:
- *   For the case of the separate user-/kernel-space build, perform whatever
- *   platform specific initialization of the user memory is required.
- *   Normally this just means initializing the user space .data and .bss
- *   segments.
+ *   Revoke the unprivileged world's access to every peripheral.  A user
+ *   task reaches a peripheral only through a system call, so WORLD1 has no
+ *   business addressing one directly.
+ *
+ * Input Parameters:
+ *   None.
+ *
+ * Returned Value:
+ *   None.
  *
  ****************************************************************************/
 
-#ifdef CONFIG_BUILD_PROTECTED
-void esp32s3_userspace(void);
-#endif
+void esp32s3_isolation_revoke_peripherals(void);
 
-#endif /* __ARCH_XTENSA_SRC_ESP32S3_ESP32S3_USERSPACE_H */
+/****************************************************************************
+ * Name: esp32s3_pmsirqinitialize
+ *
+ * Description:
+ *   Initialize interrupt handler for the PMS violation ISR.
+ *
+ * Input Parameters:
+ *   None.
+ *
+ * Returned Value:
+ *   None.
+ *
+ ****************************************************************************/
+
+void esp32s3_pmsirqinitialize(void);
+
+#else
+#  define esp32s3_pmsirqinitialize()
+#endif /* !CONFIG_BUILD_FLAT */
+
+#endif /* __ARCH_XTENSA_SRC_ESP32S3_ESP32S3_ISOLATION_H */
