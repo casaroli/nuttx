@@ -81,8 +81,8 @@ erased PSRAM to an invalid entry. See §7.2.
 1. A violation by the kernel itself is still a whole-system panic, by
    design: only a WORLD1 violation is survivable, and it is the interrupted
    task's saved PS that tells the two apart.
-2. Nothing else known. §7.3 (eager `fork()`) is the next unit, and it is a
-   new capability rather than a repair.
+2. Nothing else known.  §7.5 lists the candidates for what to do next; none
+   of them is a repair.
 
 ### Scope reminder: what the silicon already ruled out
 
@@ -102,9 +102,12 @@ number of long-lived, statically sized isolated processes.
 - Toolchain, kconfig shims and esptool live under `<workspace>/.tools/`;
   `source ../.tools/env.sh` from `nuttx/`. `genromfs` was built from source
   into `.tools/venv/bin` (no Homebrew formula).
-- Serial: **`/dev/cu.usbserial-2140`** is flash + console (115200, CP2102
-  bridge, esptool auto-reset works). `/dev/cu.usbmodem*` is the native
-  USB-JTAG used by OpenOCD — different port, no conflict.
+- Serial: the CP2102 bridge is flash + console (115200, esptool auto-reset
+  works); `/dev/cu.usbmodem*` is the native USB-JTAG used by OpenOCD —
+  different port, no conflict.  **The device name changes with the USB port
+  it is plugged into** — it has been `/dev/cu.usbserial-2140` and
+  `/dev/cu.usbserial-1140`; check `ls /dev/cu.*` rather than assuming.
+  `.tools/console.py` takes `NUTTX_CONSOLE_PORT` to override its default.
 - Debugger (both present, outside the repo):
   - `~/.espressif/tools/openocd-esp32/v0.11.0-esp32-20221026/openocd-esp32/bin/openocd`
   - `~/.espressif/tools/xtensa-esp-elf-gdb/12.1_20221002/xtensa-esp-elf-gdb/bin/xtensa-esp32s3-elf-gdb`
@@ -237,6 +240,7 @@ Newest first, on `gsoc/dynamic-elf-baseline`:
 
 | commit | what |
 |---|---|
+| `4c260f497f` | **eager `fork()`** — a child gets its own memory (§7.3), and `vfork()` split off (§7.4) |
 | `710c168cd6` | **`binfmt/elf`: `nx_priority == 0` means "default"** — an upstream bug, see below |
 | `21fc83d861` | kernel_oct stack sizes, after upstream moved them into the ELF |
 | `c63c939817` | **the page pool is no longer mapped** — processes are isolated from each other (§7.2) |
@@ -443,6 +447,16 @@ read can also return zero, so reading zero proves nothing either way.  For
 the same reason, run something like `getprime` first when checking the wipe:
 against a freshly booted board a stale page may happen to be zero anyway.
 
+`examples/forktest` is the `fork()` test and is in the board configuration:
+
+```sh
+nsh> /system/bin/forktest      # -> forktest: PASS
+```
+
+It checks the child's return value and pid, that a six-frame-deep spilled
+register chain survives the copy (`sum=105`), and — the part that matters —
+that a write by the child is *not* visible to the parent.
+
 The first two are the weakest tests in this document and must not be trusted
 alone: an invalidated entry reads 0 without faulting, so they cannot tell
 "unmapped" from "denied" from "mapped to a zeroed page".  Confirm them over
@@ -619,33 +633,120 @@ the CPU-visible mapping altogether and make `sched_lock()` unnecessary.  It
 needs a GDMA path and its own cache-coherency story, and `fork()`'s page copy
 would want it too — worth revisiting when §7.3 lands rather than before.
 
-### 7.3 Eager `fork()` — the next unit
+### 7.3 Eager `fork()` — done
 
-Processes are isolated, so this is now unblocked and is the top of the list.
-`up_addrenv_create()` for the child sized to the parent's regions, copy each
-parent page into the child's, set the child's return frame (0 in the child,
-the pid in the parent). No COW, no fault handling. Costs a full copy per fork
-and has no lazy growth — acceptable for the static-sandbox target.
+`4c260f497f`.  `fork()` means what POSIX says on this port: the child gets
+its own copy of the parent's memory, at the same virtual addresses.
+Measured on the WROOM-2 with `examples/forktest`, which forks from six
+frames deep so several register windows are live and spilled:
 
-The copy is the part §7.2 shaped. It is *not* `up_addrenv_page_vaddr()` any
-more — that now returns 0 — but a pair of scratch mappings:
-
-```c
-sched_lock();
-dst = esp32s3_pgmap(childpage);
-src = esp32s3_pgmap(parentpage);
-memcpy((void *)dst, (void *)src, MM_PGSIZE);
-esp32s3_pgunmap(src);
-esp32s3_pgunmap(dst);
-sched_unlock();
+```
+nsh> /system/bin/forktest
+forktest: parent pid=4, forking from 6 frames deep
+forktest: parent fork() returned child pid=5, sum=105
+forktest: child  pid=5, fork() returned 0, sum=105, inherited "parent"
+forktest: child  wrote "child" to its own stack copy
+forktest: parent reaped child, exit status 42 (expected 42)
+forktest: parent stack still says "parent" (expected "parent")
+forktest: PASS
 ```
 
-which is why `CONFIG_ARCH_KMAP_NPAGES` is 2 and `esp32s3_addrenv.h` errors out
-below that. Both slots must be held across one `sched_lock()` region; taking
-them under separate locks would leave a page exposed between the two. If the
-per-page `sched_lock()` turns out to hurt — a full `fork()` is a copy of every
-page of a process, not the 26 of a fresh `up_addrenv_create()` — the DMA route
-at the end of §7.2 is the way out, not a longer lock.
+`sum=105` from the child is the frame chain surviving the copy; the last
+line is the isolation — the child's write did not reach the parent.
+
+**Same virtual addresses is the whole trick, not a detail.**  A stack is
+full of pointers into itself, and on the windowed ABI every frame's base
+save area holds an absolute `a1`.  They stay correct only because the copy
+is addressed identically.  A *relocated* copy — which sharing an address
+environment forces — cannot work here at all: the child's first `retw`
+underflow reloads a stack pointer into the parent's stack and runs on the
+parent's live frames from then on.  That is very likely why Xtensa never
+selected `ARCH_HAVE_FORK`.
+
+The copy itself is the pair of scratch slots §7.2 exists for, both held
+across one `sched_lock()` region so a page is never exposed between them
+(`copy_region()` in `esp32s3_addrenv.c`).
+
+What it cost on the generic side, kept as small as it can be:
+
+| | |
+|---|---|
+| `ARCH_HAVE_ADDRENV_FORK` | the architecture can duplicate an address environment, so it can provide `fork()`.  Selects `ARCH_HAVE_FORK` |
+| `addrenv_fork()` | allocate the child an environment and let the architecture fill it, beside `addrenv_join()` |
+| `up_addrenv_fork()` | the architecture hook.  **Not** `up_addrenv_clone()`, which copies the *descriptor* so a group's threads share one environment |
+| `nxtask_setup_fork(retaddr, share, usp)` | which semantics the caller wants, and the caller's stack pointer |
+
+Every other architecture passes `(true, 0)` and reaches the unchanged path.
+The new branches compile out without `ARCH_HAVE_ADDRENV_FORK` or
+`ARCH_HAVE_VFORK`, which only `kernel_oct` selects — `elf_oct`,
+`sotest_oct` and `knsh` report no fork and no vfork, exactly as before.
+
+**Three bugs found on silicon, all one shape:** kernel code writing to the
+child's stack, which only bites once that stack is at the parent's address.
+Worth knowing, because anything else that touches a child's stack will hit
+it too.
+
+- `up_initial_state()` laid the register frame at the top of the user stack
+  and memset it, destroying the parent's outermost frame.  It now uses the
+  thread's kernel stack when there is one — where that frame belongs anyway,
+  since the user should not be able to scribble on the register set it is
+  about to be started with.
+- `group_allocate()` and `env_dup()` allocate out of whichever heap is
+  instantiated — the parent's — so the child carried pointers to blocks its
+  own heap never had and corrupted its free list on exit.  The child's
+  environment is now current for its whole setup (`addrenv_select()`, the
+  idiom `binfmt_execmodule.c` already uses), which works because everything
+  the setup reads from the parent is legible under it, at the same address,
+  being a copy.
+- `tls_dup_info()` and `nxtask_setup_stackargs()` rebuilt what the copy
+  already held, carving a second TLS frame off a stack that has one and
+  writing the argument vector over the parent's outermost frame.  Both are
+  skipped when the child inherited the stack; only `tl_task` and `tl_tid`
+  are corrected, or the child reports the parent's pid.
+
+### 7.4 `vfork()`, and why it had to be separated here
+
+With `fork()` copying, `fork()` and `vfork()` can no longer be the same
+call — and in NuttX they are: both are wrappers around one `up_fork()`,
+there is no `SYS_vfork`, and the shared implementation *shares* memory.  So
+implementing real `fork()` broke `ostest`'s `vfork` test, which is correct
+and tests exactly the sharing.
+
+This port therefore has `up_vfork()`/`SYS_vfork`, selected only by
+`kernel_oct`, and the parent is suspended **in the kernel** —
+`nxtask_start_vfork()`, released by `nxtask_vfork_release()` from `_exit()`
+and from `exec()` — not by a `waitpid()` in libc after `up_fork()` has
+already returned.  That matters: a `vfork()` child borrows the parent's
+stack outright, so the parent must not execute a single instruction while
+it lives.  Suspending in libc is too late — the parent returns through
+several frames first, onto stack the child is already using.
+
+The general fix belongs upstream and someone else is carrying it.  The
+argument, with the code citations and the history (NuttX's `fork()` is
+literally its old `vfork()`, renamed in `c33d1c9c97`), is written up in
+`<workspace>/fork-vfork-semantics-issue.md`.  **Do not extend the local
+change to other architectures** — that was tried and reverted; it is a
+large, untestable diff and it is not this port's job.
+
+### 7.5 What is next
+
+Nothing in the port is known broken.  Candidates, roughly in order:
+
+- **Broader on-target validation and failure injection.**  `fork()` from a
+  pthread, `fork()` under page-pool pressure (the pool is 64 pages; a fork
+  of a 20-page process needs 20 more), repeated fork/exit cycles against the
+  `free` baseline.
+- **The DMA route for page copy and wipe** (end of §7.2).  It would remove
+  the CPU-visible scratch mapping entirely, and with it the `sched_lock()`,
+  and it is what a full-image `fork()` copy would want.
+- **Upstreaming.**  Several commits stand alone as bug fixes — the `ARCHLIB`
+  IRAM placement, `up_allocate_kheap()` missing its `BUILD_KERNEL` branch,
+  the missing `sig_trampoline` in Xtensa's `crt0`, `addrenv_switch()` never
+  being called on a voluntary context switch.  `binfmt/elf`'s `nx_priority`
+  fix is already out as apache/nuttx#19537.
+- **A flat-build `vfork()` for Xtensa**, if wanted: it needs an assembly
+  entry that spills the windows *and* captures `WINDOWBASE`/`WINDOWSTART`,
+  which `up_saveusercontext()` does not do.  Not required by anything here.
 
 ---
 
