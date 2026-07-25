@@ -103,6 +103,24 @@ int xtensa_swint(int irq, void *context, void *arg)
       case SYS_restore_context:
       case SYS_switch_context:
         {
+#ifdef CONFIG_ARCH_ADDRENV
+          /* Close down the outgoing task's address environment and
+           * instantiate the incoming one.  up_switch_context() is a
+           * SYS_switch_context call on this architecture, so this is the
+           * path every *voluntary* context switch takes -- without it a task
+           * resumed here keeps running against whatever address environment
+           * happened to be resident, which on the ESP32-S3 means the
+           * cache-MMU windows still point at another process's pages.
+           *
+           * addrenv_switch() may change this_task(), because dropping an
+           * address environment can post to the high-priority work queue, so
+           * re-read the TCB afterwards -- as arm_syscall.c does.
+           */
+
+          addrenv_switch(tcb);
+          tcb = this_task();
+#endif
+
           restore_critical_section(tcb, this_cpu());
 #ifdef CONFIG_DEBUG_SYSCALL_INFO
           svcinfo("SYSCALL Return: Context switch!\n");
