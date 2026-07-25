@@ -41,6 +41,7 @@
 
 #include "esp32s3_addrenv.h"
 #include "esp32s3_mmu.h"
+#include "esp32s3_spiram.h"
 
 #ifdef CONFIG_ARCH_ADDRENV
 
@@ -405,6 +406,31 @@ int up_addrenv_select(const arch_addrenv_t *addrenv)
 }
 
 /****************************************************************************
+ * Name: esp32s3_addrenv_coherent
+ *
+ * Description:
+ *   Make everything written through the data bus visible to instruction
+ *   fetch: push the data cache out to PSRAM, then drop the instruction cache
+ *   so the next fetch reloads from it.
+ *
+ *   Both halves are needed.  The write-back is needed because text arrives
+ *   through the data side; the invalidate is needed because the cache-MMU is
+ *   one global table, so an entry now pointing at a process's page may still
+ *   have instruction-cache lines belonging to whatever it mapped before.
+ *
+ ****************************************************************************/
+
+static void esp32s3_addrenv_coherent(void)
+{
+  irqstate_t flags = enter_critical_section();
+
+  esp_spiram_writeback_cache();
+  esp32s3_icache_invalidate_all();
+
+  leave_critical_section(flags);
+}
+
+/****************************************************************************
  * Name: esp32s3_addrenv_mapnew
  *
  * Description:
@@ -449,14 +475,26 @@ void esp32s3_addrenv_mapnew(const arch_addrenv_t *addrenv, uintptr_t vaddr,
  *
  * Description:
  *   Flush D-Cache and invalidate I-Cache in preparation for a change in
- *   address environments.  The cache maintenance is performed by
- *   up_addrenv_select() itself on the ESP32-S3, so nothing is needed here.
+ *   address environments.
+ *
+ *   This matters more here than the name suggests, because it is the point
+ *   at which a freshly loaded program becomes executable.  The ELF loader
+ *   writes .text as *data*, so it lands in the data cache; instructions are
+ *   fetched through the separate instruction cache.  Without a writeback the
+ *   PSRAM pages still hold whatever was there before, and the new process
+ *   runs a mixture of its own code and stale bytes -- which shows up as an
+ *   illegal instruction somewhere in the middle of a function, not at its
+ *   entry point.  up_addrenv_select() cannot cover this: it skips all cache
+ *   maintenance when the environment it is handed is already resident, which
+ *   is exactly the case on the way out of the loader.
  *
  ****************************************************************************/
 
 int up_addrenv_coherent(const arch_addrenv_t *addrenv)
 {
   DEBUGASSERT(addrenv);
+
+  esp32s3_addrenv_coherent();
   return OK;
 }
 
@@ -488,6 +526,22 @@ int up_addrenv_mprot(arch_addrenv_t *addrenv, uintptr_t addr, size_t len,
   UNUSED(len);
   UNUSED(prot);
 
+  /* The permission change cannot be honoured, but the call still marks the
+   * two moments that matter for cache state: the loader asks for write
+   * access before it copies a program in, and takes it away again once the
+   * program is complete.  Make both a synchronisation point.
+   *
+   * This is what makes a freshly loaded program executable.  Text is written
+   * as data through the data-bus alias of the same cache-MMU entry, so it
+   * sits in the data cache, while instructions are fetched through the
+   * separate instruction cache -- which may still hold lines from whatever
+   * that entry mapped before, since one global table is shared by every
+   * process and by the kernel's own PSRAM window.  Those stale lines read
+   * back as zeroes, so without this the process runs some of its own code
+   * and then executes a hole.
+   */
+
+  esp32s3_addrenv_coherent();
   return OK;
 }
 
