@@ -106,7 +106,7 @@
 #  define ESP_NCPUS                     1
 #endif
 
-#if defined(CONFIG_ARCH_CHIP_ESP32S3) && defined(CONFIG_BUILD_PROTECTED)
+#if defined(CONFIG_ARCH_CHIP_ESP32S3) && !defined(CONFIG_BUILD_FLAT)
 #  define esp_pmsirqinitialize() esp32s3_pmsirqinitialize()
 #else
 #  define esp_pmsirqinitialize()
