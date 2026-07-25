@@ -241,15 +241,19 @@ unchanged**; `esp32s3-devkit:elf_oct` (flat, silicon-validated) and
 **Not committed:** `boards/xtensa/esp32s3/esp32s3-devkit/src/romfs_boot.c` is
 a generated artifact and is deliberately untracked.
 
-**Also not committed yet** — the §7.2 window work, sitting in the working
-tree and validated on silicon (see the 2026-07-25 window-cleanup entry in the
-progress log). It is three separable units:
+`90103ca1aa` is the §7.2 window cleanup, landed as one commit as a checkpoint
+before the page-pool rework (§7.2) rather than split, so **revert it whole if
+that rework goes wrong**. It carries three independent changes, which is how
+to read it and how to split it if it goes upstream:
 
 | files | what |
 |---|---|
 | `esp32s3_mmu.{c,h}`, `esp32s3_pgalloc.c`, `kernel_oct/defconfig` | `PBASE` corrected to `0x350000`, `esp32s3_mmu_paddr()`, and the boot check that catches the next drift |
 | `esp32s3_mmu.{c,h}`, `esp32s3_addrenv.c` | `esp32s3_mmu_unmap()` and the unused-entry invalidation in `up_addrenv_select()` |
 | `kernel_oct/defconfig`, `scripts/gnu-elf.ld`, `esp32s3_pgalloc.c` | text window entry 128 → 192, plus the overlap check |
+
+Note the first of those is a **data-leak fix, not hygiene** — reverting the
+commit to unblock something else reinstates one unwiped page per region.
 
 ---
 
