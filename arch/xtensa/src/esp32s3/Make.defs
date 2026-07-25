@@ -50,6 +50,10 @@ ifneq ($(CONFIG_BUILD_FLAT),y)
 CHIP_CSRCS += esp32s3_isolation.c
 endif
 
+ifeq ($(CONFIG_BUILD_KERNEL),y)
+CHIP_ASRCS += esp32s3_world1_vectors.S
+endif
+
 # The MMU/PMS/WCL primitives back both the protected user split and the
 # BUILD_KERNEL address-environment remap.
 
