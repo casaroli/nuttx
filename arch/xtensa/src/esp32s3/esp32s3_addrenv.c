@@ -461,6 +461,37 @@ int up_addrenv_coherent(const arch_addrenv_t *addrenv)
 }
 
 /****************************************************************************
+ * Name: up_addrenv_mprot
+ *
+ * Description:
+ *   Modify access rights to an address range.  The ELF loader uses this to
+ *   make .text writable while it copies the program in, and read-only again
+ *   afterwards.
+ *
+ *   The ESP32-S3 cannot honour that.  A cache-MMU entry carries only a valid
+ *   bit, a memory type and a physical page number -- there are no per-page
+ *   permission bits -- and the coarse alternatives cannot express it either:
+ *   the PMS areas gate a whole window per world rather than a page, and they
+ *   report violations asynchronously.  A mapped user page is therefore
+ *   always readable and writable by its owner, so a process can write to its
+ *   own .text.  This does not weaken isolation between groups, which comes
+ *   from the window remap in up_addrenv_select(), and the request is
+ *   accepted so that the loader can proceed.
+ *
+ ****************************************************************************/
+
+int up_addrenv_mprot(arch_addrenv_t *addrenv, uintptr_t addr, size_t len,
+                     int prot)
+{
+  UNUSED(addrenv);
+  UNUSED(addr);
+  UNUSED(len);
+  UNUSED(prot);
+
+  return OK;
+}
+
+/****************************************************************************
  * Name: up_addrenv_clone
  *
  * Description:
