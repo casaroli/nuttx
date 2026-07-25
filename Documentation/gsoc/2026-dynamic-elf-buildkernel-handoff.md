@@ -12,8 +12,9 @@ Branch: `gsoc/dynamic-elf-baseline` (both `nuttx/` and `apps/`).
 
 ## 1. Where this stands
 
-**`CONFIG_BUILD_KERNEL` boots to an interactive NSH on the ESP32-S3, and user
-programs run from the shell.** As of 2026-07-25, on the WROOM-2 board:
+**`CONFIG_BUILD_KERNEL` boots to an interactive NSH on the ESP32-S3, user
+programs run from the shell, and the kernel is protected from them.** As of
+2026-07-25, on the WROOM-2 board:
 
 ```
 load_absmodule: Successfully loaded module /system/bin/init
@@ -27,11 +28,15 @@ nsh> free
      386080       9608     376472  ...  Kmem     <- internal DRAM kernel heap
     4194304    1245184    2949120  ...  Page     <- PSRAM page pool
 nsh> ls /system/bin
- dd  getprime  init  ostest  sh
+ dd  getprime  init  ostest  pffault  sh
 nsh> /system/bin/getprime
 thread #0 finished, found 1230 primes, last one was 9973
 Done
 /system/bin/getprime took 1200 msec
+nsh> pffault r 0x3fc90954              <- read the kernel's data
+pffault: user-space read of kernel addr 0x3fc90954 ...
+pms_violation_isr: SIGSEGV (PMS) task pffault: PC=42800164
+nsh>                                   <- only pffault died
 ```
 
 `/system/bin/init` is a real user ELF process with its own address
@@ -42,18 +47,21 @@ Programs can be run repeatedly from the shell; `ps` shows no zombies, and the
 page pool returns to its 1245184-byte baseline after each run once the
 deferred free has drained.
 
+The kernel/user boundary is real and measured (§7.1): a user process reaches
+neither the kernel's data nor its code, its vectors or a peripheral, and an
+attempt kills only that process.  `ostest` runs to `Exiting with status 0`,
+including the signal handler test.
+
 ### What is broken
 
 1. **Processes are not isolated from each other.** The kernel/user boundary
    is enforced (§7.1), but every user page comes from one pool the kernel
    keeps mapped, and the external-memory permissions are indexed by physical
    address, so one process can still reach another's pages through the
-   kernel's own PSRAM window. That needs the deferred window-invalidation
-   item in §7.2.
-2. Smaller items in §7.2.
-
-`ostest` runs to `Exiting with status 0`, including the signal handler test
-— see the sixth on-target bug in §8.
+   kernel's own PSRAM window. §7.2 is that work, and it is the next unit.
+2. A violation by the kernel itself is still a whole-system panic, by
+   design: only a WORLD1 violation is survivable, and it is the interrupted
+   task's saved PS that tells the two apart.
 
 ### Scope reminder: what the silicon already ruled out
 
@@ -281,6 +289,13 @@ cd ../nuttx && make -j8
 Check it took: `xtensa-esp32s3-elf-nm nuttx | grep romfs_img` must show a
 **strong `D`** symbol, and `.flash.rodata` should grow by the image size.
 
+`apps/bin` is where the user programs land, and it does not survive a clean;
+`make import` in `apps/` rebuilds it, which is also how to get symbols back
+for `addr2line` on a user-space address.  The whole sequence has to be re-run
+whenever a program is added or its configuration changes -- turning on
+`EXAMPLES_PFFAULT`, for instance -- since the ROMFS is generated from
+`apps/bin` and linked into the kernel.
+
 ### 6.3 Flash and console
 
 ```sh
@@ -288,9 +303,12 @@ esptool.py -c esp32s3 -p /dev/cu.usbserial-2140 -b 460800 \
            write_flash 0x0 nuttx.bin
 ```
 
-A console harness lives in the session scratchpad (`console.py`: pyserial,
-DTR low + RTS pulse = normal boot, then feeds commands). It is trivial to
-rewrite: open at 115200, `dtr=False`, pulse `rts`, read.
+A console harness is trivial to write and worth having, since the board has
+to be reset to be driven: open `/dev/cu.usbserial-2140` at 115200 with
+pyserial, `dtr = False` (GPIO0 high, normal boot) and pulse `rts` (EN), read
+the boot log, then write commands terminated with `\r` and read between
+them.  Allow generously for the slow ones -- `ostest` needs ~90 s, and far
+longer with scheduler debug output on.
 
 ### 6.4 JTAG debugging (this is how the hard bugs were found)
 
@@ -309,6 +327,25 @@ flash will silently not happen.
 The decisive trick for this port: **read the same address through both bus
 aliases**. `x/8xb 0x4280919c` (IBUS) vs `x/8xb 0x3c80919c` (DBUS) is what
 proved the stale-I-cache bug — zeros on one, correct bytes on the other.
+
+### 6.5 Checking the isolation
+
+`examples/pffault` is in the board configuration for this.  It takes an
+access and an address, performs it from a WORLD1 task, and reports what
+happened:
+
+```sh
+nsh> pffault r 0x3fc90954    # kernel data          -> SIGSEGV (PMS)
+nsh> pffault w 0x3fc90954    # kernel data          -> SIGSEGV (PMS)
+nsh> pffault r 0x40374000    # kernel vectors       -> SIGSEGV (PMS)
+nsh> pffault r 0x4037dc00    # the WORLD1 table     -> SIGSEGV (execute-only)
+nsh> pffault r 0x600d0000    # the World Controller -> SIGSEGV (PMS)
+nsh> ps                      # only pffault is gone
+```
+
+`SURVIVED unexpectedly` means the access went through.  Pick an address whose
+contents you know -- `objdump -s -j .dram0.data nuttx` -- because a *denied*
+read can also return zero, so reading zero proves nothing either way.
 
 ---
 
@@ -369,12 +406,25 @@ the `FLASH_ACE` registers `esp32s3_pms.c` drives, and still unused here) are
 indexed by physical address.  Separating processes needs the window
 invalidation in §7.2.
 
-### 7.2 Map and packaging cleanups
+### 7.2 Isolate processes from each other — the next unit
 
-- Move the user windows above entry 137 so they stop overlapping the kernel's
-  PSRAM window (§3), or shrink the kernel window to make room.
-- Invalidate unused window entries in `up_addrenv_select()` (§4, deferred
-  item).
+This is now the top of the list, because it is the one thing the permission
+control cannot do for us.  `up_addrenv_select()` remaps only as many window
+entries as the incoming process has pages; entries beyond that count keep the
+previous process's mappings, and every user page comes from one pool that the
+kernel keeps permanently mapped at 0x3c0a0000 besides.  The external-memory
+permissions (`APB_CTRL_SRAM_ACEn_*`) are indexed by physical address, so they
+cannot express "this process's pages" either.
+
+So: invalidate the unused window entries on a select, which is the deferred
+item flagged in §4 with a `TODO(Unit F hardening)` comment at the spot.  It
+was deferred because invalidating cache-MMU entries is sharp-edged — an
+invalid in-window entry reads back zero silently rather than faulting (§8) —
+so expect to prove it over JTAG rather than by observing behaviour.
+
+The map cleanup belongs with it: move the user windows above entry 137 so
+they stop overlapping the kernel's PSRAM window (§3), or shrink the kernel
+window to make room.
 
 ### 7.3 Eager `fork()`
 
