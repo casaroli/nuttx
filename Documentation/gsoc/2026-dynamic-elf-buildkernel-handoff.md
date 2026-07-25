@@ -52,25 +52,30 @@ neither the kernel's data nor its code, its vectors or a peripheral, and an
 attempt kills only that process.  `ostest` runs to `Exiting with status 0`,
 including the signal handler test.
 
+**Processes are also isolated from each other** as of `8f8f595c0f` (§7.2).
+The page pool is no longer mapped into the kernel; a pool page is reachable
+only through a two-entry scratch region, for the duration of one operation.
+The measurement that drove it, and the one that closed it:
+
+```
+before:  nsh> pffault r 0x3c410000
+         pffault: SURVIVED unexpectedly, read 42c09118   <- the shell's data page
+after:   nsh> pffault r 0x3c410000
+         pffault: SURVIVED unexpectedly, read 00000000   <- entry 64 invalid
+```
+
+Read that second line with §8's warning in mind: a zero read is not evidence
+on its own. The evidence is the JTAG dump (pool entries 64–127 = `0x4000`)
+and the fact that `0x3c420000` went from `ffffffff` to `00000000` — mapped
+erased PSRAM to an invalid entry. See §7.2.
+
 ### What is broken
 
-1. **Processes are not isolated from each other.** The kernel/user boundary
-   is enforced (§7.1), but every user page comes from one pool the kernel
-   keeps mapped, and the external-memory permissions are indexed by physical
-   address, so one process can still reach another's pages through the
-   kernel's own PSRAM window. Measured, not inferred:
-
-   ```
-   nsh> pffault r 0x3c410000
-   pffault: SURVIVED unexpectedly, read 3d01176c   <- NSH's .bss address
-   ```
-
-   §7.2 is that work, and it is the next unit. The window hygiene it was
-   originally scoped as — invalidating unused entries, moving the map — is
-   done and did not close this; see §7.2 for why the fix has to be virtual.
-2. A violation by the kernel itself is still a whole-system panic, by
+1. A violation by the kernel itself is still a whole-system panic, by
    design: only a WORLD1 violation is survivable, and it is the interrupted
    task's saved PS that tells the two apart.
+2. Nothing else known. §7.3 (eager `fork()`) is the next unit, and it is a
+   new capability rather than a repair.
 
 ### Scope reminder: what the silicon already ruled out
 
@@ -145,10 +150,16 @@ Table base `0x600c5000`, entry `i` at `+i*4`. Entry format:
 | what | address | entry | observed |
 |---|---|---|---|
 | kernel PSRAM window | `0x3c0b0000`–`0x3c8b0000` | 11–138 | entry 11 = `0x8000` (PSRAM page 0) |
-| page pool | `0x3c400000`–`0x3c800000` | 64–127 | PSRAM offset `0x350000`, 4 MB |
-| user `.text` (IBUS) | `0x42c00000` | 192–199 | `0x8036` = PSRAM page 54 |
-| user `.data` (DBUS) | `0x3d000000` | 256–263 | `0x8037`, `0x8038` |
-| user heap (DBUS) | `0x3d200000` | 288–303 | `0x8039`…`0x8048` |
+| page pool | (not mapped) | 64–127 | all `0x4000` since `8f8f595c0f` — PSRAM offset `0x350000`, 4 MB |
+| user `.text` (IBUS) | `0x42c00000` | 192–199 | `0x8035` |
+| user `.data` (DBUS) | `0x3d000000` | 256–263 | `0x8036`, `0x8037` |
+| user heap (DBUS) | `0x3d200000` | 288–303 | `0x8038`…`0x8047` |
+| kernel scratch (DBUS) | `0x3d400000` | 320–321 | `0x4000` at rest; one page while the kernel works on it |
+
+The pool's *virtual* base is no longer configured. `up_allocate_pgheap()`
+derives it from what the cache MMU reports the PSRAM window maps, checks the
+pool's physical range lies inside it, and then takes the mapping away. Only
+`ESP32S3_PGPOOL_PBASE`/`_SIZE` remain, and they are physical.
 
 `esp32s3_spiram.c` maps PSRAM at `mmu_valid_space()`, i.e. immediately after
 the last entry the flash mappings occupy — so the window **moves as the
@@ -157,19 +168,22 @@ was first written and is at entry 11 now.
 
 Everything derived from where that window lands has to be checked against the
 hardware rather than assumed, because getting it wrong is nearly silent.
-`up_allocate_pgheap()` now does three checks and panics on any of them:
+`up_allocate_pgheap()` panics on any of:
 
-- the pool lies inside the mapped window;
-- `CONFIG_ARCH_PGPOOL_PBASE` equals what the cache MMU *actually* maps at
-  `CONFIG_ARCH_PGPOOL_VBASE` (`esp32s3_mmu_paddr()`), not what arithmetic
-  says it should be. This one had already drifted: `PBASE` was `0x360000`
-  against a window that had moved, making `esp32s3_pgvaddr()` one page low —
-  see the second entry in §8's bug list;
-- no user window overlaps the kernel's, compared **by entry**, since the two
-  buses share one entry per 64 KB.
+- the PSRAM window base maps nothing;
+- the pool's physical range does not lie inside the mapped PSRAM, asking the
+  cache MMU (`esp32s3_mmu_paddr()`) rather than deriving it;
+- any two windows overlap, or one overlaps the kernel's, compared **by
+  entry**, since the two buses share one entry per 64 KB.
 
 The user `.text` window used to sit at entry 128, inside the kernel window,
-which is what that last check exists to catch. It is now at entry 192.
+which is what the overlap check exists to catch. It is now at entry 192.
+
+The old check that `CONFIG_ARCH_PGPOOL_PBASE` matched what the MMU mapped at
+`CONFIG_ARCH_PGPOOL_VBASE` is gone because the constant it guarded is gone:
+the pool's virtual base is derived, so it cannot drift. That drift had
+already happened twice — see the fifth entry in §8's bug list — and this is
+the fix for the class, not just the instance.
 
 ---
 
@@ -181,6 +195,10 @@ which is what that last check exists to catch. It is now at entry 192.
    All processes share the same window virtual addresses and only one
    environment is resident at a time, so PMS is to be programmed **once at
    boot**; `up_addrenv_select()` does not touch it.
+   **Corollary, and the whole of §7.2:** this only works if the *kernel* has
+   no window onto the pool either. The pool is therefore unmapped, and the
+   kernel reaches a page through the scratch region, holding `sched_lock()`
+   so that no user task can be running while a mapping is live.
 3. **`up_addrenv_mprot()` cannot be honoured.** A cache-MMU entry has only a
    valid bit, a memory type and a page number — no permission bits. It
    returns OK, and a process can therefore write its own `.text`. Isolation
@@ -212,6 +230,8 @@ Newest first, on `gsoc/dynamic-elf-baseline`:
 
 | commit | what |
 |---|---|
+| `8f8f595c0f` | **the page pool is no longer mapped** — processes are isolated from each other (§7.2) |
+| `90103ca1aa` | user cache-MMU window cleanup — see the note below |
 | `568f377c15` | **PMS permissions** — the kernel/user boundary is enforced (§7.1) |
 | `1018acde8c` | **signal delivery** to a user process (§8, seventh bug) |
 | `c31801705a` | **WORLD1 vector table** and the world/entry setup (§7.1) |
@@ -241,10 +261,11 @@ unchanged**; `esp32s3-devkit:elf_oct` (flat, silicon-validated) and
 **Not committed:** `boards/xtensa/esp32s3/esp32s3-devkit/src/romfs_boot.c` is
 a generated artifact and is deliberately untracked.
 
-`90103ca1aa` is the §7.2 window cleanup, landed as one commit as a checkpoint
-before the page-pool rework (§7.2) rather than split, so **revert it whole if
-that rework goes wrong**. It carries three independent changes, which is how
-to read it and how to split it if it goes upstream:
+`90103ca1aa` was the window cleanup, landed as one commit as a checkpoint
+before the page-pool rework. It carries three independent changes, which is
+how to read it and how to split it if it goes upstream. Note that
+`8f8f595c0f` builds on it and removed the first row's `PBASE` check by
+removing the constant it guarded, so the two no longer revert independently:
 
 | files | what |
 |---|---|
@@ -275,12 +296,16 @@ board and switched to a kernel build. What it sets, and why:
   `MM_PGALLOC`, `SCHED_LPWORK`. `BUILD_2PASS` is *off*: the second pass
   builds the protected userspace blob, which a kernel build has no use for
   (§2).
-- **The map** (§3): `ARCH_TEXT_VBASE=0x42800000` in the IBUS window with 8
+- **The map** (§3): `ARCH_TEXT_VBASE=0x42c00000` in the IBUS window with 8
   pages; `ARCH_DATA_VBASE=0x3d000000` and `ARCH_HEAP_VBASE=0x3d200000` in
-  the DBUS window with 8 and 16; page pool `ARCH_PGPOOL_VBASE=0x3c400000`,
-  `ARCH_PGPOOL_PBASE=0x360000` — a PSRAM *offset*, not an address — and
-  `ARCH_PGPOOL_SIZE=4194304`, which is Kconfig type `int` and so must be
+  the DBUS window with 8 and 16; the kernel scratch region
+  `ARCH_KMAP_VBASE=0x3d400000` with `ARCH_KMAP_NPAGES=2`; page pool
+  `ESP32S3_PGPOOL_PBASE=0x350000` — a PSRAM *offset*, not an address — and
+  `ESP32S3_PGPOOL_SIZE=4194304`, which is Kconfig type `int` and so must be
   decimal. `MM_PGSIZE=65536` matches the cache MMU's page.
+  `ARCH_PGPOOL_MAPPING` is **off**, and `esp32s3_addrenv.h` errors out if it
+  is turned on; `ARCH_KVMA_MAPPING` is selected by `ESP32S3_PGPOOL_SCRATCH`,
+  since it has no prompt of its own and a defconfig cannot set it.
 - **Init and the other programs** are separate ELFs in a ROMFS image mounted
   at `/system/bin` and exec'd from there: `ELF`,
   `BINFMT_ELF_EXECUTABLE` without `BINFMT_ELF_RELOCATABLE`, `FS_ROMFS`,
@@ -363,9 +388,11 @@ boot first and use `monitor halt` rather than `monitor reset halt`.
 To read the cache-MMU table, entry `i` is at `0x600c5000 + i*4`:
 
 ```
+x/16xw 0x600c5100     # page pool, entries 64-79    -- must all be 0x4000
 x/8xw 0x600c5300      # text window, entries 192-199
 x/8xw 0x600c5400      # data window, entries 256-263
 x/16xw 0x600c5480     # heap window, entries 288-303
+x/2xw 0x600c5500      # kernel scratch, entries 320-321
 ```
 
 `0x8000 | page` is a valid PSRAM entry, `0x4000` is invalid.
@@ -392,11 +419,12 @@ nsh> pffault r 0x600d0000    # the World Controller -> SIGSEGV (PMS)
 nsh> ps                      # only pffault is gone
 ```
 
-Two more that are about process-to-process isolation rather than the
+Three more that are about process-to-process isolation rather than the
 kernel/user boundary:
 
 ```sh
-nsh> pffault r 0x3c410000    # the pool, via the kernel window -> STILL LEAKS
+nsh> pffault r 0x3c410000    # the pool, via the old kernel window -> must be 0
+nsh> pffault r 0x3d400000    # the kernel scratch region           -> must be 0
 nsh> pffault r 0x3d2f0000    # own last heap page -> must read 0 (the wipe)
 ```
 
@@ -405,6 +433,13 @@ contents you know -- `objdump -s -j .dram0.data nuttx` -- because a *denied*
 read can also return zero, so reading zero proves nothing either way.  For
 the same reason, run something like `getprime` first when checking the wipe:
 against a freshly booted board a stale page may happen to be zero anyway.
+
+The first two are the weakest tests in this document and must not be trusted
+alone: an invalidated entry reads 0 without faulting, so they cannot tell
+"unmapped" from "denied" from "mapped to a zeroed page".  Confirm them over
+JTAG (§6.4).  The third is the strong one, and it is what proves the scratch
+region actually maps: if it did not, `esp32s3_pgwipe()` would memset into a
+hole and the page would arrive carrying the previous tenant's data.
 
 ---
 
@@ -458,76 +493,150 @@ runs and every task keeps executing in WORLD0 regardless of what
 correct and enforced against a world nothing ever entered.  This is the shape
 of failure to expect here — everything looks configured and nothing is.
 
-**What this does not do is isolate processes from each other.**  They all
-draw pages from one pool that the kernel keeps mapped at 0x3c0b0000, and the
-external-memory permissions (`APB_CTRL_SRAM_ACEn_*`, the PSRAM counterpart of
-the `FLASH_ACE` registers `esp32s3_pms.c` drives, and still unused here) are
-indexed by physical address.  §7.2 has the measurement and why the fix cannot
-come from the permission control.
+**What this does not do is isolate processes from each other.**  That needed
+the pool to stop being mapped, which is §7.2 and is now done.  The
+permission control contributed nothing to it: `APB_CTRL_SRAM_ACEn_*`, the
+PSRAM counterpart of the `FLASH_ACE` registers `esp32s3_pms.c` drives,
+remains unused, and §7.2 explains why it had to.
 
-### 7.2 Isolate processes from each other — the next unit
+### 7.2 Isolate processes from each other — done
 
-Still the top of the list.  The window hygiene this unit was originally
-scoped as is **done**, and measuring it first showed it was never going to be
-enough on its own:
+`8f8f595c0f`.  A user process no longer reaches another's pages.  This was
+scoped as window hygiene, and measuring that first showed it was never going
+to be enough:
 
 ```
 nsh> pffault r 0x3c410000
-pffault: SURVIVED unexpectedly, read 3d01176c   <- NSH's .bss address
+pffault: SURVIVED unexpectedly, read 42c09118   <- the resident shell's data
 ```
 
-That is a user process reading a word out of NSH's text page through the
-kernel's PSRAM window at 0x3c0b0000, which maps the whole pool as a plain
-valid mapping.  It has nothing to do with stale window entries.
+Cache-MMU entry 64 held `0x8035`, and so did the user `.text` window at entry
+192: `0x3c400000` and `0x42c00000` were two views of one PSRAM page.
+`0x3c410000` was entry 65, the shell's data page.  Nothing to do with stale
+window entries — the kernel simply mapped the whole pool at `0x3c0b0000` as a
+plain valid mapping.
 
-What is done:
+**The permission control cannot express the difference, and this is settled.**
+`APB_CTRL_SRAM_ACEn_*` — the PSRAM counterpart of the `FLASH_ACE` registers
+`esp32s3_pms.c` drives — is indexed by **physical** address, and a process's
+own pages *are* pool pages.  Any physical range that lets a process reach its
+own memory lets it reach the pool.  Do not spend time looking for a setting.
+(`esp32s3_pms_set_flash_cache_split_line()` takes an `ADDR`/`SIZE` pair in
+flash-offset terms; the PSRAM registers are the same shape.)
 
-- unused window entries invalidated on a select (`esp32s3_mmu_unmap()`),
-  proved over JTAG since an invalidated entry reads 0 rather than faulting;
-- the user `.text` window moved off the kernel's, entry 128 → 192, with a
-  boot-time overlap check;
-- `CONFIG_ARCH_PGPOOL_PBASE` corrected and made self-checking — it had gone
-  stale, and one page per region was leaving `up_addrenv_create()` unwiped
-  (§8).
+So the lever is which virtual addresses have mappings at all.
 
-**What is left is the kernel's own mapping, and the fix has to be virtual.**
-The external-memory permissions (`APB_CTRL_SRAM_ACEn_*`, the PSRAM
-counterpart of the `FLASH_ACE` registers `esp32s3_pms.c` drives) are indexed
-by **physical** address.  A process's own pages *are* pool pages, so any
-physical range that lets a process reach its own memory also lets it reach
-the pool through the kernel's window.  There is no permission setting that
-expresses the difference.  Do not spend time looking for one.
+**What was done.** The pool is no longer mapped.  `up_allocate_pgheap()` runs
+its checks while the boot-time mapping esp32s3_spiram.c made is still there —
+that is the only moment it can — and then withdraws the pool's share of it.
+The kernel reaches a page through a scratch region instead:
 
-So the only lever is which virtual addresses have mappings at all: the kernel
-must stop keeping the whole pool mapped while an unprivileged task runs.
-NuttX already has the shape — `CONFIG_ARCH_KMAP_VBASE`/`ARCH_KMAP_NPAGES`,
-the scratch region used when `ARCH_PGPOOL_MAPPING` is off ("There is no need
-to use the scratch memory region if the page pool memory is statically
-mapped", `include/nuttx/addrenv.h`).
+```c
+uintptr_t esp32s3_pgmap(uintptr_t paddr);   /* map, return the vaddr */
+void      esp32s3_pgunmap(uintptr_t vaddr); /* write back, invalidate */
+```
 
-The kernel's uses of the pool window are few and all short, all in kernel
-context: `esp32s3_pgwipe()`, `up_addrenv_page_vaddr()`, `up_addrenv_pa_to_va()`
-and `up_addrenv_va_to_pa()` in `esp32s3_addrenv_utils.c`, plus the fork copy
-when it arrives.  A one- or two-entry scratch window mapped on demand and
-invalidated after would serve all of them.  `Kmem` is internal DRAM in this
-configuration (see the `free` output in §1), so the kernel needs PSRAM for
-nothing else — the whole 8 MB window exists only to reach pool pages.
+`esp32s3_pgvaddr()` was **deleted, not adapted**.  It was arithmetic whose
+result a caller could hold indefinitely; arithmetic that still answers for an
+address that is no longer mapped is exactly how this port fails silently.
+Its callers:
 
-Two things to watch:
+| | |
+|---|---|
+| `esp32s3_pgwipe()` | map, `memset`, unmap, under `sched_lock()` |
+| `up_addrenv_page_vaddr()` | returns 0 — it promises an address that outlives the call, which a scratch mapping cannot.  `CONFIG_MM_KMAP` is rejected at compile time for the same reason: `kmm_map()`'s single-page path is built on it |
+| `up_addrenv_pa_to_va()` | answers from the slot table — which is what its own comment always claimed it did |
+| `up_addrenv_va_to_pa()` | the inverse, over scratch addresses only |
 
-- `esp32s3_pgvaddr()` is currently a pure arithmetic function whose result
-  callers may hold across operations.  With a scratch window it becomes a
-  mapping with a lifetime; the callers above need auditing for that.
-- `esp32s3_addrenv.h` has a hard `#error` requiring
-  `CONFIG_ARCH_PGPOOL_MAPPING`.
+Four things are worth carrying forward.
 
-### 7.3 Eager `fork()`
+**`sched_lock()`, not a mutex.**  A scratch address is ordinary external
+memory as far as the permission control is concerned, so a user task that ran
+while a mapping was live could read the page through it — the same leak in
+miniature.  A mutex excludes other *kernel* users; only holding off the
+scheduler excludes user tasks.  It is taken per page rather than per
+operation, so the cost is one 64 KB wipe of non-preemptible time (~800 µs at
+40 MHz octal PSRAM), not a whole `up_addrenv_create()`.  Interrupts stay
+enabled; only the entry rewrite is in a critical section.
 
-Once processes are isolated: `up_addrenv_create()` for the child sized to the
-parent's regions, copy each parent page into the child's through the kernel
-`page_vaddr` mappings, set the child's return frame (0 in the child, the pid
-in the parent). No COW, no fault handling. Costs a full copy per fork and has
-no lazy growth — acceptable for the static-sandbox target.
+**Cache maintenance has to be range-scoped.**  `esp32s3_dcache_suspend()`
+invalidates the *whole* D-cache, which would discard the resident process's
+dirty lines, and its write-back variant would put a whole-cache write-back
+inside a critical section — both unacceptable at once per page of every
+process created.  `esp32s3_mmu_scratch_map()`/`_unmap()` follow
+`esp_spiram_map()` instead: suspend, rewrite the entry, `cache_invalidate_addr()`
+for that page only, resume.
+
+**The unmap must write back first.**  The wipe's zeros sit in D-cache lines
+tagged by *virtual* address.  Repointing the entry with them still dirty
+writes them back to whichever page the slot is used for next.
+`cache_writeback_addr()` runs before the critical section, with interrupts on
+— safe because `sched_lock()` means nothing else can reach the slot.
+
+**Two entries, not one.**  Eager `fork()` (§7.3) has to hold a parent page and
+a child page mapped at once to copy between them.  With one slot that becomes
+a bounce buffer through kernel DRAM.
+
+**What is deliberately left mapped.**  Only the pool's share of the PSRAM
+window is withdrawn (entries 64–127); entries 11–63 and 128–138 stay.  They
+map no page a process will ever own, and that is the aperture a kernel-side
+PSRAM allocation would have to come from — `up_textheap_memalign()` falls back
+to the kernel heap and derives an instruction-bus alias (`+0x6000000`) for
+anything outside internal RAM, which is the path a `dlopen()`ed shared library
+takes.  A PSRAM kernel heap carved from the *allocable* window would reopen
+this from the other side, so `ESP32S3_SPIRAM_COMMON_HEAP` is now an `#error`.
+
+**How it was measured.**  A zero read proves nothing (§8), so:
+
+| | before | after |
+|---|---|---|
+| JTAG, pool entries 64–127 | `0x8035`…`0x8074` | all `0x4000` |
+| JTAG, scratch entries 320–321 | — | `0x4000` at rest |
+| JTAG, the process's own windows | `0x8035` / `0x8036`,`0x8037` / `0x8038`… | unchanged |
+| `pffault r 0x3c410000` | `42c09118` | `00000000` |
+| `pffault r 0x3c420000` | `ffffffff` | `00000000` |
+
+That last row is the useful shell-level one: `ffffffff` is erased-but-mapped
+PSRAM, `00000000` is an invalid entry, so the transition distinguishes the two
+without relying on what zero means.  The positive control that the scratch
+really maps is `pffault r 0x3d2f0000` reading 0 *after* `getprime` has churned
+the pool — a mapping that silently failed would leave the previous tenant's
+data there.  Regressions: `getprime` 1200 msec (unchanged), `ostest` exits 0,
+pool back to its 1245184 baseline, no zombies, §7.1's five boundary accesses
+still SIGSEGV.
+
+**A possible follow-on, not done.**  Wiping and copying by DMA would remove
+the CPU-visible mapping altogether and make `sched_lock()` unnecessary.  It
+needs a GDMA path and its own cache-coherency story, and `fork()`'s page copy
+would want it too — worth revisiting when §7.3 lands rather than before.
+
+### 7.3 Eager `fork()` — the next unit
+
+Processes are isolated, so this is now unblocked and is the top of the list.
+`up_addrenv_create()` for the child sized to the parent's regions, copy each
+parent page into the child's, set the child's return frame (0 in the child,
+the pid in the parent). No COW, no fault handling. Costs a full copy per fork
+and has no lazy growth — acceptable for the static-sandbox target.
+
+The copy is the part §7.2 shaped. It is *not* `up_addrenv_page_vaddr()` any
+more — that now returns 0 — but a pair of scratch mappings:
+
+```c
+sched_lock();
+dst = esp32s3_pgmap(childpage);
+src = esp32s3_pgmap(parentpage);
+memcpy((void *)dst, (void *)src, MM_PGSIZE);
+esp32s3_pgunmap(src);
+esp32s3_pgunmap(dst);
+sched_unlock();
+```
+
+which is why `CONFIG_ARCH_KMAP_NPAGES` is 2 and `esp32s3_addrenv.h` errors out
+below that. Both slots must be held across one `sched_lock()` region; taking
+them under separate locks would leave a page exposed between the two. If the
+per-page `sched_lock()` turns out to hurt — a full `fork()` is a copy of every
+page of a process, not the 26 of a fresh `up_addrenv_create()` — the DMA route
+at the end of §7.2 is the way out, not a longer lock.
 
 ---
 
@@ -557,6 +666,18 @@ no lazy growth — acceptable for the static-sandbox target.
   connection when it fails (`Failed to run flasher stub`, then `auto_probe
   failed`). Start it with `-c "gdb_memory_map disable" -c "gdb_flash_program
   disable"`; attaching resets the target, so let it boot before halting.
+- **A cache-MMU entry rewrite orphans the dirty lines of the address it
+  covered.** D-cache lines are tagged by *virtual* address, so anything
+  written through a mapping and not yet written back will be flushed to
+  whatever page that entry points at *later*. Any code that repoints an entry
+  must write back first. This is why `esp32s3_mmu_scratch_unmap()` calls
+  `cache_writeback_addr()` before it touches the table.
+- **checkpatch tracks braces per section banner.** A `static const struct
+  foo g_x[] = {...}` under a `Private Functions` banner produces a stream of
+  "Bad left brace alignment" errors that have nothing to do with the
+  formatting; give it `Private Types` / `Private Data` banners and the same
+  code passes. Designated initialisers, and no trailing comma after the last
+  element.
 
 ### The on-target bugs already found and fixed — do not re-derive them
 
@@ -586,10 +707,12 @@ no lazy growth — acceptable for the static-sandbox target.
    wiped by its successor's allocation and only the **last page of each
    region** went out unwiped, carrying the previous tenant's data into a new
    process.  It presented as `pffault r 0x3d2f0000` — a process's own last
-   heap page — reading `aabc6aaa` on a fresh boot.  `PBASE` is now
-   `0x350000` and `up_allocate_pgheap()` checks it against
-   `esp32s3_mmu_paddr()` rather than trusting it.  **Expect this to drift
-   again**; the check is what makes it loud.
+   heap page — reading `aabc6aaa` on a fresh boot.  `8f8f595c0f` retired the
+   class rather than the instance: there is no configured pool *virtual*
+   base left to drift against, since `up_allocate_pgheap()` derives it from
+   what `esp32s3_mmu_paddr()` reports the window maps.  Only the physical
+   `ESP32S3_PGPOOL_PBASE` remains, and it is checked to lie inside mapped
+   PSRAM.
 6. **`addrenv_switch()` on voluntary context switches** (`63e50dde0e`) —
    Xtensa called it only from `xtensa_irq_dispatch()`, but `up_switch_context()`
    is a `SYS_switch_context` system call here, so every voluntary switch left
