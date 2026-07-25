@@ -43,6 +43,9 @@
 #include <arch/xtensa/xtensa_corebits.h>
 #endif
 
+#include <assert.h>
+#include <debug.h>
+
 #include "chip.h"
 #include "xtensa.h"
 #include "esp_attr.h"
@@ -50,6 +53,7 @@
 #include "esp32s3_isolation.h"
 #include "esp32s3_pms.h"
 #include "esp32s3_wcl.h"
+#include "hardware/esp32s3_rom_layout.h"
 #include "hardware/esp32s3_sensitive.h"
 #include "hardware/esp32s3_soc.h"
 
@@ -63,6 +67,16 @@
 #ifndef CONFIG_BUILD_FLAT
 
 /****************************************************************************
+ * Pre-processor Definitions
+ ****************************************************************************/
+
+#ifdef CONFIG_BUILD_KERNEL
+/* The WORLD1 vector table is one Xtensa vector table: 1 KB. */
+
+#  define WORLD1_VECTORS_SIZE  0x400
+#endif
+
+/****************************************************************************
  * Public Data
  ****************************************************************************/
 
@@ -73,6 +87,13 @@
  */
 
 extern uint8_t _world1_vectors[];
+
+/* The end of the kernel's instruction memory, and so the line that divides
+ * Internal SRAM1 between the instruction and the data bus.  The linker
+ * script aligns it to the 256 bytes a split line needs.
+ */
+
+extern uint8_t _iram_end[];
 
 /* Vectors in the kernel's own table.  Fetching one of these switches the CPU
  * to WORLD0 once it is registered as a World Controller entry address.
@@ -303,6 +324,197 @@ void esp32s3_isolation_worlds(void)
 
   esp32s3_wcl_set_world0_entry(1, (uintptr_t)_user_exception_vector);
   esp32s3_wcl_set_world0_entry(2, (uintptr_t)_xtensa_level3_vector);
+}
+
+/****************************************************************************
+ * Name: isolation_enable_interrupts
+ *
+ * Description:
+ *   Arm the permission violation monitors.  The handler itself is registered
+ *   later, from up_irqinitialize(); until then a violation is a panic, which
+ *   is what an early kernel violation should be anyway.
+ *
+ ****************************************************************************/
+
+static void isolation_enable_interrupts(void)
+{
+  modifyreg32(SENSITIVE_CORE_0_IRAM0_PMS_MONITOR_1_REG,
+              SENSITIVE_CORE_0_IRAM0_PMS_MONITOR_VIOLATE_CLR_M,
+              SENSITIVE_CORE_0_IRAM0_PMS_MONITOR_VIOLATE_EN);
+
+  modifyreg32(SENSITIVE_CORE_0_DRAM0_PMS_MONITOR_1_REG,
+              SENSITIVE_CORE_0_DRAM0_PMS_MONITOR_VIOLATE_CLR_M,
+              SENSITIVE_CORE_0_DRAM0_PMS_MONITOR_VIOLATE_EN);
+
+  modifyreg32(SENSITIVE_CORE_0_PIF_PMS_MONITOR_1_REG,
+              SENSITIVE_CORE_0_PIF_PMS_MONITOR_VIOLATE_CLR_M,
+              SENSITIVE_CORE_0_PIF_PMS_MONITOR_VIOLATE_EN);
+
+  /* Instruction and data cache reject monitors. */
+
+  modifyreg32(EXTMEM_CORE0_ACS_CACHE_INT_CLR_REG,
+              EXTMEM_CORE0_IBUS_REJECT_INT_CLR_M |
+              EXTMEM_CORE0_DBUS_REJECT_INT_CLR_M, 0);
+  modifyreg32(EXTMEM_CORE0_ACS_CACHE_INT_ENA_REG,
+              EXTMEM_CORE0_IBUS_REJECT_INT_ENA_M |
+              EXTMEM_CORE0_DBUS_REJECT_INT_ENA_M,
+              EXTMEM_CORE0_IBUS_REJECT_INT_ENA |
+              EXTMEM_CORE0_DBUS_REJECT_INT_ENA);
+}
+
+/****************************************************************************
+ * Name: isolation_configure_iram
+ *
+ * Description:
+ *   Instruction memory.  All of it belongs to the kernel except the WORLD1
+ *   vector table, which the unprivileged world must be able to fetch and
+ *   nothing more.
+ *
+ ****************************************************************************/
+
+static void isolation_configure_iram(void)
+{
+  uintptr_t vstart = (uintptr_t)_world1_vectors;
+  uintptr_t vend   = vstart + WORLD1_VECTORS_SIZE;
+
+  /* Internal SRAM0, the blocks not given to the instruction cache.  They
+   * hold the kernel's own vector table and the start of its IRAM code, and
+   * the hardware can say nothing finer than a whole 16 KB block here, which
+   * is why the WORLD1 table is not among them.
+   */
+
+  esp32s3_pms_configure_icache(PMS_AREA_0, PMS_WORLD_0, PMS_ACCESS_ALL);
+  esp32s3_pms_configure_icache(PMS_AREA_1, PMS_WORLD_0, PMS_ACCESS_ALL);
+  esp32s3_pms_configure_icache(PMS_AREA_0, PMS_WORLD_1, PMS_ACCESS_NONE);
+  esp32s3_pms_configure_icache(PMS_AREA_1, PMS_WORLD_1, PMS_ACCESS_NONE);
+
+  /* Internal SRAM1, split around the WORLD1 vector table:
+   *
+   *   area 0   the kernel's IRAM code
+   *   area 1   the WORLD1 vector table
+   *   area 2   whatever IRAM follows it
+   *   area 3   past the main split line, which is data memory
+   */
+
+  esp32s3_pms_set_iram_split_line(PMS_SPLIT_LINE_0, vstart);
+  esp32s3_pms_set_iram_split_line(PMS_SPLIT_LINE_1, vend);
+
+  esp32s3_pms_configure_iram_region(PMS_AREA_0, PMS_WORLD_0, PMS_ACCESS_ALL);
+  esp32s3_pms_configure_iram_region(PMS_AREA_1, PMS_WORLD_0, PMS_ACCESS_ALL);
+  esp32s3_pms_configure_iram_region(PMS_AREA_2, PMS_WORLD_0, PMS_ACCESS_ALL);
+  esp32s3_pms_configure_iram_region(PMS_AREA_3, PMS_WORLD_0,
+                                    PMS_ACCESS_NONE);
+
+  esp32s3_pms_configure_iram_region(PMS_AREA_0, PMS_WORLD_1,
+                                    PMS_ACCESS_NONE);
+  esp32s3_pms_configure_iram_region(PMS_AREA_1, PMS_WORLD_1, PMS_ACCESS_X);
+  esp32s3_pms_configure_iram_region(PMS_AREA_2, PMS_WORLD_1,
+                                    PMS_ACCESS_NONE);
+  esp32s3_pms_configure_iram_region(PMS_AREA_3, PMS_WORLD_1,
+                                    PMS_ACCESS_NONE);
+}
+
+/****************************************************************************
+ * Name: isolation_configure_dram
+ *
+ * Description:
+ *   Data memory.  A kernel build has none that belongs to the user: a
+ *   process keeps its data, heap and stacks in PSRAM behind the cache MMU,
+ *   so the unprivileged world has no business in internal RAM at all.
+ *
+ ****************************************************************************/
+
+static void isolation_configure_dram(void)
+{
+  uintptr_t rom_reserved =
+    ALIGN_DOWN(ets_rom_layout_p->dram0_rtos_reserved_start, 256);
+
+  /* Internal SRAM2, the blocks not given to the data cache. */
+
+  esp32s3_pms_configure_dcache(PMS_WORLD_0, PMS_ACCESS_ALL);
+  esp32s3_pms_configure_dcache(PMS_WORLD_1, PMS_ACCESS_NONE);
+
+  /* Area 0 is what lies before the main split line -- instruction memory,
+   * which is not to be reached over the data bus by either world.  The rest
+   * is the kernel's.
+   */
+
+  esp32s3_pms_set_dram_split_line(PMS_SPLIT_LINE_0,
+                                  MAP_IRAM_TO_DRAM((uintptr_t)_iram_end));
+  esp32s3_pms_set_dram_split_line(PMS_SPLIT_LINE_1, rom_reserved);
+
+  esp32s3_pms_configure_dram_region(PMS_AREA_0, PMS_WORLD_0,
+                                    PMS_ACCESS_NONE);
+  esp32s3_pms_configure_dram_region(PMS_AREA_1, PMS_WORLD_0, PMS_ACCESS_ALL);
+  esp32s3_pms_configure_dram_region(PMS_AREA_2, PMS_WORLD_0, PMS_ACCESS_ALL);
+  esp32s3_pms_configure_dram_region(PMS_AREA_3, PMS_WORLD_0, PMS_ACCESS_ALL);
+
+  esp32s3_pms_configure_dram_region(PMS_AREA_0, PMS_WORLD_1,
+                                    PMS_ACCESS_NONE);
+  esp32s3_pms_configure_dram_region(PMS_AREA_1, PMS_WORLD_1,
+                                    PMS_ACCESS_NONE);
+  esp32s3_pms_configure_dram_region(PMS_AREA_2, PMS_WORLD_1,
+                                    PMS_ACCESS_NONE);
+  esp32s3_pms_configure_dram_region(PMS_AREA_3, PMS_WORLD_1,
+                                    PMS_ACCESS_NONE);
+}
+
+/****************************************************************************
+ * Name: esp32s3_isolation_permissions
+ ****************************************************************************/
+
+void esp32s3_isolation_permissions(void)
+{
+  /* The WORLD1 vector table has to be in Internal SRAM1 for any of this to
+   * mean anything (see isolation_configure_iram), and a mistake here would
+   * be silent: the split lines would land somewhere harmless and the
+   * unprivileged world would keep its access to instruction memory.
+   */
+
+  ASSERT((uintptr_t)_world1_vectors >= SOC_DIRAM_IRAM_LOW &&
+         (uintptr_t)_world1_vectors + WORLD1_VECTORS_SIZE <=
+         (uintptr_t)_iram_end);
+
+  isolation_enable_interrupts();
+
+  /* Divide Internal SRAM1 into its instruction and data halves.  The kernel
+   * image is linked with its IRAM below _iram_end and its data above the
+   * corresponding data-bus address.
+   */
+
+  esp32s3_pms_set_sram_main_split_line((uintptr_t)_iram_end);
+
+  esp32s3_pms_configure_irom_access();
+  esp32s3_pms_configure_drom_access();
+
+  isolation_configure_iram();
+  isolation_configure_dram();
+
+  /* Cached external flash.  A user process runs entirely out of PSRAM --
+   * the loader copies its text and data there -- so it needs nothing from
+   * flash.  Denying every region means the split lines between them do not
+   * matter.
+   */
+
+  esp32s3_pms_configure_flash_cache_region(PMS_AREA_0, PMS_WORLD_0,
+                                           PMS_ACCESS_ALL);
+  esp32s3_pms_configure_flash_cache_region(PMS_AREA_1, PMS_WORLD_0,
+                                           PMS_ACCESS_ALL);
+  esp32s3_pms_configure_flash_cache_region(PMS_AREA_2, PMS_WORLD_0,
+                                           PMS_ACCESS_ALL);
+  esp32s3_pms_configure_flash_cache_region(PMS_AREA_3, PMS_WORLD_0,
+                                           PMS_ACCESS_ALL);
+
+  esp32s3_pms_configure_flash_cache_region(PMS_AREA_0, PMS_WORLD_1,
+                                           PMS_ACCESS_NONE);
+  esp32s3_pms_configure_flash_cache_region(PMS_AREA_1, PMS_WORLD_1,
+                                           PMS_ACCESS_NONE);
+  esp32s3_pms_configure_flash_cache_region(PMS_AREA_2, PMS_WORLD_1,
+                                           PMS_ACCESS_NONE);
+  esp32s3_pms_configure_flash_cache_region(PMS_AREA_3, PMS_WORLD_1,
+                                           PMS_ACCESS_NONE);
+
+  esp32s3_isolation_revoke_peripherals();
 }
 #endif
 
