@@ -1,12 +1,19 @@
-# GSoC 2026 Dynamic ELF — BUILD_KERNEL on ESP32-S3: handoff
+# BUILD_KERNEL on ESP32-S3: handoff
 
 Self-contained handoff for continuing the Xtensa/ESP32-S3 address-environment
 port. Everything needed to pick this up cold is here: what works, what does
 not, how to build and flash it, how to debug it, and what to do next. Read
-this first; the design note `2026-dynamic-elf-mmu-isolation.md` and the dated
-evidence in `2026-dynamic-elf-progress-log.md` are the background.
+this first; the design note `mmu-isolation.md` is the background.
 
-Branch: `gsoc/dynamic-elf-baseline` (both `nuttx/` and `apps/`).
+Branch: `esp32s3/build-kernel`, on **Apache NuttX master** (both `nuttx/` and
+`apps/`). It carries only this port: 48 commits in `nuttx/` and
+`examples/pffault` in `apps/`.
+
+The dated experiment log this port was originally developed alongside lived in
+`Documentation/gsoc/2026-dynamic-elf-progress-log.md` on the older
+`gsoc/dynamic-elf-baseline` branch, which is preserved at the
+`pre-upstream-rebase` tag. Everything from it that still matters — the
+go/no-go results, the on-target bug list — is reproduced in §7 and §8 here.
 
 ---
 
@@ -52,7 +59,7 @@ neither the kernel's data nor its code, its vectors or a peripheral, and an
 attempt kills only that process.  `ostest` runs to `Exiting with status 0`,
 including the signal handler test.
 
-**Processes are also isolated from each other** as of `8f8f595c0f` (§7.2).
+**Processes are also isolated from each other** as of `c63c939817` (§7.2).
 The page pool is no longer mapped into the kernel; a pool page is reachable
 only through a two-entry scratch region, for the duration of one operation.
 The measurement that drove it, and the one that closed it:
@@ -121,7 +128,7 @@ port:
   the data cache, rewrite the IBUS (.text) and DBUS (.data/heap) window
   entries to this group's pages, invalidate, resume.
 - `CONFIG_MM_PGSIZE` is **65536**, so one `mm_pgalloc()` page is exactly one
-  cache-MMU page. `mm/pgalloc` was extended to permit 32 K/64 K (`e6a105169e`).
+  cache-MMU page. `mm/pgalloc` was extended to permit 32 K/64 K (`2956eaf7f0`).
 
 ### The single shared table — the fact that bites
 
@@ -150,7 +157,7 @@ Table base `0x600c5000`, entry `i` at `+i*4`. Entry format:
 | what | address | entry | observed |
 |---|---|---|---|
 | kernel PSRAM window | `0x3c0b0000`–`0x3c8b0000` | 11–138 | entry 11 = `0x8000` (PSRAM page 0) |
-| page pool | (not mapped) | 64–127 | all `0x4000` since `8f8f595c0f` — PSRAM offset `0x350000`, 4 MB |
+| page pool | (not mapped) | 64–127 | all `0x4000` since `c63c939817` — PSRAM offset `0x350000`, 4 MB |
 | user `.text` (IBUS) | `0x42c00000` | 192–199 | `0x8035` |
 | user `.data` (DBUS) | `0x3d000000` | 256–263 | `0x8036`, `0x8037` |
 | user heap (DBUS) | `0x3d200000` | 288–303 | `0x8038`…`0x8047` |
@@ -230,29 +237,29 @@ Newest first, on `gsoc/dynamic-elf-baseline`:
 
 | commit | what |
 |---|---|
-| `8f8f595c0f` | **the page pool is no longer mapped** — processes are isolated from each other (§7.2) |
-| `90103ca1aa` | user cache-MMU window cleanup — see the note below |
-| `568f377c15` | **PMS permissions** — the kernel/user boundary is enforced (§7.1) |
-| `1018acde8c` | **signal delivery** to a user process (§8, seventh bug) |
-| `c31801705a` | **WORLD1 vector table** and the world/entry setup (§7.1) |
-| `7c57f06f3c` | the world split moved into `esp32s3_isolation.c` |
-| `67e9b2fb84` | the board defconfig `esp32s3-devkit:kernel_oct` (§6.1) |
-| `63e50dde0e` | **addrenv_switch() on voluntary context switch** — the spawn fix |
-| `1b02d09dd3` | per-thread **kernel stack** |
-| `3e98f4e7a7` | doc: first BUILD_KERNEL boot |
-| `907d814aff` | **cache coherency** for loaded text + page-pool validation |
-| `df99d323dd` | `sig_trampoline` in crt0 for BUILD_KERNEL |
-| `fbe07821b8` | `up_allocate_kheap()` for BUILD_KERNEL |
-| `d04701d22f` | **IRAM placement** for kernel builds (`ARCHLIB` macro) |
-| `4b862af4cb` | board `gnu-elf.ld` + boot ROMFS plumbing |
-| `ff6cf241bb` | `up_addrenv_mprot()` |
-| `f3c29741ef` | fully linked ELF programs on Xtensa |
-| `3029abe27c` | `esp32s3_pgalloc.c` — page pool and heap growth |
-| `6bf42e73eb` | kernel-mode trampolines gated `!BUILD_FLAT` |
-| `4f34a9853f` | syscall privilege path for BUILD_KERNEL |
-| `f32134db35` `69e905cfd7` `ffb8544ac7` | Unit E — the `up_addrenv_*` set |
-| `e6a105169e` | `mm/pgalloc` 32 K/64 K page support |
-| `9c1c4cc487` `bb61a86d0e` | Units D and C — `arch_addrenv_t`, capability Kconfig |
+| `c63c939817` | **the page pool is no longer mapped** — processes are isolated from each other (§7.2) |
+| `7677557cd5` | user cache-MMU window cleanup — see the note below |
+| `b859e49c3d` | **PMS permissions** — the kernel/user boundary is enforced (§7.1) |
+| `790a2120ca` | **signal delivery** to a user process (§8, seventh bug) |
+| `3a47869397` | **WORLD1 vector table** and the world/entry setup (§7.1) |
+| `e15f277b94` | the world split moved into `esp32s3_isolation.c` |
+| `514b26a956` | the board defconfig `esp32s3-devkit:kernel_oct` (§6.1) |
+| `eb3c2d9957` | **addrenv_switch() on voluntary context switch** — the spawn fix |
+| `133798d75a` | per-thread **kernel stack** |
+| `7cacecadde` | doc: first BUILD_KERNEL boot |
+| `6df87015da` | **cache coherency** for loaded text + page-pool validation |
+| `2895ec8c27` | `sig_trampoline` in crt0 for BUILD_KERNEL |
+| `3c8f7da049` | `up_allocate_kheap()` for BUILD_KERNEL |
+| `cc3a6fc032` | **IRAM placement** for kernel builds (`ARCHLIB` macro) |
+| `00cecc30b4` | board `gnu-elf.ld` + boot ROMFS plumbing |
+| `95ec66b509` | `up_addrenv_mprot()` |
+| `c24550f1c8` | fully linked ELF programs on Xtensa |
+| `c8ae883a95` | `esp32s3_pgalloc.c` — page pool and heap growth |
+| `44a7e2d6a4` | kernel-mode trampolines gated `!BUILD_FLAT` |
+| `0267135a00` | syscall privilege path for BUILD_KERNEL |
+| `6c8383e5e1` `7628274dba` `678b0a8bd6` | Unit E — the `up_addrenv_*` set |
+| `2956eaf7f0` | `mm/pgalloc` 32 K/64 K page support |
+| `8b70856f04` `a5514a8e01` | Units D and C — `arch_addrenv_t`, capability Kconfig |
 
 Everything is gated so that existing **flat and protected builds are
 unchanged**; `esp32s3-devkit:elf_oct` (flat, silicon-validated) and
@@ -261,10 +268,10 @@ unchanged**; `esp32s3-devkit:elf_oct` (flat, silicon-validated) and
 **Not committed:** `boards/xtensa/esp32s3/esp32s3-devkit/src/romfs_boot.c` is
 a generated artifact and is deliberately untracked.
 
-`90103ca1aa` was the window cleanup, landed as one commit as a checkpoint
+`7677557cd5` was the window cleanup, landed as one commit as a checkpoint
 before the page-pool rework. It carries three independent changes, which is
 how to read it and how to split it if it goes upstream. Note that
-`8f8f595c0f` builds on it and removed the first row's `PBASE` check by
+`c63c939817` builds on it and removed the first row's `PBASE` check by
 removing the constant it guarded, so the two no longer revert independently:
 
 | files | what |
@@ -447,7 +454,7 @@ hole and the page would arrive carrying the previous tenant's data.
 
 ### 7.1 The kernel/user boundary — done
 
-`67e9b2fb84`, `7c57f06f3c`, `c31801705a` and `568f377c15`.  A user process now
+`514b26a956`, `e15f277b94`, `3a47869397` and `b859e49c3d`.  A user process now
 reaches nothing of the kernel's: not its data, not its code, not its vectors,
 not a peripheral.  Measured on the WROOM-2 with `examples/pffault`, which is
 in the board configuration for exactly this:
@@ -501,7 +508,7 @@ remains unused, and §7.2 explains why it had to.
 
 ### 7.2 Isolate processes from each other — done
 
-`8f8f595c0f`.  A user process no longer reaches another's pages.  This was
+`c63c939817`.  A user process no longer reaches another's pages.  This was
 scoped as window hygiene, and measuring that first showed it was never going
 to be enough:
 
@@ -681,24 +688,24 @@ at the end of §7.2 is the way out, not a longer lock.
 
 ### The on-target bugs already found and fixed — do not re-derive them
 
-1. **IRAM placement** (`d04701d22f`) — the section scripts place IRAM code by
+1. **IRAM placement** (`cc3a6fc032`) — the section scripts place IRAM code by
    archive name and every rule said `*libarch.a`; a kernel build archives into
    **`libkarch.a`**, so all 265 rules missed and the octal-flash bring-up
    functions stayed in mapped flash, called while that mapping was being
    reconfigured. Boot loop with no output. Fixed with an `ARCHLIB` macro.
-2. **`up_allocate_kheap()`** (`fbe07821b8`) — had only PROTECTED and FLAT
+2. **`up_allocate_kheap()`** (`3c8f7da049`) — had only PROTECTED and FLAT
    branches, so BUILD_KERNEL left `kbase`/`ktop` uninitialised and the heap
    landed at NULL. GCC warned about it.
-3. **`crt0.c` `sig_trampoline`** (`df99d323dd`) — referenced but never defined
+3. **`crt0.c` `sig_trampoline`** (`2895ec8c27`) — referenced but never defined
    on Xtensa; the kernel path had never been compiled. Cannot come from
    `xtensa_signal_handler.S` (that is in libarch, and user programs link only
    `-lmm -lc -lproxies`). GCC has **no `naked` attribute on Xtensa**, so it is
    file-scope assembly.
-4. **Cache coherency** (`907d814aff`) — the "runs, then executes a hole" bug.
+4. **Cache coherency** (`6df87015da`) — the "runs, then executes a hole" bug.
    Text is written through the DBUS alias but fetched through IBUS, and one
    global table means stale I-cache lines from a previous mapping read back as
    zeroes. Fixed in `up_addrenv_coherent()` and `up_addrenv_mprot()`.
-5. **`ARCH_PGPOOL_PBASE`, twice.** First (`907d814aff`) PSRAM mapped at
+5. **`ARCH_PGPOOL_PBASE`, twice.** First (`6df87015da`) PSRAM mapped at
    `0x3c0a0000`, so the pool's physical base was `0x360000`, not `0x400000`;
    every page wipe was landing 640 KB away.  Then the kernel image grew, the
    window moved up one entry to `0x3c0b0000`, and `0x360000` was stale by
@@ -707,13 +714,13 @@ at the end of §7.2 is the way out, not a longer lock.
    wiped by its successor's allocation and only the **last page of each
    region** went out unwiped, carrying the previous tenant's data into a new
    process.  It presented as `pffault r 0x3d2f0000` — a process's own last
-   heap page — reading `aabc6aaa` on a fresh boot.  `8f8f595c0f` retired the
+   heap page — reading `aabc6aaa` on a fresh boot.  `c63c939817` retired the
    class rather than the instance: there is no configured pool *virtual*
    base left to drift against, since `up_allocate_pgheap()` derives it from
    what `esp32s3_mmu_paddr()` reports the window maps.  Only the physical
    `ESP32S3_PGPOOL_PBASE` remains, and it is checked to lie inside mapped
    PSRAM.
-6. **`addrenv_switch()` on voluntary context switches** (`63e50dde0e`) —
+6. **`addrenv_switch()` on voluntary context switches** (`eb3c2d9957`) —
    Xtensa called it only from `xtensa_irq_dispatch()`, but `up_switch_context()`
    is a `SYS_switch_context` system call here, so every voluntary switch left
    the address environment alone. A resumed shell ran against its successor's
@@ -721,7 +728,7 @@ at the end of §7.2 is the way out, not a longer lock.
    repeating: it is **not** the signal-delivery path, and it is **not** the
    windowed-ABI base save area (moving `A1` does not need that copy here,
    and copying *back* would actively corrupt the user's save area).
-7. **Signal delivery to a user process** (`1018acde8c`) — three faults in the
+7. **Signal delivery to a user process** (`790a2120ca`) — three faults in the
    same path, none of which a protected build can show, because it has no
    kernel stack and so already runs the kernel on the user stack. The handler
    ran on the *kernel* stack, because `SYS_signal_handler` switched back to
@@ -739,11 +746,9 @@ at the end of §7.2 is the way out, not a longer lock.
 
 ## 9. References
 
-- Design note: `2026-dynamic-elf-mmu-isolation.md`
-- Dated evidence, including why COW/demand paging are dead:
-  `2026-dynamic-elf-progress-log.md`
-- Delivery plan / checklist: `2026-dynamic-elf-delivery-plan.md`,
-  `2026-dynamic-elf-checklist.md`
+- Design note: `mmu-isolation.md`
+- Dated evidence, including why COW/demand paging are dead: the progress log
+  on the `pre-upstream-rebase` tag (see the header note)
 - Templates being mirrored: `arch/risc-v/src/common/riscv_addrenv*.c`,
   `riscv_addrenv_kstack.c`, `arch/arm/src/armv7-a/arm_syscall.c`
   (kernel-stack switch in C), `boards/risc-v/qemu-rv/rv-virt` and
