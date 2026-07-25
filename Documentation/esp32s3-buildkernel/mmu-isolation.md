@@ -21,7 +21,7 @@ package-layer deliverable.
 > paging is **viable**, but sourced from the cache-MMU attribute layer, not PMS;
 > and PMS-based isolation is a kill-only (async) mechanism, not a restartable
 > one. Where the text below says "PMS `*Prohibited`", read "cache-attribute
-> `*Prohibited`". See `2026-dynamic-elf-progress-log.md` (2026-07-24, Unit B).
+> `*Prohibited`". See the progress log on the `pre-upstream-rebase` tag (2026-07-24, Unit B).
 
 > **On-silicon correction #2 (2026-07-25, Unit G go/no-go — demand paging is NOT
 > viable).** A follow-up probe settled whether a *present* cache-mapped page can
@@ -46,12 +46,10 @@ package-layer deliverable.
 > terminate just the faulting task) — all implemented and validated. A
 > `BUILD_KERNEL` address environment is still possible but only with **static**
 > per-process memory (no lazy stack/heap growth, no demand fill). See
-> `2026-dynamic-elf-progress-log.md` (2026-07-25, Unit G).
+> the progress log on the `pre-upstream-rebase` tag (2026-07-25, Unit G).
 
-This is a **stretch / future-work** track. It sits well above the thin
-lifecycle-helper scope of `nxpkg` and should not block or expand the current
-package milestones. See `2026-dynamic-elf-pkg-mvp.md` and
-`2026-dynamic-elf-delivery-plan.md` for the in-scope work.
+This note was written when this work was a stretch track alongside a package
+manager. It is now the main line: see `handoff.md` for current status.
 
 ## Motivation
 
