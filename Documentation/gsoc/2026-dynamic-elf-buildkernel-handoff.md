@@ -50,18 +50,10 @@ deferred free has drained.
    under BUILD_KERNEL, but nothing programs the PMS, so WORLD1 still reaches
    everything. See §7.1. This is the project's actual thesis and the largest
    remaining piece of work.
-2. **A signal handler that lives in user space crashes the task.** `ostest`
-   dies in its signal handler test with `EXCCAUSE 3` (LoadStoreError) and an
-   `EXCVADDR` that is a *return address* into `nxsig_deliver` — a
-   mis-restored register window. `SYS_signal_handler` in `xtensa_swint.c`
-   moves `REG_A1` from the thread's kernel stack to its user stack without
-   spilling the register windows first, so the kernel's frame chain is left
-   under the old stack while the handler spills over the new one. NuttX has
-   `SYS_flush_context` for this. Note that the per-task SIGSEGV abort does
-   *not* go this way: with `CONFIG_SIG_DEFAULT` the default action for
-   SIGSEGV is a kernel-resident handler that `nxsig_deliver()` calls
-   directly.
-3. Smaller items in §7.2.
+2. Smaller items in §7.2.
+
+`ostest` runs to `Exiting with status 0`, including the signal handler test
+— see the sixth on-target bug in §8.
 
 ### Scope reminder: what the silicon already ruled out
 
@@ -195,6 +187,7 @@ Newest first, on `gsoc/dynamic-elf-baseline`:
 
 | commit | what |
 |---|---|
+| `1018acde8c` | **signal delivery** to a user process (§8, sixth bug) |
 | `c31801705a` | **WORLD1 vector table** and the world/entry setup (§7.1) |
 | `7c57f06f3c` | the world split moved into `esp32s3_isolation.c` |
 | `67e9b2fb84` | the board defconfig `esp32s3-devkit:kernel_oct` (§6.1) |
@@ -411,7 +404,7 @@ no lazy growth — acceptable for the static-sandbox target.
   faulting.** Every mapping mistake in this port has been silent. Assume
   nothing; read it back over JTAG.
 
-### The five on-target bugs already found and fixed — do not re-derive them
+### The on-target bugs already found and fixed — do not re-derive them
 
 1. **IRAM placement** (`d04701d22f`) — the section scripts place IRAM code by
    archive name and every rule said `*libarch.a`; a kernel build archives into
@@ -441,6 +434,19 @@ no lazy growth — acceptable for the static-sandbox target.
    repeating: it is **not** the signal-delivery path, and it is **not** the
    windowed-ABI base save area (moving `A1` does not need that copy here,
    and copying *back* would actively corrupt the user's save area).
+7. **Signal delivery to a user process** (`1018acde8c`) — three faults in the
+   same path, none of which a protected build can show, because it has no
+   kernel stack and so already runs the kernel on the user stack. The handler
+   ran on the *kernel* stack, because `SYS_signal_handler` switched back to
+   user only when `xcp.ustkptr` was set and that holds a value only during a
+   system call. A system call made *by* the handler restarted the kernel stack
+   at its top, overwriting both the suspended dispatch and the context saved
+   to resume the thread — which is why the trampoline appeared to run twice
+   and the process ended up at PC 0. And the `siginfo` handed to the handler
+   was a kernel pointer, which is latent today and fatal the moment WORLD1
+   loses access to kernel memory. Note the earlier reading of this failure was
+   wrong: the register dump showed a stale `EXCCAUSE`, and the assertion was
+   ostest's own, its message lost in an unflushed stdio buffer.
 
 ---
 
