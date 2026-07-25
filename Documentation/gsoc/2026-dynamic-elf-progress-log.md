@@ -690,6 +690,36 @@ ESP32-S3-WROOM-2 (N32R8V) module — 32 MB octal flash + 8 MB octal PSRAM.
   `elf_oct` image already bundles it) to extend loader validation into the
   package layer on real octal hardware.
 
+### 2026-07-25 — Scope clarification: eager fork() is NOT blocked
+
+The "Unit H — copy-on-write / fork: DEAD" framing (commits `b8617a1721`,
+`c577151ad8`) is precise about the *mechanism* but reads as broader than it is.
+What the silicon rules out is the **lazy** implementations — copy-on-write and
+demand paging — because there is no synchronous, per-page, restartable *write*
+fault on the ESP32-S3. It does **not** rule out `fork()` itself.
+
+`fork()` requires only that the child end up with its own address environment
+holding the same virtual→content mapping as the parent. That is achievable
+**eagerly**: at fork time allocate fresh physical pages for the child, copy the
+parent's mapped regions up front, and clone the address environment (the
+cache-MMU window + PMS geometry) so the child sees the same VAs backed by the
+new physical pages. No write-fault, no COW, no demand fill is involved — it is
+exactly the **static per-process memory** model this project already scoped as
+viable (Milestone 2′, Units C–F without the `CONFIG_PAGING` fill handler).
+
+The cost is that each `fork()` duplicates the full mapped region up front (RAM
+and copy time) and there is no lazy stack/heap growth — acceptable for a small
+number of long-lived static sandboxes, which is the stated target envelope.
+
+Corrected scope statement:
+
+- **Blocked (hardware):** copy-on-write fork, demand paging, any lazy-fill
+  memory growth. No precise restartable write-fault exists.
+- **Viable:** a static-memory `BUILD_KERNEL` address environment with ELF
+  execution and an **eager-copy `fork()`**, built on the proven isolation
+  (Unit A), precise out-of-region fault detection, and per-task abort
+  (Units B/B.1). This is the active implementation target (Units C–F + fork).
+
 ## Update Format
 
 For future entries, use:
