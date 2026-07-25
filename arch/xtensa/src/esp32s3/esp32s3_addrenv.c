@@ -405,6 +405,46 @@ int up_addrenv_select(const arch_addrenv_t *addrenv)
 }
 
 /****************************************************************************
+ * Name: esp32s3_addrenv_mapnew
+ *
+ * Description:
+ *   Make a page that was added to an address environment after that
+ *   environment was created -- heap growth through sbrk()/pgalloc() --
+ *   visible to the running task.  The cache-MMU windows only ever reflect
+ *   the resident environment, so this is a no-op unless 'addrenv' is the one
+ *   currently selected.  For any other environment the page is picked up
+ *   from the page array by the next up_addrenv_select().
+ *
+ * Input Parameters:
+ *   addrenv - The address environment the page was added to.
+ *   vaddr   - The user virtual address the page is mapped at.
+ *   paddr   - The physical (page pool) address of the page.
+ *
+ ****************************************************************************/
+
+void esp32s3_addrenv_mapnew(const arch_addrenv_t *addrenv, uintptr_t vaddr,
+                            uintptr_t paddr)
+{
+  irqstate_t flags;
+  uint32_t   cache_state;
+
+  DEBUGASSERT(addrenv);
+
+  if (addrenv != g_current_addrenv)
+    {
+      return;
+    }
+
+  flags = enter_critical_section();
+
+  cache_state = esp32s3_dcache_suspend(false);
+  esp32s3_mmu_map_dbus(SOC_MMU_ACCESS_SPIRAM, vaddr, paddr, 1);
+  esp32s3_dcache_resume(cache_state);
+
+  leave_critical_section(flags);
+}
+
+/****************************************************************************
  * Name: up_addrenv_coherent
  *
  * Description:
