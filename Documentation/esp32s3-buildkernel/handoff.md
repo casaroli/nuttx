@@ -6,7 +6,7 @@ not, how to build and flash it, how to debug it, and what to do next. Read
 this first; the design note `mmu-isolation.md` is the background.
 
 Branch: `esp32s3/build-kernel`, on **Apache NuttX master** (both `nuttx/` and
-`apps/`). It carries only this port: 48 commits in `nuttx/` and
+`apps/`). It carries only this port: 51 commits in `nuttx/` and
 `examples/pffault` in `apps/`.
 
 The dated experiment log this port was originally developed alongside lived in
@@ -237,6 +237,8 @@ Newest first, on `gsoc/dynamic-elf-baseline`:
 
 | commit | what |
 |---|---|
+| `710c168cd6` | **`binfmt/elf`: `nx_priority == 0` means "default"** — an upstream bug, see below |
+| `21fc83d861` | kernel_oct stack sizes, after upstream moved them into the ELF |
 | `c63c939817` | **the page pool is no longer mapped** — processes are isolated from each other (§7.2) |
 | `7677557cd5` | user cache-MMU window cleanup — see the note below |
 | `b859e49c3d` | **PMS permissions** — the kernel/user boundary is enforced (§7.1) |
@@ -679,6 +681,22 @@ at the end of §7.2 is the way out, not a longer lock.
   whatever page that entry points at *later*. Any code that repoints an entry
   must write back first. This is why `esp32s3_mmu_scratch_unmap()` calls
   `cache_writeback_addr()` before it touches the table.
+- **A program's stack size and priority now come from the ELF, not the
+  kernel config.** `apps/Application.mk` stamps `nx_stacksize` and
+  `nx_priority` into each binary as absolute symbols from that app's own
+  `STACKSIZE`/`PRIORITY`, and `binfmt/elf.c` prefers them over
+  `CONFIG_ELF_STACKSIZE`/`SCHED_PRIORITY_DEFAULT`. Two consequences, both of
+  which bit on the move to upstream master and neither of which the build
+  shows:
+  - `CONFIG_ELF_STACKSIZE` is only a fallback. Raise
+    `CONFIG_DEFAULT_TASK_STACKSIZE` (most apps derive from it) and the
+    per-app symbols for the rest (`21fc83d861`).
+  - `PRIORITY = SCHED_PRIORITY_DEFAULT` is encoded as **0**, and `elf.c`
+    took it literally, creating the task at the idle task's priority so it
+    was queued behind idle and never ran. The program loads, reports no
+    error, and executes nothing. Fixed in `710c168cd6`; upstream bug, worth
+    a PR. `nm bin/<prog> | grep nx_` is how to check what a program actually
+    asks for.
 - **checkpatch tracks braces per section banner.** A `static const struct
   foo g_x[] = {...}` under a `Private Functions` banner produces a stream of
   "Bad left brace alignment" errors that have nothing to do with the
