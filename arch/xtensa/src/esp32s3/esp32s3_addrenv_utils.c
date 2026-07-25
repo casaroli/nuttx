@@ -150,9 +150,9 @@ void up_addrenv_page_wipe(uintptr_t page)
  *
  ****************************************************************************/
 
-uintptr_t up_addrenv_pa_to_va(uintptr_t pa)
+void *up_addrenv_pa_to_va(uintptr_t pa)
 {
-  return esp32s3_pgvaddr(pa);
+  return (void *)esp32s3_pgvaddr(pa);
 }
 
 /****************************************************************************
