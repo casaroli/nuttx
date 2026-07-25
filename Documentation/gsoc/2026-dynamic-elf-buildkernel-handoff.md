@@ -12,8 +12,8 @@ Branch: `gsoc/dynamic-elf-baseline` (both `nuttx/` and `apps/`).
 
 ## 1. Where this stands
 
-**`CONFIG_BUILD_KERNEL` boots to an interactive NSH on the ESP32-S3, and a
-second user process runs.** As of 2026-07-25, on the WROOM-2 board:
+**`CONFIG_BUILD_KERNEL` boots to an interactive NSH on the ESP32-S3, and user
+programs run from the shell.** As of 2026-07-25, on the WROOM-2 board:
 
 ```
 load_absmodule: Successfully loaded module /system/bin/init
@@ -38,17 +38,18 @@ Done
 environment, its text and data in PSRAM behind the cache MMU, and a 1 MB
 process heap. `getprime` is a second process that loads, runs and exits.
 
+Programs can be run repeatedly from the shell; `ps` shows no zombies, and the
+page pool returns to its 1245184-byte baseline after each run once the
+deferred free has drained.
+
 ### What is broken
 
-1. **The shell faults on its own return path after spawning a program.**
-   `getprime` completes correctly, then NSH dies. This is the immediate
-   blocker — see §7.1.
-2. **There is no memory protection yet.** Processes are isolated in the
+1. **There is no memory protection yet.** Processes are isolated in the
    *mapping* sense (separate address environments, separate physical pages)
    but not in the *protection* sense: nothing configures the World Controller
-   or the PMS under BUILD_KERNEL. See §7.2. This is the project's actual
+   or the PMS under BUILD_KERNEL. See §7.1. This is the project's actual
    thesis and the largest remaining piece of work.
-3. Smaller items in §7.3.
+2. Smaller items in §7.2.
 
 ### Scope reminder: what the silicon already ruled out
 
@@ -138,7 +139,7 @@ logs both ranges and panics if they disagree.
 ⚠ **Known latent collision:** user `.text` at entry 128 lies *inside* the
 kernel's PSRAM window (10–137), so mapping it destroys the kernel's view of
 PSRAM page 118. It is harmless only by luck — the pool stops at page 117.
-The user windows should be moved above entry 137. See §7.3.
+The user windows should be moved above entry 137. See §7.2.
 
 ---
 
@@ -182,7 +183,8 @@ Newest first, on `gsoc/dynamic-elf-baseline`:
 
 | commit | what |
 |---|---|
-| `1b02d09dd3` | per-thread **kernel stack** (see §7.1 for what is still wrong) |
+| `63e50dde0e` | **addrenv_switch() on voluntary context switch** — the spawn fix |
+| `1b02d09dd3` | per-thread **kernel stack** |
 | `3e98f4e7a7` | doc: first BUILD_KERNEL boot |
 | `907d814aff` | **cache coherency** for loaded text + page-pool validation |
 | `df99d323dd` | `sig_trampoline` in crt0 for BUILD_KERNEL |
@@ -333,35 +335,7 @@ proved the stale-I-cache bug — zeros on one, correct bytes on the other.
 
 ## 7. Remaining work, in priority order
 
-### 7.1 Fix the register-window chain across the kernel-stack switch
-
-**This is the immediate blocker.** `getprime` runs and exits correctly, then
-the shell that spawned it faults:
-
-```
-xtensa_user_panic: User Exception: EXCCAUSE=0000 task: /system/bin/init
-  PC: 42809e24   A0: 82804821   A1: 3d203d80
-  A2: 00000004   A3: 00000004   A6: 00000004   A7: 00000004   A9: 00000004
-```
-
-`PC 0x42809e24` is the last four bytes of the process's `.text` (which ends
-at `0x42809e28`) — padding, not a function — and the repeated `0x00000004`
-registers say this is a **register window restored from the wrong place**,
-not a damaged stack.
-
-Cause: ARM and RISC-V can simply swap SP, but Xtensa's windowed ABI keeps a
-**frame chain** — `retw` underflows and restores the caller's window from
-memory *below* `a1`. `xtensa_swint.c` moves `a1` to the kernel stack for the
-outermost system call, which leaves that chain pointing into the user stack,
-so the eventual return reads the wrong memory.
-
-Direction: force a full window spill before the switch and/or save and
-restore `WindowBase`/`WindowStart` around it. NuttX's Xtensa port already has
-**`SYS_flush_context`** ("flush windows to the stack") — read how that is used
-before writing anything. Ruled out already: the signal-handler path (the
-`kstkptr` handling was added, the fault did not change).
-
-### 7.2 Configure the World Controller and PMS — the actual isolation
+### 7.1 Configure the World Controller and PMS — the actual isolation
 
 **Nothing programs the protection hardware in a kernel build.**
 `esp32s3_userspace.c` is gated `CONFIG_BUILD_PROTECTED` in
@@ -394,16 +368,17 @@ The work is a BUILD_KERNEL counterpart to `configure_mpu()`, plus registering
 the PMS violation ISR. This is where the remaining engineering substance is,
 and it is what makes the project's isolation claim true.
 
-### 7.3 Map and packaging cleanups
+### 7.2 Map and packaging cleanups
 
 - Move the user windows above entry 137 so they stop overlapping the kernel's
   PSRAM window (§3), or shrink the kernel window to make room.
 - Invalidate unused window entries in `up_addrenv_select()` (§4, deferred
   item).
-- Save a board defconfig once the above lands — a defconfig implies "this
-  works", so it should not be committed while §7.1 stands.
+- Save a board defconfig. This is now reasonable to do: the system boots and
+  runs programs. Worth doing early so the configuration in §6 stops being
+  the only record of it.
 
-### 7.4 Eager `fork()`
+### 7.3 Eager `fork()`
 
 Once processes are isolated: `up_addrenv_create()` for the child sized to the
 parent's regions, copy each parent page into the child's through the kernel
@@ -455,6 +430,14 @@ no lazy growth — acceptable for the static-sandbox target.
 5. **`ARCH_PGPOOL_PBASE`** (`907d814aff`) — PSRAM maps at `0x3c0a0000`, so the
    pool's physical base is `0x360000`, not `0x400000`; every page wipe was
    landing 640 KB away.
+6. **`addrenv_switch()` on voluntary context switches** (`63e50dde0e`) —
+   Xtensa called it only from `xtensa_irq_dispatch()`, but `up_switch_context()`
+   is a `SYS_switch_context` system call here, so every voluntary switch left
+   the address environment alone. A resumed shell ran against its successor's
+   freed pages. Two dead ends were eliminated first, and are worth not
+   repeating: it is **not** the signal-delivery path, and it is **not** the
+   windowed-ABI base save area (moving `A1` does not need that copy here,
+   and copying *back* would actively corrupt the user's save area).
 
 ---
 
