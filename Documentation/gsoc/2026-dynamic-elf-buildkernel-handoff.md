@@ -204,9 +204,11 @@ Everything is gated so that existing **flat and protected builds are
 unchanged**; `esp32s3-devkit:elf_oct` (flat, silicon-validated) and
 `esp32s3-devkit:knsh` (protected, boots to nsh) both still build clean.
 
+`67e9b2fb84` saves the working configuration as the board defconfig
+`esp32s3-devkit:kernel_oct` (§6.1).
+
 **Not committed:** `boards/xtensa/esp32s3/esp32s3-devkit/src/romfs_boot.c` is
-a generated artifact and is deliberately untracked. The working config is
-**not** saved as a board defconfig yet — §6 reproduces it exactly.
+a generated artifact and is deliberately untracked.
 
 ---
 
@@ -214,77 +216,48 @@ a generated artifact and is deliberately untracked. The working config is
 
 ### 6.1 Configure
 
-Not yet a board defconfig. From `nuttx/`, `source ../.tools/env.sh`, then run
-these **one per line** — note `zsh` does not word-split unquoted variables, so
-a `for` loop over tweak strings silently applies nothing:
+From `nuttx/`, `source ../.tools/env.sh`, then:
 
 ```sh
-./tools/configure.sh esp32s3-devkit:knsh
-kconfig-tweak --disable CONFIG_BUILD_PROTECTED
-kconfig-tweak --disable CONFIG_BUILD_2PASS      # no protected userspace blob
-kconfig-tweak --enable  CONFIG_BUILD_KERNEL
-kconfig-tweak --enable  CONFIG_ARCH_USE_MMU
-kconfig-tweak --enable  CONFIG_ARCH_ADDRENV
-kconfig-tweak --enable  CONFIG_SCHED_LPWORK
-kconfig-tweak --enable  CONFIG_MM_PGALLOC
-kconfig-tweak --set-val CONFIG_MM_PGSIZE 65536
-kconfig-tweak --enable  CONFIG_ARCH_PGPOOL_MAPPING
-kconfig-tweak --set-val CONFIG_ARCH_TEXT_VBASE   0x42800000   # IBUS window
-kconfig-tweak --set-val CONFIG_ARCH_TEXT_NPAGES  8
-kconfig-tweak --set-val CONFIG_ARCH_DATA_VBASE   0x3d000000   # DBUS window
-kconfig-tweak --set-val CONFIG_ARCH_DATA_NPAGES  8
-kconfig-tweak --set-val CONFIG_ARCH_HEAP_VBASE   0x3d200000   # DBUS window
-kconfig-tweak --set-val CONFIG_ARCH_HEAP_NPAGES  16
-kconfig-tweak --set-val CONFIG_ARCH_PGPOOL_VBASE 0x3c400000
-kconfig-tweak --set-val CONFIG_ARCH_PGPOOL_PBASE 0x360000     # PSRAM *offset*
-kconfig-tweak --set-val CONFIG_ARCH_PGPOOL_SIZE  4194304      # DECIMAL (int)
-
-# Init process and the other user programs: separate ELFs in a ROMFS image,
-# mounted at /system/bin and exec'd from there.
-kconfig-tweak --enable  CONFIG_ELF
-kconfig-tweak --enable  CONFIG_BINFMT_ELF_EXECUTABLE
-kconfig-tweak --disable CONFIG_BINFMT_ELF_RELOCATABLE
-kconfig-tweak --enable  CONFIG_FS_ROMFS
-kconfig-tweak --enable  CONFIG_LIBC_EXECFUNCS
-kconfig-tweak --enable  CONFIG_LIBC_ENVPATH
-kconfig-tweak --enable  CONFIG_SCHED_WAITPID
-kconfig-tweak --enable  CONFIG_SCHED_HAVE_PARENT
-kconfig-tweak --enable  CONFIG_INIT_MOUNT
-kconfig-tweak --set-str CONFIG_INIT_MOUNT_TARGET "/system/bin"
-kconfig-tweak --set-val CONFIG_INIT_MOUNT_FLAGS  0x1
-kconfig-tweak --set-str CONFIG_INIT_FILEPATH     "/system/bin/init"
-kconfig-tweak --set-str CONFIG_PATH_INITIAL      "/system/bin"
-kconfig-tweak --enable  CONFIG_SYSTEM_NSH
-kconfig-tweak --set-str CONFIG_SYSTEM_NSH_PROGNAME "init"
-kconfig-tweak --enable  CONFIG_NSH_FILE_APPS
-
-# Kernel stack.  Required (see §4.4).  The 1568-byte default is far too
-# small: the whole ELF-loader system-call body runs on it.
-kconfig-tweak --enable  CONFIG_ARCH_KERNEL_STACK
-kconfig-tweak --set-val CONFIG_ARCH_KERNEL_STACKSIZE 8192
-
-# The 2048-byte user stack defaults are too small once NSH is a process.
-kconfig-tweak --set-val CONFIG_INIT_STACKSIZE 8192
-kconfig-tweak --set-val CONFIG_POSIX_SPAWN_DEFAULT_STACKSIZE 8192
-kconfig-tweak --set-val CONFIG_ELF_STACKSIZE 8192
-
-# Real hardware: WROOM-2 octal flash + octal PSRAM, single self-contained
-# image.  ESP32S3_APP_FORMAT_LEGACY is only "default y if BUILD_PROTECTED";
-# a kernel build is one image, so turning it off selects SIMPLE_BOOT and the
-# image flashes whole at 0x0 with NO ESP-IDF bootloader.  This board wants
-# STR sampling, not DTR, which esp32s3_spiflash.c rejects for octal mode.
-kconfig-tweak --disable CONFIG_ARCH_CHIP_ESP32S3WROOM1N4
-kconfig-tweak --enable  CONFIG_ARCH_CHIP_ESP32S3WROOM2N32R8V
-kconfig-tweak --disable CONFIG_ESP32S3_FLASH_MODE_DIO
-kconfig-tweak --enable  CONFIG_ESP32S3_FLASH_MODE_OCT
-kconfig-tweak --enable  CONFIG_ESP32S3_SPI_FLASH_USE_32BIT_ADDRESS
-kconfig-tweak --disable CONFIG_ESP32S3_APP_FORMAT_LEGACY
-kconfig-tweak --enable  CONFIG_ESP32S3_SPIFLASH
-kconfig-tweak --enable  CONFIG_ESP32S3_SPIRAM
-kconfig-tweak --enable  CONFIG_ESP32S3_SPIRAM_MODE_OCT
-
-make olddefconfig && make -j8
+./tools/configure.sh esp32s3-devkit:kernel_oct
+make -j8
 ```
+
+That defconfig is the protected `knsh` configuration retargeted at this
+board and switched to a kernel build. What it sets, and why:
+
+- **Build model.** `BUILD_KERNEL`, `ARCH_USE_MMU`, `ARCH_ADDRENV`,
+  `MM_PGALLOC`, `SCHED_LPWORK`. `BUILD_2PASS` is *off*: the second pass
+  builds the protected userspace blob, which a kernel build has no use for
+  (§2).
+- **The map** (§3): `ARCH_TEXT_VBASE=0x42800000` in the IBUS window with 8
+  pages; `ARCH_DATA_VBASE=0x3d000000` and `ARCH_HEAP_VBASE=0x3d200000` in
+  the DBUS window with 8 and 16; page pool `ARCH_PGPOOL_VBASE=0x3c400000`,
+  `ARCH_PGPOOL_PBASE=0x360000` — a PSRAM *offset*, not an address — and
+  `ARCH_PGPOOL_SIZE=4194304`, which is Kconfig type `int` and so must be
+  decimal. `MM_PGSIZE=65536` matches the cache MMU's page.
+- **Init and the other programs** are separate ELFs in a ROMFS image mounted
+  at `/system/bin` and exec'd from there: `ELF`,
+  `BINFMT_ELF_EXECUTABLE` without `BINFMT_ELF_RELOCATABLE`, `FS_ROMFS`,
+  `LIBC_EXECFUNCS`, `LIBC_ENVPATH`, `INIT_MOUNT`,
+  `INIT_FILEPATH="/system/bin/init"`, and NSH built as a program named
+  `init`.
+- **Stacks.** `ARCH_KERNEL_STACK` with `ARCH_KERNEL_STACKSIZE=8192` is
+  required (§4.4) and the 1568-byte default is far too small — the whole
+  ELF-loader system-call body runs on it. `INIT_STACKSIZE`,
+  `POSIX_SPAWN_DEFAULT_STACKSIZE` and `ELF_STACKSIZE` are 8192 for the same
+  reason; the 2048 defaults do not survive NSH being a process.
+- **This board.** `ARCH_CHIP_ESP32S3WROOM2N32R8V`, `ESP32S3_FLASH_MODE_OCT`
+  with **STR** sampling (`esp32s3_spiflash.c` rejects octal + DTR),
+  `ESP32S3_SPIFLASH`, `ESP32S3_SPIRAM` in octal mode.
+  `ESP32S3_APP_FORMAT_LEGACY` is off — it is only "default y if
+  BUILD_PROTECTED", and a kernel build is one image, so the configuration
+  selects `SIMPLE_BOOT` and `nuttx.bin` flashes whole at 0x0 with **no**
+  ESP-IDF bootloader.
+
+To change any of it by hand, `kconfig-tweak` still works, but run the tweaks
+**one per line**: `zsh` does not word-split unquoted variables, so a `for`
+loop over tweak strings silently applies nothing.
 
 ### 6.2 Build the user programs and the boot ROMFS
 
@@ -374,9 +347,6 @@ and it is what makes the project's isolation claim true.
   PSRAM window (§3), or shrink the kernel window to make room.
 - Invalidate unused window entries in `up_addrenv_select()` (§4, deferred
   item).
-- Save a board defconfig. This is now reasonable to do: the system boots and
-  runs programs. Worth doing early so the configuration in §6 stops being
-  the only record of it.
 
 ### 7.3 Eager `fork()`
 
