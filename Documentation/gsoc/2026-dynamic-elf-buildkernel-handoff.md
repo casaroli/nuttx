@@ -46,10 +46,22 @@ deferred free has drained.
 
 1. **There is no memory protection yet.** Processes are isolated in the
    *mapping* sense (separate address environments, separate physical pages)
-   but not in the *protection* sense: nothing configures the World Controller
-   or the PMS under BUILD_KERNEL. See §7.1. This is the project's actual
-   thesis and the largest remaining piece of work.
-2. Smaller items in §7.2.
+   but not in the *protection* sense: the World Controller is now configured
+   under BUILD_KERNEL, but nothing programs the PMS, so WORLD1 still reaches
+   everything. See §7.1. This is the project's actual thesis and the largest
+   remaining piece of work.
+2. **A signal handler that lives in user space crashes the task.** `ostest`
+   dies in its signal handler test with `EXCCAUSE 3` (LoadStoreError) and an
+   `EXCVADDR` that is a *return address* into `nxsig_deliver` — a
+   mis-restored register window. `SYS_signal_handler` in `xtensa_swint.c`
+   moves `REG_A1` from the thread's kernel stack to its user stack without
+   spilling the register windows first, so the kernel's frame chain is left
+   under the old stack while the handler spills over the new one. NuttX has
+   `SYS_flush_context` for this. Note that the per-task SIGSEGV abort does
+   *not* go this way: with `CONFIG_SIG_DEFAULT` the default action for
+   SIGSEGV is a kernel-resident handler that `nxsig_deliver()` calls
+   directly.
+3. Smaller items in §7.2.
 
 ### Scope reminder: what the silicon already ruled out
 
@@ -183,6 +195,9 @@ Newest first, on `gsoc/dynamic-elf-baseline`:
 
 | commit | what |
 |---|---|
+| `c31801705a` | **WORLD1 vector table** and the world/entry setup (§7.1) |
+| `7c57f06f3c` | the world split moved into `esp32s3_isolation.c` |
+| `67e9b2fb84` | the board defconfig `esp32s3-devkit:kernel_oct` (§6.1) |
 | `63e50dde0e` | **addrenv_switch() on voluntary context switch** — the spawn fix |
 | `1b02d09dd3` | per-thread **kernel stack** |
 | `3e98f4e7a7` | doc: first BUILD_KERNEL boot |
@@ -203,9 +218,6 @@ Newest first, on `gsoc/dynamic-elf-baseline`:
 Everything is gated so that existing **flat and protected builds are
 unchanged**; `esp32s3-devkit:elf_oct` (flat, silicon-validated) and
 `esp32s3-devkit:knsh` (protected, boots to nsh) both still build clean.
-
-`67e9b2fb84` saves the working configuration as the board defconfig
-`esp32s3-devkit:kernel_oct` (§6.1).
 
 **Not committed:** `boards/xtensa/esp32s3/esp32s3-devkit/src/romfs_boot.c` is
 a generated artifact and is deliberately untracked.
@@ -308,38 +320,59 @@ proved the stale-I-cache bug — zeros on one, correct bytes on the other.
 
 ## 7. Remaining work, in priority order
 
-### 7.1 Configure the World Controller and PMS — the actual isolation
+### 7.1 Configure the PMS — the actual isolation
 
-**Nothing programs the protection hardware in a kernel build.**
-`esp32s3_userspace.c` is gated `CONFIG_BUILD_PROTECTED` in
-`arch/xtensa/src/esp32s3/Make.defs:42`, and it is the *only* caller of the
-WCL and PMS setup. So under BUILD_KERNEL:
+The World Controller half of this is done (`67e9b2fb84`, `7c57f06f3c`,
+`c31801705a`).  `esp32s3_isolation.c` now holds the world split for any
+non-flat build, WORLD1 has its own vector table
+(`arch/xtensa/src/esp32s3/esp32s3_world1_vectors.S`, linked at 0x40374400
+immediately after the kernel's), and `esp32s3_isolation_worlds()` — called from
+`esp32s3_start.c` — gives each world its vector base and registers the two
+kernel vectors that take the CPU back to WORLD0.  Read back over JTAG and
+running on the WROOM-2.
 
-- `configure_mpu()` never runs — no SRAM split line, no WORLD0/WORLD1
-  permissions;
-- `esp32s3_wcl_set_vecbase(PMS_WORLD_1, …)` and
-  `esp32s3_wcl_set_world0_entry()` never run;
-- `esp32s3_pmsirqinitialize()` is an empty macro
-  (`esp32s3_userspace.h:66`), so the PMS violation ISR is never registered
-  and the Unit B.1 per-task SIGSEGV abort is absent.
+**Why WORLD1 needs a table of its own**, since it is the question this section
+used to pose: it cannot use the kernel's, because once permissions exist it
+would have to fetch it.  Nor can each vector simply be a World Controller entry
+address.  Entering a kernel vector that way switches the CPU to WORLD0, and only
+the level 1 and level 3 paths record the interruptee's world on the way in and
+restore it on the way out (`exception_entry_hook` / `exception_exit_hook` in
+`chip_macros.h`).  A window spill returns with `RFWO`/`RFWU`, which no hook
+covers, so a task that overflowed a register window would come back
+**privileged**.  So the WORLD1 table handles window overflow and underflow
+itself — they touch nothing but the interrupted task's own stack — and every
+other slot jumps to its kernel counterpart, the jump running in WORLD1 and the
+fetch of its target changing world.  Two entry slots, not twelve.  This is what
+a protected build does from the user image's table; the level 4 and level 5
+slots are empty in both tables because this configuration has no interrupt
+above level 3.
 
-`xtensa_lowerprivilege()` *does* flip the task to WORLD1
-(`regs[REG_INT_CTX] = WCL_WORLD_USER`), but the hardware that would give
-WORLD1 meaning was never configured — so today's processes are separated,
-not protected.
+**What is still missing is the permission configuration itself**, so a kernel
+build still has no memory protection: `configure_mpu()` is protected-only, no
+split lines or WORLD0/WORLD1 permissions are programmed, and
+`esp_pmsirqinitialize()` in `arch/xtensa/src/common/espressif/esp_irq.c` is
+still gated on `CONFIG_BUILD_PROTECTED`, so the violation ISR is never
+registered and the Unit B.1 per-task SIGSEGV abort is absent.
+`xtensa_lowerprivilege()` does flip each task to WORLD1, but nothing has given
+WORLD1 a meaning — today's processes are separated, not protected.
 
-The design question to answer: the protected build points WORLD1's VECBASE at
-`UIRAM_START`, a *user* vector table that a kernel build does not have. So
-decide what WORLD1's VECBASE should be (presumably the kernel's own vectors)
-and which of the **13** WCL world-entry slots
-(`WCL_ENTRY_MAX`, `esp32s3_wcl.c`) must be registered so the CPU returns to
-WORLD0 for each vector the user can reach — the six window overflow/underflow
-vectors, the user exception vector, the level 2-5 interrupt vectors, and the
-double exception vector.
+The work is a BUILD_KERNEL counterpart to `configure_mpu()`: IRAM split lines
+that leave the WORLD1 table as the only instruction memory a user task may
+fetch, WORLD1 denied the rest of IRAM, all of DRAM, the caches and every
+peripheral (`esp32s3_isolation_revoke_peripherals()` is already there for it),
+the monitors enabled and the ISR registered.  The board configuration also
+wants `CONFIG_ESP32S3_PAGEFAULT_ABORT`, which is off in `kernel_oct`, so that a
+violation kills the task rather than the system.
 
-The work is a BUILD_KERNEL counterpart to `configure_mpu()`, plus registering
-the PMS violation ISR. This is where the remaining engineering substance is,
-and it is what makes the project's isolation claim true.
+Two things it does not cover.  PSRAM — where user text, data and heap live — is
+gated by `APB_CTRL_SRAM_ACEn_{ADDR,SIZE,ATTR}`, the external-memory counterpart
+of the `FLASH_ACE` registers that `esp32s3_pms.c` already drives; that API does
+not exist yet and the reset default is permissive, so PSRAM can stay open at
+first.  And this buys kernel/user isolation, not isolation *between* processes:
+every user page comes from one page pool that the kernel keeps mapped at
+0x3c0a0000, and the ACE registers gate by physical offset, so separating
+processes from each other still depends on the deferred window-invalidation item
+in §7.2.
 
 ### 7.2 Map and packaging cleanups
 
