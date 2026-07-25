@@ -41,6 +41,19 @@
 #include "xtensa.h"
 
 /****************************************************************************
+ * Pre-processor Definitions
+ ****************************************************************************/
+
+#ifdef CONFIG_ARCH_KERNEL_STACK
+/* A stack pointer is 16-byte aligned, and the windowed ABI reserves the
+ * 16 bytes below one as the base save area of the frame that owns it.
+ */
+
+#  define SIGTRAMP_STACK_ALIGN  16
+#  define SIGTRAMP_SAVE_AREA    16
+#endif
+
+/****************************************************************************
  * Private Functions
  ****************************************************************************/
 
@@ -326,15 +339,50 @@ int xtensa_swint(int irq, void *context, void *arg)
 
 #ifdef CONFIG_ARCH_KERNEL_STACK
           /* The handler runs in user mode, so it has to run on the user
-           * stack.  If the signal caught this thread part way through a
-           * system call it is currently on its kernel stack, so put that
+           * stack.  Signal dispatch always reaches here on the thread's
+           * kernel stack -- up_schedule_sigaction() builds the dispatch
+           * context below the interrupted one -- so put that stack pointer
            * aside and hand the thread its own stack back for the duration.
+           *
+           * Having a kernel stack at all is what says this is a user
+           * process.  Testing xcp.ustkptr instead would be wrong: that
+           * holds the user stack pointer only while a system call is in
+           * progress, so a signal caught in user code would leave the
+           * handler running on the kernel stack.
            */
 
-          if (rtcb->xcp.ustkptr != NULL)
+          if (rtcb->xcp.kstack != NULL)
             {
+              uintptr_t usp;
+
               rtcb->xcp.kstkptr = (uint32_t *)regs[REG_A1];
-              regs[REG_A1]      = (uintptr_t)rtcb->xcp.ustkptr;
+
+              /* The thread's own stack pointer is the one the system call
+               * saved if it was in one, and otherwise the one it was
+               * interrupted with, which up_schedule_sigaction() kept.
+               */
+
+              usp = rtcb->xcp.ustkptr != NULL ?
+                    (uintptr_t)rtcb->xcp.ustkptr :
+                    (uintptr_t)rtcb->xcp.saved_regs[REG_A1];
+
+              /* The siginfo passed in lives on the kernel stack, which the
+               * handler must not reach -- and cannot, once the permission
+               * control is programmed.  Copy it onto the user stack and
+               * hand the handler that copy.
+               *
+               * Skip the base save area the windowed ABI keeps in the
+               * 16 bytes below a stack pointer: it belongs to the frame
+               * that was interrupted.
+               */
+
+              usp = (usp - SIGTRAMP_SAVE_AREA - sizeof(siginfo_t)) &
+                    ~(SIGTRAMP_STACK_ALIGN - 1);
+
+              memcpy((void *)usp, (void *)regs[REG_A4], sizeof(siginfo_t));
+
+              regs[REG_A4]      = usp;            /* info */
+              regs[REG_A1]      = usp;
             }
 #endif
         }
@@ -365,12 +413,14 @@ int xtensa_swint(int irq, void *context, void *arg)
           rtcb->xcp.sigreturn = 0;
 
 #ifdef CONFIG_ARCH_KERNEL_STACK
-          /* The handler is done; if it had borrowed the user stack back
-           * from an interrupted system call, return to the kernel stack.
+          /* The handler is done: return to the kernel stack the signal
+           * dispatch was running on.
            */
 
-          if (rtcb->xcp.kstkptr != NULL)
+          if (rtcb->xcp.kstack != NULL)
             {
+              DEBUGASSERT(rtcb->xcp.kstkptr != NULL);
+
               regs[REG_A1]      = (uintptr_t)rtcb->xcp.kstkptr;
               rtcb->xcp.kstkptr = NULL;
             }
@@ -432,7 +482,19 @@ int xtensa_swint(int irq, void *context, void *arg)
           if (index == 0 && rtcb->xcp.ktopstk != NULL)
             {
               rtcb->xcp.ustkptr = (uint32_t *)regs[REG_A1];
-              regs[REG_A1]      = (uintptr_t)rtcb->xcp.ktopstk;
+
+              /* Start at the top of the kernel stack -- unless a signal
+               * handler is running, in which case the kernel stack is in
+               * use down to the point the dispatch left it at, and this
+               * call has to continue below that.  Restarting at the top
+               * would overwrite both the suspended signal dispatch and the
+               * context it saved to resume the thread with, which sits in
+               * the topmost frame.
+               */
+
+              regs[REG_A1]      = rtcb->xcp.kstkptr != NULL ?
+                                  (uintptr_t)rtcb->xcp.kstkptr :
+                                  (uintptr_t)rtcb->xcp.ktopstk;
             }
 #endif
 
