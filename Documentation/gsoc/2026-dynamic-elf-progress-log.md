@@ -811,6 +811,100 @@ Fix the entry-index partition (kernel flash / kernel PSRAM pgpool / user text
 per the isolation-via-remap decision), save the config as a board defconfig,
 and take it to first boot over OpenOCD/GDB. Then eager `fork()`.
 
+### 2026-07-25 — A board configuration for the kernel build, and a vector table for the unprivileged world
+
+#### Completed
+
+- `67e9b2fb84` — **`esp32s3-devkit:kernel_oct`**, the first BUILD_KERNEL board
+  configuration.  Until now the configuration that boots existed only as a page
+  of `kconfig-tweak` commands in the handoff document, so a `distclean` or one
+  mistyped line lost it.
+- `7c57f06f3c` — the privileged/unprivileged world split moved out of
+  `esp32s3_userspace.c`, which is compiled only for a protected build, into
+  `esp32s3_isolation.c`, compiled for any non-flat build.  The violation ISR,
+  the monitor acknowledgement, the peripheral permissions and the interrupt
+  registration are not specific to the protected user image; what stays behind
+  is.  No functional change.
+- `c31801705a` — a vector table for WORLD1 (`esp32s3_world1_vectors.S`), and
+  `esp32s3_isolation_worlds()` to give each world its own vector base and to
+  register the kernel vectors that return the CPU to WORLD0.
+
+The reasoning behind the WORLD1 table is the part worth keeping.  WORLD1 cannot
+simply use the kernel's table once permissions exist, because it would have to
+fetch it.  Nor can every vector be a World Controller entry address: entering a
+kernel vector that way switches the CPU to WORLD0, and only the level 1 and
+level 3 paths record the interruptee's world on the way in and restore it on the
+way out (`exception_entry_hook` / `exception_exit_hook`).  A window spill returns
+with `RFWO`/`RFWU`, which no hook covers, so a task that overflowed a register
+window would come back **privileged**.  Window overflow and underflow are
+therefore handled inside the WORLD1 table, where they touch nothing but the
+interrupted task's own stack, and every other slot jumps to its kernel
+counterpart -- the jump runs in WORLD1, the fetch of its target changes world.
+This is what a protected build does from the user image's own table.
+
+#### Evidence
+
+Reconfiguring from the new defconfig reproduces the booting `.config` exactly;
+the only line that differs is the recorded name of the base configuration.
+
+On the WROOM-2 devkit, flashed as a single image at 0x0: boots to interactive
+`nsh`, `/system/bin/getprime` runs twice with the correct result (1230 primes,
+~1200 msec), `ps` shows no zombies, and both `Kmem` (17840 used) and the page
+pool (1245184 of 4194304) return to their baseline after each run.
+
+The World Controller registers read back over JTAG confirm the table is in use
+rather than merely present:
+
+```
+VECBASE_OVERRIDE_1 = 0x00d00dd0   SEL=0b11 (override on), WORLD0 = 0x40374000
+VECBASE_OVERRIDE_2 = 0x00100dd1   WORLD1 = 0x40374400
+WCL ENTRY_1_ADDR   = 0x00374340   _user_exception_vector
+WCL ENTRY_2_ADDR   = 0x003741c0   _xtensa_level3_vector
+WCL ENTRY_CHECK    = 0x00000006   entries 1 and 2 enabled
+```
+
+Since `nsh` is itself a user process, every command it runs has already
+exercised both paths: window spills serviced from the WORLD1 table, and system
+calls entering the kernel through entry 1.  The entry address registers hold
+only the low 26 bits of the address written to them, which the register
+description does not mention; a protected build has always behaved this way.
+
+No regressions: `esp32s3-devkit:elf_oct` (flat) and `esp32s3-devkit:knsh`
+(protected) both still build clean, the latter identically apart from the
+version string embedded in both images.
+
+#### Blockers or Risks
+
+**`ostest` fails in the signal handler test, and it is not a regression.**
+Delivering a signal to a user task whose handler lives in user space crashes:
+the task ends with `EXCCAUSE 3` (LoadStoreError) and an `EXCVADDR` of
+`0x8201374d` -- a *return address* into `nxsig_deliver` being used as a data
+address, which is what a mis-restored register window looks like.  Rebuilding
+and flashing the preceding commit reproduces it identically, so the WORLD1
+table is not the cause.
+
+The likely cause is that `SYS_signal_handler` moves `REG_A1` from the thread's
+kernel stack to its user stack (`xtensa_swint.c`) without first spilling the
+register windows.  The windowed ABI keeps a frame chain in memory below the
+stack pointer, so the kernel frames live under the old stack while the user
+handler's `entry` spills over the new one; on the way back the underflow
+handler restores from save areas that were never written.  NuttX has
+`SYS_flush_context` for exactly this.
+
+This does **not** block the isolation work.  The per-task SIGSEGV abort takes
+the other branch in `nxsig_deliver()`: with `CONFIG_SIG_DEFAULT` the default
+action for SIGSEGV is a handler that lives in the kernel and is called
+directly, never through the user-mode dispatch that is broken here.
+
+#### Next
+
+The permissions themselves -- the point of the exercise.  Split lines that
+leave the WORLD1 table as the only instruction memory a user task may fetch,
+WORLD1 denied the rest of IRAM, all of DRAM, the caches and every peripheral,
+the monitors enabled and the violation ISR registered (`esp_irq.c` still gates
+that on `BUILD_PROTECTED`), and `CONFIG_ESP32S3_PAGEFAULT_ABORT` enabled in the
+board configuration so a violation kills the task rather than the system.
+
 ## Update Format
 
 For future entries, use:
