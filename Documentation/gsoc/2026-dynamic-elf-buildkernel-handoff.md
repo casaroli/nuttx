@@ -44,12 +44,12 @@ deferred free has drained.
 
 ### What is broken
 
-1. **There is no memory protection yet.** Processes are isolated in the
-   *mapping* sense (separate address environments, separate physical pages)
-   but not in the *protection* sense: the World Controller is now configured
-   under BUILD_KERNEL, but nothing programs the PMS, so WORLD1 still reaches
-   everything. See §7.1. This is the project's actual thesis and the largest
-   remaining piece of work.
+1. **Processes are not isolated from each other.** The kernel/user boundary
+   is enforced (§7.1), but every user page comes from one pool the kernel
+   keeps mapped, and the external-memory permissions are indexed by physical
+   address, so one process can still reach another's pages through the
+   kernel's own PSRAM window. That needs the deferred window-invalidation
+   item in §7.2.
 2. Smaller items in §7.2.
 
 `ostest` runs to `Exiting with status 0`, including the signal handler test
@@ -187,7 +187,8 @@ Newest first, on `gsoc/dynamic-elf-baseline`:
 
 | commit | what |
 |---|---|
-| `1018acde8c` | **signal delivery** to a user process (§8, sixth bug) |
+| `568f377c15` | **PMS permissions** — the kernel/user boundary is enforced (§7.1) |
+| `1018acde8c` | **signal delivery** to a user process (§8, seventh bug) |
 | `c31801705a` | **WORLD1 vector table** and the world/entry setup (§7.1) |
 | `7c57f06f3c` | the world split moved into `esp32s3_isolation.c` |
 | `67e9b2fb84` | the board defconfig `esp32s3-devkit:kernel_oct` (§6.1) |
@@ -313,59 +314,60 @@ proved the stale-I-cache bug — zeros on one, correct bytes on the other.
 
 ## 7. Remaining work, in priority order
 
-### 7.1 Configure the PMS — the actual isolation
+### 7.1 The kernel/user boundary — done
 
-The World Controller half of this is done (`67e9b2fb84`, `7c57f06f3c`,
-`c31801705a`).  `esp32s3_isolation.c` now holds the world split for any
-non-flat build, WORLD1 has its own vector table
-(`arch/xtensa/src/esp32s3/esp32s3_world1_vectors.S`, linked at 0x40374400
-immediately after the kernel's), and `esp32s3_isolation_worlds()` — called from
-`esp32s3_start.c` — gives each world its vector base and registers the two
-kernel vectors that take the CPU back to WORLD0.  Read back over JTAG and
-running on the WROOM-2.
+`67e9b2fb84`, `7c57f06f3c`, `c31801705a` and `568f377c15`.  A user process now
+reaches nothing of the kernel's: not its data, not its code, not its vectors,
+not a peripheral.  Measured on the WROOM-2 with `examples/pffault`, which is
+in the board configuration for exactly this:
 
-**Why WORLD1 needs a table of its own**, since it is the question this section
-used to pose: it cannot use the kernel's, because once permissions exist it
-would have to fetch it.  Nor can each vector simply be a World Controller entry
-address.  Entering a kernel vector that way switches the CPU to WORLD0, and only
-the level 1 and level 3 paths record the interruptee's world on the way in and
-restore it on the way out (`exception_entry_hook` / `exception_exit_hook` in
-`chip_macros.h`).  A window spill returns with `RFWO`/`RFWU`, which no hook
-covers, so a task that overflowed a register window would come back
-**privileged**.  So the WORLD1 table handles window overflow and underflow
-itself — they touch nothing but the interrupted task's own stack — and every
-other slot jumps to its kernel counterpart, the jump running in WORLD1 and the
-fetch of its target changing world.  Two entry slots, not twelve.  This is what
-a protected build does from the user image's table; the level 4 and level 5
-slots are empty in both tables because this configuration has no interrupt
-above level 3.
+```
+pffault r 0x3fc90954   kernel data           SIGSEGV, shell survives
+pffault w 0x3fc90954   kernel data           SIGSEGV
+pffault r 0x40374000   kernel vectors        SIGSEGV
+pffault r 0x4037dc00   the WORLD1 table      SIGSEGV   (execute-only)
+pffault r 0x600d0000   the World Controller  SIGSEGV
+```
 
-**What is still missing is the permission configuration itself**, so a kernel
-build still has no memory protection: `configure_mpu()` is protected-only, no
-split lines or WORLD0/WORLD1 permissions are programmed, and
-`esp_pmsirqinitialize()` in `arch/xtensa/src/common/espressif/esp_irq.c` is
-still gated on `CONFIG_BUILD_PROTECTED`, so the violation ISR is never
-registered and the Unit B.1 per-task SIGSEGV abort is absent.
-`xtensa_lowerprivilege()` does flip each task to WORLD1, but nothing has given
-WORLD1 a meaning — today's processes are separated, not protected.
+Each kills only the offending task; `ps` shows no zombies and the page pool
+returns to its baseline.  Before, every one of them returned the real
+contents.
 
-The work is a BUILD_KERNEL counterpart to `configure_mpu()`: IRAM split lines
-that leave the WORLD1 table as the only instruction memory a user task may
-fetch, WORLD1 denied the rest of IRAM, all of DRAM, the caches and every
-peripheral (`esp32s3_isolation_revoke_peripherals()` is already there for it),
-the monitors enabled and the ISR registered.  The board configuration also
-wants `CONFIG_ESP32S3_PAGEFAULT_ABORT`, which is off in `kernel_oct`, so that a
-violation kills the task rather than the system.
+Three things are worth carrying forward.
 
-Two things it does not cover.  PSRAM — where user text, data and heap live — is
-gated by `APB_CTRL_SRAM_ACEn_{ADDR,SIZE,ATTR}`, the external-memory counterpart
-of the `FLASH_ACE` registers that `esp32s3_pms.c` already drives; that API does
-not exist yet and the reset default is permissive, so PSRAM can stay open at
-first.  And this buys kernel/user isolation, not isolation *between* processes:
-every user page comes from one page pool that the kernel keeps mapped at
-0x3c0a0000, and the ACE registers gate by physical offset, so separating
-processes from each other still depends on the deferred window-invalidation item
-in §7.2.
+**WORLD1 needs a vector table of its own.**  It cannot use the kernel's,
+because it would have to fetch it, and it cannot reach the kernel's through
+World Controller entry addresses either: entering one switches the CPU to
+WORLD0, and only the level 1 and level 3 paths restore the interruptee's
+world on the way out (`exception_entry_hook` / `exception_exit_hook`).  A
+window spill returns with `RFWO`/`RFWU`, which no hook covers, so a task that
+overflowed a register window would come back **privileged**.  The WORLD1
+table therefore handles window overflow and underflow itself — they touch
+nothing but the task's own stack — and every other slot jumps to its kernel
+counterpart, the jump running in WORLD1 and the fetch of its target changing
+world.  Two entry slots, not twelve.
+
+**The table has to live in Internal SRAM1.**  The permission control divides
+SRAM0 into two 16 KB blocks and can say nothing finer, so a table there would
+drag the kernel's own vectors and the start of its IRAM code into whatever
+the table is granted.  SRAM1 is divided by split lines at 256-byte
+granularity.  `esp32s3_isolation_permissions()` asserts the link put it
+there, because the failure would otherwise be silent.
+
+**The world switch was never compiled into a kernel build.**  `ESP32S3_WCL`
+selected `XTENSA_HAVE_GENERAL_EXCEPTION_HOOKS` only `if BUILD_PROTECTED`, and
+those hooks are the whole mechanism: without them `set_next_world()` never
+runs and every task keeps executing in WORLD0 regardless of what
+`xtensa_lowerprivilege()` writes into its context.  The permissions were
+correct and enforced against a world nothing ever entered.  This is the shape
+of failure to expect here — everything looks configured and nothing is.
+
+**What this does not do is isolate processes from each other.**  They all
+draw pages from one pool that the kernel keeps mapped at 0x3c0a0000, and the
+external-memory permissions (`APB_CTRL_SRAM_ACEn_*`, the PSRAM counterpart of
+the `FLASH_ACE` registers `esp32s3_pms.c` drives, and still unused here) are
+indexed by physical address.  Separating processes needs the window
+invalidation in §7.2.
 
 ### 7.2 Map and packaging cleanups
 
