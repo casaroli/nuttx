@@ -49,6 +49,7 @@
 #include "esp_irq.h"
 #include "esp32s3_isolation.h"
 #include "esp32s3_pms.h"
+#include "esp32s3_wcl.h"
 #include "hardware/esp32s3_sensitive.h"
 #include "hardware/esp32s3_soc.h"
 
@@ -60,6 +61,26 @@
 #endif
 
 #ifndef CONFIG_BUILD_FLAT
+
+/****************************************************************************
+ * Public Data
+ ****************************************************************************/
+
+#ifdef CONFIG_BUILD_KERNEL
+
+/* The WORLD1 vector table (esp32s3_world1_vectors.S), which the linker
+ * script places at the 1 KB alignment a vector base requires.
+ */
+
+extern uint8_t _world1_vectors[];
+
+/* Vectors in the kernel's own table.  Fetching one of these switches the CPU
+ * to WORLD0 once it is registered as a World Controller entry address.
+ */
+
+extern void _user_exception_vector(void);
+extern void _xtensa_level3_vector(void);
+#endif
 
 /****************************************************************************
  * Private Functions
@@ -256,6 +277,34 @@ void esp32s3_isolation_revoke_peripherals(void)
   esp32s3_pms_configure_peripheral(PMS_SPI_3, PMS_WORLD_1, PMS_ACCESS_NONE);
   esp32s3_pms_configure_peripheral(PMS_USB, PMS_WORLD_1, PMS_ACCESS_NONE);
 }
+
+#ifdef CONFIG_BUILD_KERNEL
+
+/****************************************************************************
+ * Name: esp32s3_isolation_worlds
+ ****************************************************************************/
+
+void esp32s3_isolation_worlds(void)
+{
+  /* Give each world its own vector table.  The override applies to both
+   * worlds at once, so WORLD0 has to be pointed at the kernel table it has
+   * been using all along, the one __start() loaded into VECBASE.
+   */
+
+  esp32s3_wcl_set_vecbase(PMS_WORLD_0, (uintptr_t)_init_start);
+  esp32s3_wcl_set_vecbase(PMS_WORLD_1, (uintptr_t)_world1_vectors);
+
+  /* Fetching one of these kernel vectors is what takes the CPU back to
+   * WORLD0.  Only the level 1 and level 3 paths record the interruptee's
+   * world on the way in and restore it on the way out, so only those two
+   * may be reached from WORLD1; the WORLD1 table handles window spills
+   * itself and never leaves the world.
+   */
+
+  esp32s3_wcl_set_world0_entry(1, (uintptr_t)_user_exception_vector);
+  esp32s3_wcl_set_world0_entry(2, (uintptr_t)_xtensa_level3_vector);
+}
+#endif
 
 /****************************************************************************
  * Name: esp32s3_pmsirqinitialize

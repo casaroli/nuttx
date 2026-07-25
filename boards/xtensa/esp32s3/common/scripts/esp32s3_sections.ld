@@ -164,6 +164,19 @@ SECTIONS
     _init_end = ABSOLUTE(.);
   } >iram0_0_seg AT>ROM
 
+#ifdef CONFIG_BUILD_KERNEL
+  /* The vector table the World Controller gives to WORLD1, the unprivileged
+   * world.  It is a table in its own right, so it needs the 1 KB alignment a
+   * vector base requires, and it is kept apart from the kernel's own code so
+   * that it can be the only instruction memory a user task may fetch.
+   */
+
+  .world1.vectors : ALIGN(1024)
+  {
+    KEEP (*(.world1_vectors.text));
+  } >iram0_0_seg AT>ROM
+#endif
+
   .iram0.text : ALIGN(4)
   {
     /* Code marked as running out of IRAM */

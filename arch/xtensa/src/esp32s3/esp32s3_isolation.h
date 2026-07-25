@@ -51,6 +51,28 @@
 
 void esp32s3_isolation_revoke_peripherals(void);
 
+#ifdef CONFIG_BUILD_KERNEL
+
+/****************************************************************************
+ * Name: esp32s3_isolation_worlds
+ *
+ * Description:
+ *   Give the unprivileged world its own vector table and tell the World
+ *   Controller which kernel vectors return the CPU to the privileged world.
+ *   A protected build does the equivalent from esp32s3_userspace.c, where
+ *   the table belongs to the user image instead.
+ *
+ * Input Parameters:
+ *   None.
+ *
+ * Returned Value:
+ *   None.
+ *
+ ****************************************************************************/
+
+void esp32s3_isolation_worlds(void);
+#endif
+
 /****************************************************************************
  * Name: esp32s3_pmsirqinitialize
  *
