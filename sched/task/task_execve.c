@@ -32,7 +32,10 @@
 #include <nuttx/debug.h>
 
 #include <nuttx/binfmt/binfmt.h>
+#include <nuttx/sched.h>
 #include <nuttx/binfmt/symtab.h>
+
+#include "sched/sched.h"
 
 #ifdef CONFIG_LIBC_EXECFUNCS
 
@@ -122,6 +125,15 @@ int execve(FAR const char *path, FAR char * const argv[],
   /* Get the current symbol table selection */
 
   exec_getsymtab(&symtab, &nsymbols);
+
+#ifdef CONFIG_ARCH_HAVE_VFORK
+  /* A vfork() child is released to exec():  POSIX resumes the parent here,
+   * not merely when the child terminates.  Do it before the new program is
+   * started so the parent is running again by the time it does.
+   */
+
+  nxtask_vfork_release(this_task());
+#endif
 
   /* Start the task */
 

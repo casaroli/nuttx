@@ -117,7 +117,8 @@ pid_t riscv_fork(const struct fork_s *context)
 
   /* Allocate and initialize a TCB for the child task. */
 
-  child = nxtask_setup_fork((start_t)parent->xcp.sregs[REG_RA]);
+  child = nxtask_setup_fork((start_t)parent->xcp.sregs[REG_RA], true,
+                            parent->xcp.sregs[REG_SP]);
   if (!child)
     {
       sinfo("nxtask_setup_fork failed\n");
@@ -231,7 +232,8 @@ pid_t riscv_fork(const struct fork_s *context)
 
   /* Allocate and initialize a TCB for the child task. */
 
-  child = nxtask_setup_fork((start_t)(uintptr_t)context->ra);
+  child = nxtask_setup_fork((start_t)(uintptr_t)context->ra, true,
+                            (uintptr_t)context->sp);
   if (!child)
     {
       sinfo("nxtask_setup_fork failed\n");

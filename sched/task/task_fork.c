@@ -27,6 +27,7 @@
 #include <nuttx/config.h>
 
 #include <sys/wait.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <sched.h>
 #include <string.h>
@@ -40,7 +41,11 @@
 #include "environ/environ.h"
 #include "group/group.h"
 #include "task/task.h"
+#include <nuttx/tls.h>
+
 #include "tls/tls.h"
+
+#include <nuttx/semaphore.h>
 
 /* fork() requires architecture-specific support as well as waipid(). */
 
@@ -93,7 +98,8 @@
  *
  ****************************************************************************/
 
-FAR struct tcb_s *nxtask_setup_fork(start_t retaddr)
+FAR struct tcb_s *nxtask_setup_fork(start_t retaddr, bool share,
+                                    uintptr_t usp)
 {
   FAR struct tcb_s *ptcb = this_task();
   FAR struct tcb_s *parent;
@@ -103,6 +109,11 @@ FAR struct tcb_s *nxtask_setup_fork(start_t retaddr)
   uint8_t ttype;
   int priority;
   int ret;
+  bool inherited = false;
+#if defined(CONFIG_ARCH_ADDRENV) && defined(CONFIG_ARCH_HAVE_ADDRENV_FORK)
+  FAR struct addrenv_s *oldenv = NULL;
+  bool selected = false;
+#endif
 
   DEBUGASSERT(retaddr != NULL);
 
@@ -151,6 +162,43 @@ FAR struct tcb_s *nxtask_setup_fork(start_t retaddr)
 
   nxtask_joininit(child);
 
+#if defined(CONFIG_ARCH_ADDRENV) && defined(CONFIG_ARCH_HAVE_ADDRENV_FORK)
+  if (ttype != TCB_FLAG_TTYPE_KERNEL && !share)
+    {
+      /* Give the child its own copy of the parent's memory, at the same
+       * virtual addresses.  This is what fork() is supposed to mean, and it
+       * is what lets the child use the parent's stack: everything in that
+       * stack that points into itself stays valid only because the copy
+       * lives at the same address.
+       *
+       * This happens before anything is allocated on the child's behalf,
+       * and the child's environment is then made current for the rest of
+       * the setup.  Otherwise those allocations would come out of whichever
+       * heap happened to be instantiated -- the parent's -- and the child
+       * would carry pointers to blocks that do not exist in its own heap,
+       * to be freed out of it when the child exits.
+       *
+       * Everything the setup reads from the parent (environ, the argument
+       * vector) is legible under the child's environment too, at the same
+       * address and with the same contents, precisely because it is a copy.
+       */
+
+      ret = addrenv_fork(parent, child);
+      if (ret < 0)
+        {
+          goto errout_with_tcb;
+        }
+
+      ret = addrenv_select(child->addrenv_own, &oldenv);
+      if (ret < 0)
+        {
+          goto errout_with_tcb;
+        }
+
+      selected = true;
+    }
+#endif
+
   /* Allocate a new task group with the same privileges as the parent */
 
   ret = group_allocate(child, ttype);
@@ -160,10 +208,13 @@ FAR struct tcb_s *nxtask_setup_fork(start_t retaddr)
     }
 
 #if defined(CONFIG_ARCH_ADDRENV)
-  /* Join the parent address environment */
-
-  if (ttype != TCB_FLAG_TTYPE_KERNEL)
+  if (ttype != TCB_FLAG_TTYPE_KERNEL && child->addrenv_own == NULL)
     {
+      /* Without the ability to duplicate an address environment the child
+       * can only share the parent's, which is weaker than fork() -- the two
+       * processes see each other's writes.
+       */
+
       ret = addrenv_join(parent, child);
       if (ret < 0)
         {
@@ -198,10 +249,70 @@ FAR struct tcb_s *nxtask_setup_fork(start_t retaddr)
   stack_size = (uintptr_t)ptcb->stack_base_ptr -
                (uintptr_t)ptcb->stack_alloc_ptr + ptcb->adj_stack_size;
 
-  ret = up_create_stack(child, stack_size, ttype);
-  if (ret < OK)
+#ifdef CONFIG_ARCH_HAVE_VFORK
+  if (share)
     {
-      goto errout_with_tcb;
+      /* vfork():  the child borrows the parent's stack.  POSIX describes
+       * exactly this -- the child runs in the parent's context until it
+       * leaves through _exit() or exec(), which is why the parent must be
+       * suspended for the duration.  Giving it a copy at some other address
+       * would not be vfork(), and on architectures whose frame chain holds
+       * absolute pointers into the stack (Xtensa's windowed ABI, for one) a
+       * relocated copy is not even usable: the child's first return unwinds
+       * onto the parent's stack anyway, having corrupted its own.
+       *
+       * The stack belongs to the parent, so TCB_FLAG_FREE_STACK is left
+       * clear and the child does not release it.
+       *
+       * Note the temporary adj_stack_size:  up_initial_state() lays the
+       * child's initial register frame down at stack_base_ptr +
+       * adj_stack_size, and that must not land on the parent's live frames.
+       * Reporting the stack as ending at the parent's current stack pointer
+       * puts the frame just below them -- in the region the child is about
+       * to use anyway.  The full extent is restored once that is done.
+       */
+
+      child->stack_alloc_ptr = ptcb->stack_alloc_ptr;
+      child->stack_base_ptr  = ptcb->stack_base_ptr;
+      inherited              = true;
+
+      if (usp > (uintptr_t)ptcb->stack_base_ptr &&
+          usp <= (uintptr_t)ptcb->stack_base_ptr + ptcb->adj_stack_size)
+        {
+          child->adj_stack_size = usp - (uintptr_t)ptcb->stack_base_ptr;
+        }
+      else
+        {
+          child->adj_stack_size = ptcb->adj_stack_size;
+        }
+    }
+  else
+#endif
+#if defined(CONFIG_ARCH_ADDRENV) && defined(CONFIG_ARCH_HAVE_ADDRENV_FORK)
+  if (ttype != TCB_FLAG_TTYPE_KERNEL)
+    {
+      /* The child's address environment is a copy of the parent's, so the
+       * parent's stack already exists in it, at the same address and with
+       * the same contents -- including the allocator bookkeeping that owns
+       * it.  Take those addresses rather than allocating a second stack,
+       * which would be both a waste and, since it would land somewhere
+       * else, useless to a copied frame chain.  The child frees it on exit
+       * out of its own heap, exactly as the parent will out of the parent's.
+       */
+
+      child->stack_alloc_ptr = ptcb->stack_alloc_ptr;
+      child->stack_base_ptr  = ptcb->stack_base_ptr;
+      child->adj_stack_size  = ptcb->adj_stack_size;
+      inherited              = true;
+    }
+  else
+#endif
+    {
+      ret = up_create_stack(child, stack_size, ttype);
+      if (ret < OK)
+        {
+          goto errout_with_tcb;
+        }
     }
 
 #if defined(CONFIG_ARCH_ADDRENV) && defined(CONFIG_ARCH_KERNEL_STACK)
@@ -228,36 +339,95 @@ FAR struct tcb_s *nxtask_setup_fork(start_t retaddr)
   /* Initialize the task control block.  This calls up_initial_state() */
 
   sinfo("Child priority=%d start=%p\n", priority, retaddr);
-  ret = nxtask_setup_scheduler(child, priority, retaddr,
-                               ptcb->entry.main, ttype);
-  if (ret < OK)
+
+  if (inherited)
     {
-      goto errout_with_tcb;
+      FAR struct tls_info_s *info;
+
+      /* The child's environment is already current (see above), so this
+       * writes to the child's stack, not the parent's.
+       */
+
+      ret = nxtask_setup_scheduler(child, priority, retaddr,
+                                   ptcb->entry.main, ttype);
+      if (ret < OK)
+        {
+          goto errout_with_tcb;
+        }
+
+      /* The child took the parent's stack -- borrowed it (vfork) or got its
+       * own copy of it at the same address (fork) -- so thread-local storage
+       * and the argument vector are already there, at the same addresses.
+       * Building them again would carve a second TLS frame off a stack that
+       * already has one, and would write the argument vector over the
+       * parent's outermost frame.  Only the fields that must differ from the
+       * parent's are corrected.
+       */
+
+      info = (FAR struct tls_info_s *)child->stack_alloc_ptr;
+      info->tl_task = child->group->tg_info;
+      info->tl_tid  = child->pid;
+    }
+  else
+    {
+      ret = nxtask_setup_scheduler(child, priority, retaddr,
+                                   ptcb->entry.main, ttype);
+      if (ret < OK)
+        {
+          goto errout_with_tcb;
+        }
+
+      /* Setup thread local storage */
+
+      ret = tls_dup_info(child, parent);
+      if (ret < OK)
+        {
+          goto errout_with_tcb;
+        }
+
+      /* Setup to pass parameters to the new task */
+
+      ret = nxtask_setup_stackargs(child, argv[0], &argv[1]);
+      if (ret < OK)
+        {
+          goto errout_with_tcb;
+        }
     }
 
-  /* Setup thread local storage */
-
-  ret = tls_dup_info(child, parent);
-  if (ret < OK)
+#ifdef CONFIG_ARCH_HAVE_VFORK
+  if (share)
     {
-      goto errout_with_tcb;
-    }
+      /* The initial frame is placed; let the child see the whole stack it is
+       * borrowing, so that the architecture code below resumes it exactly
+       * where the parent was.
+       */
 
-  /* Setup to pass parameters to the new task */
-
-  ret = nxtask_setup_stackargs(child, argv[0], &argv[1]);
-  if (ret < OK)
-    {
-      goto errout_with_tcb;
+      child->adj_stack_size = ptcb->adj_stack_size;
     }
+#endif
 
   /* Now we have enough in place that we can join the group */
 
   group_initialize(child);
+
+#if defined(CONFIG_ARCH_ADDRENV) && defined(CONFIG_ARCH_HAVE_ADDRENV_FORK)
+  if (selected)
+    {
+      addrenv_restore(oldenv);
+    }
+#endif
+
   sinfo("parent=%p, returning child=%p\n", parent, child);
   return child;
 
 errout_with_tcb:
+#if defined(CONFIG_ARCH_ADDRENV) && defined(CONFIG_ARCH_HAVE_ADDRENV_FORK)
+  if (selected)
+    {
+      addrenv_restore(oldenv);
+    }
+#endif
+
   nxsched_release_tcb((FAR struct tcb_s *)child, ttype);
 errout:
   set_errno(-ret);
@@ -325,6 +495,75 @@ pid_t nxtask_start_fork(FAR struct tcb_s *child)
   nxtask_activate(child);
 
   return pid;
+}
+
+/****************************************************************************
+ * Name: nxtask_start_vfork
+ *
+ * Description:
+ *   Start a vfork() child and suspend the caller until it leaves through
+ *   _exit() or exec().
+ *
+ *   The suspension belongs here, not in the caller.  A vfork() child borrows
+ *   the parent's stack, so the parent must not execute a single instruction
+ *   between the child being started and the child finishing -- anything it
+ *   ran would use frames the child has already taken.  Suspending later,
+ *   in libc, is too late: the parent returns through several frames first.
+ *
+ *   The semaphore lives in this frame, which is above the stack pointer the
+ *   child starts from, so the child cannot disturb it.  Its address is left
+ *   in the child's group for nxtask_vfork_release() to find.
+ *
+ ****************************************************************************/
+
+pid_t nxtask_start_vfork(FAR struct tcb_s *child)
+{
+  sem_t  sem;
+  pid_t  pid;
+
+  DEBUGASSERT(child != NULL && child->group != NULL);
+
+  nxsem_init(&sem, 0, 0);
+
+  child->group->tg_vforksem = &sem;
+
+  pid = nxtask_start_fork(child);
+  if (pid > 0)
+    {
+      nxsem_wait_uninterruptible(&sem);
+    }
+
+  nxsem_destroy(&sem);
+  return pid;
+}
+
+/****************************************************************************
+ * Name: nxtask_vfork_release
+ *
+ * Description:
+ *   Release the parent of a vfork() child, if this task is one.
+ *
+ ****************************************************************************/
+
+void nxtask_vfork_release(FAR struct tcb_s *tcb)
+{
+  FAR sem_t *sem;
+
+  if (tcb == NULL || tcb->group == NULL)
+    {
+      return;
+    }
+
+  sem = tcb->group->tg_vforksem;
+  if (sem != NULL)
+    {
+      /* Clear it first:  the parent destroys the semaphore as soon as it
+       * wakes, and this must not be posted twice.
+       */
+
+      tcb->group->tg_vforksem = NULL;
+      nxsem_post(sem);
+    }
 }
 
 /****************************************************************************

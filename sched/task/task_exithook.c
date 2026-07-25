@@ -425,6 +425,16 @@ void nxtask_exithook(FAR struct tcb_s *tcb, int status)
 
   nxsched_dumponexit();
 
+#ifdef CONFIG_ARCH_HAVE_VFORK
+  /* If this is a vfork() child, its parent has been suspended since the
+   * child was started and is released here.  _exit() is one of the two ways
+   * POSIX allows a vfork() child to leave; exec() is the other, and releases
+   * the parent through the same call before the new program is started.
+   */
+
+  nxtask_vfork_release(tcb);
+#endif
+
   /* If the task was terminated by another task, it may be in an unknown
    * state.  Make some feeble effort to recover the state.
    */

@@ -99,7 +99,7 @@ pid_t ceva_fork(const uint32_t *regs)
 
   /* Allocate and initialize a TCB for the child task. */
 
-  child = nxtask_setup_fork(parent->start, &argsize);
+  child = nxtask_setup_fork(parent->start, &argsize, true, 0);
   if (!child)
     {
       serr("ERROR: nxtask_setup_fork failed\n");

@@ -253,6 +253,71 @@ int addrenv_attach(FAR struct tcb_s *tcb, FAR struct addrenv_s *addrenv)
 }
 
 /****************************************************************************
+ * Name: addrenv_fork
+ *
+ * Description:
+ *   Give the child process an address environment of its own, holding a copy
+ *   of the parent's memory.  This is what fork() means when the parent has
+ *   an address environment: the child gets the same virtual addresses backed
+ *   by different physical memory, so it starts identical and then diverges.
+ *
+ *   Contrast addrenv_join(), which shares the parent's environment and is
+ *   what an architecture gets without this.  Sharing is much
+ *   weaker than fork(), and on some architectures it is not even workable:
+ *   anything the copied stack holds that points into the stack -- a frame
+ *   chain, for one -- is only valid if the copy lives at the same virtual
+ *   address, which sharing cannot arrange.
+ *
+ * Input Parameters:
+ *   ptcb - The tcb of the parent process
+ *   tcb  - The tcb of the child process
+ *
+ * Returned Value:
+ *   This is a NuttX internal function so it follows the convention that
+ *   0 (OK) is returned on success and a negated errno is returned on
+ *   failure.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_ARCH_HAVE_ADDRENV_FORK
+int addrenv_fork(FAR struct tcb_s *ptcb, FAR struct tcb_s *tcb)
+{
+  FAR struct addrenv_s *addrenv;
+  int ret;
+
+  DEBUGASSERT(ptcb->addrenv_own != NULL);
+
+  addrenv = addrenv_allocate();
+  if (addrenv == NULL)
+    {
+      return -ENOMEM;
+    }
+
+  /* Let the architecture duplicate the parent's environment, contents and
+   * all.  It knows the region layout; this layer does not.
+   */
+
+  ret = up_addrenv_fork(&ptcb->addrenv_own->addrenv, &addrenv->addrenv);
+  if (ret < 0)
+    {
+      berr("ERROR: up_addrenv_fork failed: %d\n", ret);
+      addrenv_drop(addrenv, false);
+      return ret;
+    }
+
+  ret = up_addrenv_attach(ptcb, tcb);
+  if (ret < 0)
+    {
+      berr("ERROR: up_addrenv_attach failed: %d\n", ret);
+      addrenv_drop(addrenv, false);
+      return ret;
+    }
+
+  return addrenv_attach(tcb, addrenv);
+}
+#endif
+
+/****************************************************************************
  * Name: addrenv_join
  *
  * Description:

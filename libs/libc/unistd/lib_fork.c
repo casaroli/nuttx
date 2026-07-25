@@ -157,6 +157,7 @@ pid_t fork(void)
 #ifdef CONFIG_PTHREAD_ATFORK
   atfork_prepare();
 #endif
+
   pid = up_fork();
 
 #ifdef CONFIG_PTHREAD_ATFORK
@@ -173,7 +174,7 @@ pid_t fork(void)
   return pid;
 }
 
-#if defined(CONFIG_SCHED_WAITPID)
+#if defined(CONFIG_SCHED_WAITPID) || defined(CONFIG_ARCH_HAVE_VFORK)
 
 /****************************************************************************
  * Public Functions
@@ -204,7 +205,15 @@ pid_t vfork(void)
 #ifdef CONFIG_PTHREAD_ATFORK
   atfork_prepare();
 #endif
+#ifdef CONFIG_ARCH_HAVE_VFORK
+  /* This architecture distinguishes the two:  up_vfork() shares the parent's
+   * memory and suspends the parent in the kernel until the child leaves.
+   */
+
+  pid = up_vfork();
+#else
   pid = up_fork();
+#endif
 
 #ifdef CONFIG_PTHREAD_ATFORK
   if (pid == 0)
@@ -217,6 +226,7 @@ pid_t vfork(void)
     }
 #endif
 
+#ifndef CONFIG_ARCH_HAVE_VFORK
   if (pid != 0)
     {
       /* we are in parent task, and we need to wait the child task
@@ -229,10 +239,11 @@ pid_t vfork(void)
           serr("ERROR: waitpid failed: %d\n", get_errno());
         }
     }
+#endif
 
   return pid;
 }
 
-#endif /* CONFIG_SCHED_WAITPID */
+#endif /* CONFIG_SCHED_WAITPID || CONFIG_ARCH_HAVE_VFORK */
 
 #endif /* CONFIG_ARCH_HAVE_FORK */

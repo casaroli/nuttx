@@ -267,6 +267,27 @@ extern initializer_t _einit[];
 pid_t up_fork(void);
 
 /****************************************************************************
+ * Name: up_vfork
+ *
+ * Description:
+ *   The up_vfork() function is the base of the vfork() function provided in
+ *   libc.  Unlike up_fork(), the child shares the parent's memory rather
+ *   than receiving a copy of it, and the parent is suspended until the child
+ *   calls _exit() or one of the exec family.  Avoiding the copy is the whole
+ *   point of vfork(), so this must not copy even where an MMU would allow
+ *   it, and it is implementable on systems that have no MMU at all.
+ *
+ * Returned Value:
+ *   Upon successful completion, up_vfork() returns 0 to the child process
+ *   and returns the process ID of the child process to the parent process.
+ *   Otherwise, -1 is returned to the parent, no child process is created,
+ *   and errno is set to indicate the error.
+ *
+ ****************************************************************************/
+
+pid_t up_vfork(void);
+
+/****************************************************************************
  * Name: up_initialize
  *
  * Description:
@@ -1325,6 +1346,33 @@ int up_addrenv_coherent(FAR const arch_addrenv_t *addrenv);
 #ifdef CONFIG_ARCH_ADDRENV
 int up_addrenv_clone(FAR const arch_addrenv_t *src,
                      FAR arch_addrenv_t *dest);
+
+/****************************************************************************
+ * Name: up_addrenv_fork
+ *
+ * Description:
+ *   Duplicate an address environment for fork():  create a new environment
+ *   with the same layout as 'parent' and copy the parent's memory into it.
+ *
+ *   This is not up_addrenv_clone(), which copies the *descriptor* so that
+ *   the threads of a group share one environment.  Here the child must get
+ *   its own physical memory at the same virtual addresses, so that a copied
+ *   stack -- and everything in it that points at itself -- stays valid.
+ *
+ * Input Parameters:
+ *   parent - The address environment to duplicate.
+ *   child  - The address environment to create.  Zeroed on entry.
+ *
+ * Returned Value:
+ *   Zero (OK) on success; a negated errno value on failure.  On failure the
+ *   caller discards 'child'; this function releases anything it allocated.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_ARCH_HAVE_ADDRENV_FORK
+int up_addrenv_fork(FAR const arch_addrenv_t *parent,
+                    FAR arch_addrenv_t *child);
+#endif
 #endif
 
 /****************************************************************************

@@ -395,6 +395,27 @@ int addrenv_attach(FAR struct tcb_s *tcb, FAR struct addrenv_s *addrenv);
 int addrenv_join(FAR struct tcb_s *ptcb, FAR struct tcb_s *tcb);
 
 /****************************************************************************
+ * Name: addrenv_fork
+ *
+ * Description:
+ *   Give the child process an address environment of its own, holding a copy
+ *   of the parent's memory.  Requires CONFIG_ARCH_HAVE_ADDRENV_FORK; where
+ *   that is not available fork() falls back to addrenv_join(), which shares.
+ *
+ * Input Parameters:
+ *   ptcb - The tcb of the parent process
+ *   tcb  - The tcb of the child process
+ *
+ * Returned Value:
+ *   Zero (OK) on success; a negated errno value on failure.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_ARCH_HAVE_ADDRENV_FORK
+int addrenv_fork(FAR struct tcb_s *ptcb, FAR struct tcb_s *tcb);
+#endif
+
+/****************************************************************************
  * Name: addrenv_leave
  *
  * Description:

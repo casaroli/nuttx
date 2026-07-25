@@ -348,6 +348,8 @@ config ESP32S3_PGPOOL_SCRATCH
 	default y
 	depends on BUILD_KERNEL && ARCH_ADDRENV && MM_PGALLOC
 	select ARCH_KVMA_MAPPING
+	select ARCH_HAVE_ADDRENV_FORK
+	select ARCH_HAVE_VFORK
 	---help---
 		The page pool is deliberately not kept mapped into the kernel
 		address space: it is carved out of the PSRAM the user processes

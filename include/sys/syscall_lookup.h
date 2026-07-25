@@ -116,6 +116,11 @@ SYSCALL_LOOKUP(nxsem_wait_slow,            1)
   SYSCALL_LOOKUP(up_fork,                  0)
 #endif
 
+#ifdef CONFIG_ARCH_HAVE_VFORK
+  SYSCALL_LOOKUP(up_vfork,                 0)
+#endif
+
+
 #ifdef CONFIG_SCHED_WAITPID
   SYSCALL_LOOKUP(waitpid,                  3)
 #ifdef CONFIG_SCHED_HAVE_PARENT

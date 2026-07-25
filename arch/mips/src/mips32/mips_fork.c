@@ -130,7 +130,7 @@ pid_t mips_fork(const struct fork_s *context)
 
   /* Allocate and initialize a TCB for the child task. */
 
-  child = nxtask_setup_fork((start_t)context->ra);
+  child = nxtask_setup_fork((start_t)context->ra, true, (uintptr_t)context->sp);
   if (!child)
     {
       sinfo("nxtask_setup_fork failed\n");

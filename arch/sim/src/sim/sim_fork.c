@@ -106,7 +106,8 @@ pid_t sim_fork(const xcpt_reg_t *context)
 
   /* Allocate and initialize a TCB for the child task. */
 
-  child = nxtask_setup_fork((start_t)context[JB_PC]);
+  child = nxtask_setup_fork((start_t)context[JB_PC], true,
+                            (uintptr_t)context[JB_SP]);
   if (!child)
     {
       serr("ERROR: nxtask_setup_fork failed\n");

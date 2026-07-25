@@ -556,6 +556,16 @@ struct task_group_s
 
   struct mm_map_s tg_mm_map;        /* Task group virtual memory mappings   */
 
+#ifdef CONFIG_ARCH_HAVE_VFORK
+  /* Set in a vfork() child:  the semaphore its parent is suspended on.  The
+   * child posts it when it leaves through _exit() or exec(), which is what
+   * lets the two safely share one stack.  It refers to storage in the
+   * parent's own frame, which outlives the child by construction.
+   */
+
+  FAR sem_t *tg_vforksem;
+#endif
+
   spinlock_t tg_lock;               /* SpinLock for group */
   rmutex_t   tg_mutex;              /* Mutex for group */
 };
@@ -1158,8 +1168,43 @@ void nxtask_startup(main_t entrypt, int argc, FAR char *argv[]);
  *
  ****************************************************************************/
 
-FAR struct tcb_s *nxtask_setup_fork(start_t retaddr);
+FAR struct tcb_s *nxtask_setup_fork(start_t retaddr, bool share,
+                                    uintptr_t usp);
 pid_t nxtask_start_fork(FAR struct tcb_s *child);
+
+/****************************************************************************
+ * Name: nxtask_start_vfork
+ *
+ * Description:
+ *   Start a vfork() child and suspend the caller until that child leaves
+ *   through _exit() or exec().
+ *
+ *   POSIX requires the parent to be suspended for the whole life of a
+ *   vfork() child, and it must be suspended here rather than by the caller
+ *   afterwards:  the two share one stack, so any instruction the parent
+ *   executes after the child is started would run on frames the child is
+ *   already using.
+ *
+ * Input Parameters:
+ *   child - The task to start, from nxtask_setup_fork().
+ *
+ * Returned Value:
+ *   The pid of the child.
+ *
+ ****************************************************************************/
+
+pid_t nxtask_start_vfork(FAR struct tcb_s *child);
+
+/****************************************************************************
+ * Name: nxtask_vfork_release
+ *
+ * Description:
+ *   Release the parent of a vfork() child, if this task is one.  Called from
+ *   the paths a vfork() child is permitted to leave by: _exit() and exec().
+ *
+ ****************************************************************************/
+
+void nxtask_vfork_release(FAR struct tcb_s *tcb);
 void nxtask_abort_fork(FAR struct tcb_s *child, int errcode);
 
 /****************************************************************************

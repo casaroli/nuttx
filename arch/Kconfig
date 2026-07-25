@@ -481,6 +481,27 @@ config ARCH_HAVE_CPUID_MAPPING
 	default n
 	depends on ARCH_HAVE_MULTICPU
 
+config ARCH_HAVE_ADDRENV_FORK
+	bool
+	default n
+	select ARCH_HAVE_FORK
+	---help---
+		Selected by architectures that can duplicate an address environment,
+		giving a fork()ed child its own copy of the parent's memory at the
+		same virtual addresses.  This is what makes POSIX fork() semantics
+		implementable, so it implies ARCH_HAVE_FORK.
+
+config ARCH_HAVE_VFORK
+	bool
+	default n
+	---help---
+		Selected by architectures that can provide vfork():  the child
+		borrows the parent's memory and the parent is suspended until the
+		child calls _exit() or exec().  Unlike fork() this needs no MMU --
+		it is precisely the primitive a system without one can offer -- and
+		it must not copy even where an MMU is present, since avoiding the
+		copy is the entire reason a caller chooses vfork().
+
 config ARCH_HAVE_FORK
 	bool
 	default n
