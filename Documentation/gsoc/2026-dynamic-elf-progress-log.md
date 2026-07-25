@@ -720,6 +720,97 @@ Corrected scope statement:
   (Unit A), precise out-of-region fault detection, and per-task abort
   (Units B/B.1). This is the active implementation target (Units C–F + fork).
 
+### 2026-07-25 — BUILD_KERNEL builds end to end (kernel + user ELFs + boot ROMFS)
+
+#### Completed
+
+The blocker recorded in the BUILD_KERNEL handoff — the user init-image — is
+resolved, and a complete `CONFIG_BUILD_KERNEL` image now builds. The key
+realisation is that a kernel build does **not** use the two-pass
+`CONFIG_PASS1_BUILDIR` model at all: that builds the *protected* userspace
+blob. `CONFIG_BUILD_2PASS` is simply off, and the init process is a separate
+ELF loaded at runtime from a ROMFS image linked into the kernel, as on
+`rv-virt:knsh_romfs` and `canmv230:knsh`.
+
+Five commits, each separately reviewable:
+
+- `6bf42e73eb` — the kernel-mode trampolines (`up_task_start`,
+  `up_signal_dispatch`, `xtensa_dispatch_syscall`, the pthread start stub)
+  existed but were gated on `CONFIG_BUILD_PROTECTED`. Gated on
+  `!CONFIG_BUILD_FLAT` now, mirroring `arch/risc-v/src/common/Make.defs`. The
+  sources themselves were already correct for both builds.
+- `3029abe27c` — `esp32s3_pgalloc.c`: `up_allocate_pgheap()` (the PSRAM page
+  pool, described by its zero-based PSRAM offset because that is what the
+  cache MMU takes as a physical address) and `pgalloc()` (heap growth for
+  `sbrk()`; records pages in the addrenv array and, because `sbrk()` runs on
+  behalf of the calling task whose environment is by definition resident,
+  writes them into the data-bus window immediately via the new
+  `esp32s3_addrenv_mapnew()`). Pages already backed by `up_addrenv_create()`
+  are reused rather than reallocated over, which would leak them.
+- `ff6cf241bb` — `up_addrenv_mprot()`. Required by the ELF loader (it makes
+  `.text` writable while copying a program in), and necessarily a no-op here:
+  a cache-MMU entry has only a valid bit, a memory type and a page number.
+  Recorded consequence: a process can write to its own `.text`. Isolation
+  between groups is unaffected — it comes from the window remap.
+- `f3c29741ef` — fully linked ELF programs on Xtensa:
+  `ARCH_HAVE_ELF_EXECUTABLE` advertised; `LDELFFLAGS`' unconditional `-r`
+  made conditional on `CONFIG_BINFMT_ELF_RELOCATABLE` (as on RISC-V), so a
+  kernel build produces `ET_EXEC`; and `crt0.o` added to the export package,
+  which `apps/import` expects as `startup/crt0.o`.
+- `4b862af4cb` — the board pieces: `scripts/gnu-elf.ld`, which links a user
+  program where the address environment will put it (`mkexport.sh` prefers a
+  board script over the generic one), and the boot ROMFS plumbing in
+  `esp32s3_bringup.c`.
+
+#### Evidence
+
+`apps/bin/init` (NSH) builds as `Type: EXEC`, entry `0x42800008`, in two
+PT_LOAD segments matching the two cache-MMU windows:
+
+```
+  [ 1] .text       PROGBITS  42800000 003000 009c1c 00  AX
+  [ 2] .rodata     PROGBITS  3d010000 001000 0013c8 00   A
+  [ 3] .eh_frame   PROGBITS  3d0113c8 0023c8 000040 00   A
+  [ 4] .data       PROGBITS  3d011408 002408 000268 00  WA
+  [ 7] .bss        NOBITS    3d011670 002670 000030 00  WA
+```
+
+Those addresses are exactly what the loader will place: it packs allocatable
+sections back to back in section-header order honouring each section's own
+alignment, `.rodata` and `.eh_frame` land in the data region because the
+ESP32-S3 selects `CONFIG_ARCH_HAVE_TEXT_HEAP_WORD_ALIGNED_READ`, and
+`up_addrenv_create()` reports `datavbase` one page past `ARCH_DATA_VBASE`
+for the OS reserve.
+
+The 369 664-byte ROMFS image (init, sh, dd, ostest, getprime) links into the
+kernel: `nm nuttx | grep romfs_img` gives a strong `D` symbol and
+`.flash.rodata` grows from 9 868 to 379 528 bytes.
+
+No regressions: `esp32s3-devkit:elf_oct` (flat, the config validated on
+silicon) and `esp32s3-devkit:knsh` (protected, boots to `nsh` on the WROOM-2)
+both still build clean from `make clean`.
+
+#### Blockers or Risks
+
+**The memory map is the open design question, and the current guess is
+unsafe.** The ESP32-S3 has one 512-entry cache-MMU table shared by both
+buses — index `(vaddr & 0x1FFFFFF) >> 16`, with a `_Static_assert` in
+`ext_mem_defs.h` that the IRAM0 and DRAM0 linear addresses are equal — so
+IBUS `0x42000000 + X` and DBUS `0x3C000000 + X` are the same entry.
+`esp32s3_spiram.c` maps PSRAM at `mmu_valid_space()`, immediately after the
+last used flash entry, and 8 MB of PSRAM is 128 entries, so it can reach the
+guessed `ARCH_TEXT_VBASE` (index 128). The pgpool and the user windows must
+be placed deliberately rather than left to that runtime choice.
+
+Nothing here has been run on silicon.
+
+#### Next
+
+Fix the entry-index partition (kernel flash / kernel PSRAM pgpool / user text
+/ user data / user heap), write the boot wiring (map the pgpool, set PMS once
+per the isolation-via-remap decision), save the config as a board defconfig,
+and take it to first boot over OpenOCD/GDB. Then eager `fork()`.
+
 ## Update Format
 
 For future entries, use:
