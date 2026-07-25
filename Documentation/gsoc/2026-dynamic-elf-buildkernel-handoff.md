@@ -207,6 +207,15 @@ kconfig-tweak --disable CONFIG_BINFMT_ELF_RELOCATABLE
 kconfig-tweak --enable  CONFIG_FS_ROMFS
 kconfig-tweak --enable  CONFIG_LIBC_EXECFUNCS
 kconfig-tweak --enable  CONFIG_LIBC_ENVPATH
+
+# CONFIG_ARCH_KERNEL_STACK defaults to CONFIG_LIBC_EXECFUNCS, so enabling the
+# latter switches it on -- and this port assumes it off (user stacks come
+# from the process heap; the Unit B.1 SIGSEGV delivery depends on there being
+# no kernel stack).  Nothing implements up_addrenv_kstackalloc() on Xtensa,
+# so leaving it on does not link.  Order matters: disable it after
+# LIBC_EXECFUNCS.
+
+kconfig-tweak --disable CONFIG_ARCH_KERNEL_STACK
 kconfig-tweak --enable  CONFIG_SCHED_WAITPID
 kconfig-tweak --enable  CONFIG_SCHED_HAVE_PARENT
 kconfig-tweak --enable  CONFIG_INIT_MOUNT
