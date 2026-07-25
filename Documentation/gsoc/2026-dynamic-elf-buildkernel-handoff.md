@@ -17,13 +17,37 @@ a small number of long-lived, statically-sized isolated processes.
 
 ## Status (2026-07-25)
 
-**DONE — the entire `up_addrenv_*` API is implemented and the BUILD_KERNEL
-kernel image compiles and links** (first time on esp32s3), with all addrenv
-code inside it.
+**DONE — the entire `up_addrenv_*` API is implemented, and a complete
+BUILD_KERNEL image builds end to end**: the kernel links, the user programs
+build as fully linked ELFs, and the ROMFS image carrying them is linked into
+the kernel. Verified on the host; nothing has been run on silicon yet.
 
-**NEXT — the BUILD_KERNEL user init-image.** The link stops at
-`nuttx_user.elf`; the current `CONFIG_PASS1_BUILDIR` still builds the
-*protected* userspace blob, which is the wrong model for a kernel build.
+The user init-image, previously the blocker, is resolved. A kernel build does
+**not** use the two-pass `CONFIG_PASS1_BUILDIR` model at all — that builds the
+*protected* userspace blob, which is the wrong shape. `CONFIG_BUILD_2PASS` is
+simply off, and the init process is a separate ELF loaded at runtime from a
+ROMFS image, as on `rv-virt:knsh_romfs` and `canmv230:knsh`. Getting there
+needed five pieces, all committed:
+
+- the kernel-mode trampolines (`up_task_start`, `up_signal_dispatch`,
+  `xtensa_dispatch_syscall`) were gated on `BUILD_PROTECTED` — now
+  `!BUILD_FLAT`, as on RISC-V;
+- `up_allocate_pgheap()` and `pgalloc()` for the ESP32-S3 (new
+  `esp32s3_pgalloc.c`);
+- `up_addrenv_mprot()`, which the ELF loader requires — necessarily a no-op
+  here, see below;
+- `ARCH_HAVE_ELF_EXECUTABLE`, a `-r` that is now conditional, and `crt0.o` in
+  the export package, so a user program links as an `ET_EXEC`;
+- the board's `scripts/gnu-elf.ld` and boot ROMFS plumbing.
+
+An `apps/bin/init` (NSH) comes out as `ET_EXEC` with `.text` at `0x42800000`
+(entry `0x42800008`) and `.rodata`/`.data`/`.bss` from `0x3d010000`, in two
+PT_LOAD segments matching the two cache-MMU windows, and its 369 664-byte
+ROMFS image lands in the kernel's `.flash.rodata`.
+
+**NEXT — boot wiring and first on-target boot.** See "Remaining work"; the
+memory map below is still a first guess and the PSRAM/PMS boot path is not
+written yet.
 
 ## Hardware / build environment
 
@@ -76,7 +100,11 @@ granularity. Consequences baked into the port:
    lines in select", which was for the abandoned demand-paging model.)
 3. **User stacks come from the process heap** — `CONFIG_ARCH_STACK_DYNAMIC`
    and `CONFIG_ARCH_KERNEL_STACK` are off, so no ustack/kstack allocators are
-   needed. `up_addrenv_mprot` has no in-tree callers and is omitted.
+   needed. `up_addrenv_mprot` **is** required after all — the ELF loader calls
+   it — but it can only return `OK`: a cache-MMU entry has no permission bits,
+   so a mapped user page is always readable and writable by its owner and a
+   process can write to its own `.text`. Isolation between groups is
+   unaffected; it comes from the window remap, not from page permissions.
 4. **`fork()` is eager** — `up_addrenv_clone` is a plain descriptor memcpy
    (threads of a group *share* the environment); the process-duplicating
    `fork()` is a separate higher-level op (see below).
@@ -98,6 +126,20 @@ There is a `TODO(Unit F hardening)` comment at the exact spot in
 
 Newest first (this thread's work):
 
+- `4b862af4cb` esp32s3-devkit: user-program layout and boot ROMFS for kernel
+  builds (`scripts/gnu-elf.ld` linking `.text`/`.data` at the window
+  addresses; `src/romfs.h`, `src/romfs_stub.c`, the romdisk registration in
+  `esp32s3_bringup.c`, and the `src/Make.defs` selection that compiles the
+  placeholder away instead of swapping it out)
+- `ff6cf241bb` xtensa/esp32s3: accept `up_addrenv_mprot`
+- `f3c29741ef` xtensa: support fully linked ELF programs
+  (`ARCH_HAVE_ELF_EXECUTABLE`; `-r` conditional on
+  `CONFIG_BINFMT_ELF_RELOCATABLE`; `crt0.o` in the export package)
+- `3029abe27c` xtensa/esp32s3: page pool and heap growth for BUILD_KERNEL
+  (`esp32s3_pgalloc.c` — `up_allocate_pgheap()` and `pgalloc()` — plus
+  `esp32s3_addrenv_mapnew()`)
+- `6bf42e73eb` xtensa: build the kernel-mode trampolines for BUILD_KERNEL
+  (`BUILD_PROTECTED` → `!BUILD_FLAT` in `common/Make.defs`)
 - `4f34a9853f` xtensa: enable the syscall privilege path for BUILD_KERNEL
   (chip_macros.h WCL privilege macros `BUILD_PROTECTED`→`!BUILD_FLAT`;
   xtensa_swint.c SYS_signal_handler → `ARCH_DATA_RESERVE->ar_sigtramp` under
@@ -126,14 +168,19 @@ because the real `esp32s3_mmu.h` pulls the esp-hal header chain; they were
 stub-compiled during development and are now validated by the real BUILD_KERNEL
 build.)
 
-## Reproducing the BUILD_KERNEL build probe
+## Reproducing the BUILD_KERNEL build
 
-Not yet saved as a board defconfig (it does not fully link — the user image
-fails). From `nuttx/`, `source ../.tools/env.sh`, then:
+Not yet saved as a board defconfig — it builds, but the memory map is
+unvalidated and the boot wiring is missing, so it cannot boot yet. A
+`savedefconfig` of the working config is worth regenerating before it is
+committed as, say, `esp32s3-devkit:kernel`.
+
+From `nuttx/`, `source ../.tools/env.sh`, then:
 
 ```sh
 ./tools/configure.sh esp32s3-devkit:knsh
 kconfig-tweak --disable CONFIG_BUILD_PROTECTED
+kconfig-tweak --disable CONFIG_BUILD_2PASS      # no protected userspace blob
 kconfig-tweak --enable  CONFIG_BUILD_KERNEL
 kconfig-tweak --enable  CONFIG_ARCH_USE_MMU
 kconfig-tweak --enable  CONFIG_ARCH_ADDRENV
@@ -150,10 +197,54 @@ kconfig-tweak --set-val CONFIG_ARCH_HEAP_NPAGES  16
 kconfig-tweak --set-val CONFIG_ARCH_PGPOOL_PBASE 0x400000     # PSRAM offset
 kconfig-tweak --set-val CONFIG_ARCH_PGPOOL_VBASE 0x3c400000   # kernel PSRAM VA
 kconfig-tweak --set-val CONFIG_ARCH_PGPOOL_SIZE  4194304      # DECIMAL (int)
+
+# The init process and the other user programs: separate ELFs in a ROMFS
+# image, mounted at /system/bin and exec'd from there.
+
+kconfig-tweak --enable  CONFIG_ELF
+kconfig-tweak --enable  CONFIG_BINFMT_ELF_EXECUTABLE
+kconfig-tweak --disable CONFIG_BINFMT_ELF_RELOCATABLE
+kconfig-tweak --enable  CONFIG_FS_ROMFS
+kconfig-tweak --enable  CONFIG_LIBC_EXECFUNCS
+kconfig-tweak --enable  CONFIG_LIBC_ENVPATH
+kconfig-tweak --enable  CONFIG_SCHED_WAITPID
+kconfig-tweak --enable  CONFIG_SCHED_HAVE_PARENT
+kconfig-tweak --enable  CONFIG_INIT_MOUNT
+kconfig-tweak --set-str CONFIG_INIT_MOUNT_TARGET "/system/bin"
+kconfig-tweak --set-val CONFIG_INIT_MOUNT_FLAGS  0x1
+kconfig-tweak --set-str CONFIG_INIT_FILEPATH     "/system/bin/init"
+kconfig-tweak --set-str CONFIG_PATH_INITIAL      "/system/bin"
+kconfig-tweak --enable  CONFIG_SYSTEM_NSH
+kconfig-tweak --set-str CONFIG_SYSTEM_NSH_PROGNAME "init"
+kconfig-tweak --enable  CONFIG_NSH_FILE_APPS
+
 make olddefconfig && make -j8
 ```
 
-The kernel image builds; the link then fails at `nuttx_user.elf`.
+`INIT_MOUNT_SOURCE` and `INIT_MOUNT_FSTYPE` default to `/dev/ram0` and
+`romfs`, which is what the board's romdisk registration provides.
+
+That first `make` links the kernel against the empty ROMFS placeholder. Build
+the user programs against it and link the real image in:
+
+```sh
+make export
+cd ../apps
+./tools/mkimport.sh -z -x ../nuttx/nuttx-export-*.tar.gz
+make import
+./tools/mkromfsimg.sh ../nuttx/arch/xtensa/src/board/board/romfs_boot.c
+cd ../nuttx && make -j8
+```
+
+`romfs_boot.c` is a generated artifact and is deliberately not committed; the
+path above resolves through the board symlinks to
+`boards/xtensa/esp32s3/esp32s3-devkit/src/`. Check the result with
+`xtensa-esp32s3-elf-nm nuttx | grep romfs_img` — the symbol must be `D`, not
+absent, and `.flash.rodata` should grow by the image size.
+
+**Note `zsh` does not word-split unquoted variables**, so a `for` loop over
+tweak strings silently passes each one as a single argument and applies
+nothing. Run them one per line, and check `.config` afterwards.
 
 **Gotchas:** `ARCH_PGPOOL_SIZE` is Kconfig type `int` → must be **decimal**,
 not hex. The memory map above is a **first guess** and must be validated
@@ -167,29 +258,54 @@ its MMU paddr directly.
 
 ## Remaining work
 
-### Next unit — BUILD_KERNEL user init-image (the blocker to first boot)
+### Next unit — the memory map (the real remaining design question)
 
-The link fails because `CONFIG_PASS1_BUILDIR=boards/xtensa/esp32s3/common/kernel`
-builds the **protected** `esp32s3_userspace.c` descriptor (undefined
-`nsh_main` / `up_signal_handler` / `g_mmheap`, no `user_start` entry). That
-model is protected-only. BUILD_KERNEL wants the init process as a **separate
-user ELF** loaded at runtime. Options to work through:
-- an init-process build dir that links a real user program at
-  `CONFIG_ARCH_TEXT_VBASE` against the user libc, entry `user_start`/`_start`;
-- `CONFIG_INIT_FILEPATH` pointing at an ELF in a mounted FS (ROMFS/embedded),
-  loaded by binfmt's ELF loader through the addrenv path;
-- verify the syscall trap, `crt0.c` user entry (already present), and the
-  user linker layout land text at the IBUS window and data at the DBUS window.
+Everything below hangs on this, and it is not a detail. The ESP32-S3 has
+**one** 512-entry cache-MMU table **shared by both buses**: the entry index is
+`(vaddr & SOC_MMU_VADDR_MASK) >> 16` with `SOC_MMU_VADDR_MASK == 0x1FFFFFF`,
+and `ext_mem_defs.h` carries a `_Static_assert` that the IRAM0 and DRAM0
+linear addresses are the same. So IBUS `0x42000000 + X` and DBUS
+`0x3C000000 + X` are the *same table entry* — which is exactly how the kernel
+sees its own flash as code at `0x42xxxxxx` and as rodata at `0x3Cxxxxxx`.
 
-### Boot wiring (Unit F, after the image builds)
+Two consequences:
 
-At startup: map all PSRAM (as `esp32s3_spiram.c` does,
-`cache_dbus_mmu_set(SOC_MMU_ACCESS_SPIRAM, …, paddr=0, …)`) →
-`mm_pginitialize(ARCH_PGPOOL_VBASE, ARCH_PGPOOL_SIZE)` for the pgpool → set PMS
-**once** (WORLD1 gets the user cache windows, WORLD0 everything) → hand the
-init task an address environment. Then bring up to `nsh` under BUILD_KERNEL via
-OpenOCD/GDB (expect iterative EPC1 root-causing, as in the protected WROOM-2
-bring-up).
+1. A user `.text` page at IBUS `0x42800000` (index 128) is also visible as
+   data at DBUS `0x3C800000`, and a user data page at DBUS `0x3D000000`
+   (index 256) is visible as code at IBUS `0x43000000`. That is inherent to
+   the chip; note it rather than fight it.
+2. **The current guessed map is unsafe.** `esp32s3_spiram.c` maps PSRAM at
+   `mmu_valid_space()`, i.e. immediately after the last used flash entry, and
+   8 MB of PSRAM is 128 entries. Starting from a low index that easily reaches
+   index 128 — the guessed `ARCH_TEXT_VBASE`. The guessed
+   `ARCH_PGPOOL_VBASE = 0x3c400000` (index 64) may or may not fall inside what
+   SPIRAM actually mapped, since that placement is computed at runtime.
+
+So the pgpool and the user windows must be placed **deliberately**, not left
+to `esp32s3_spiram.c`'s dynamic choice, and `CONFIG_ARCH_PGPOOL_VBASE` must be
+a compile-time constant that provably lands inside the kernel's PSRAM
+mapping. Decide the partition of the 512 entries (kernel flash / kernel PSRAM
+pgpool / user text / user data / user heap) first, then make the boot code
+enforce it. Note also that enabling PSRAM on this WROOM-2 config needs
+`CONFIG_ESP32S3_SPIRAM` + `SPIRAM_MODE_OCT` + `SPIFLASH`, and that
+`flash_ops.o` must be deleted by hand after that config change (stale-object
+trap — see the build-environment memory note).
+
+### Boot wiring (after the map is fixed)
+
+At startup: map the PSRAM pgpool at its chosen entries (as `esp32s3_spiram.c`
+does, `cache_dbus_mmu_set(SOC_MMU_ACCESS_SPIRAM, …, paddr=0, …)`) →
+`up_allocate_pgheap()` already reports `ARCH_PGPOOL_PBASE`/`SIZE` to
+`mm_pginitialize()` → set PMS **once** (WORLD1 gets the user cache windows,
+WORLD0 everything), per the isolation-via-remap decision. Then bring up to
+`nsh` under BUILD_KERNEL via OpenOCD/GDB (expect iterative EPC1 root-causing,
+as in the protected WROOM-2 bring-up).
+
+First things to check on target, in order: does it reach `board_late_initialize`
+and register `/dev/ram0`; does `/system/bin` mount; does binfmt load
+`/system/bin/init` (watch `up_addrenv_create` for `-E2BIG`, meaning a region
+needs more pages than `ARCH_*_NPAGES`); does `up_addrenv_select` produce a
+sane window; does the first user instruction at `0x42800008` fetch.
 
 ### Eager fork() (final task)
 
