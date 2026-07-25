@@ -1,53 +1,19 @@
-# GSoC 2026 Dynamic ELF — BUILD_KERNEL + eager fork() handoff
+# GSoC 2026 Dynamic ELF — BUILD_KERNEL on ESP32-S3: handoff
 
 Self-contained handoff for continuing the Xtensa/ESP32-S3 address-environment
-port toward a working `CONFIG_BUILD_KERNEL` with ELF execution and an
-**eager-copy `fork()`**. Read this first, then the design note
-`2026-dynamic-elf-mmu-isolation.md` and the delivery plan.
+port. Everything needed to pick this up cold is here: what works, what does
+not, how to build and flash it, how to debug it, and what to do next. Read
+this first; the design note `2026-dynamic-elf-mmu-isolation.md` and the dated
+evidence in `2026-dynamic-elf-progress-log.md` are the background.
 
-## Goal
+Branch: `gsoc/dynamic-elf-baseline` (both `nuttx/` and `apps/`).
 
-Bring true `CONFIG_BUILD_KERNEL` (per-process address environments, real
-processes) to the ESP32-S3 and implement `fork()` on it. Copy-on-write and
-demand paging are **proven infeasible** on this silicon (no synchronous,
-restartable write fault — see the progress log), but `fork()` does **not**
-require them: it is implemented **eagerly** (allocate the child's pages and
-copy the parent's regions up front, clone the address environment). Target is
-a small number of long-lived, statically-sized isolated processes.
+---
 
-## Status (2026-07-25)
+## 1. Where this stands
 
-**DONE — the entire `up_addrenv_*` API is implemented, and a complete
-BUILD_KERNEL image builds end to end**: the kernel links, the user programs
-build as fully linked ELFs, and the ROMFS image carrying them is linked into
-the kernel. Verified on the host; nothing has been run on silicon yet.
-
-The user init-image, previously the blocker, is resolved. A kernel build does
-**not** use the two-pass `CONFIG_PASS1_BUILDIR` model at all — that builds the
-*protected* userspace blob, which is the wrong shape. `CONFIG_BUILD_2PASS` is
-simply off, and the init process is a separate ELF loaded at runtime from a
-ROMFS image, as on `rv-virt:knsh_romfs` and `canmv230:knsh`. Getting there
-needed five pieces, all committed:
-
-- the kernel-mode trampolines (`up_task_start`, `up_signal_dispatch`,
-  `xtensa_dispatch_syscall`) were gated on `BUILD_PROTECTED` — now
-  `!BUILD_FLAT`, as on RISC-V;
-- `up_allocate_pgheap()` and `pgalloc()` for the ESP32-S3 (new
-  `esp32s3_pgalloc.c`);
-- `up_addrenv_mprot()`, which the ELF loader requires — necessarily a no-op
-  here, see below;
-- `ARCH_HAVE_ELF_EXECUTABLE`, a `-r` that is now conditional, and `crt0.o` in
-  the export package, so a user program links as an `ET_EXEC`;
-- the board's `scripts/gnu-elf.ld` and boot ROMFS plumbing.
-
-An `apps/bin/init` (NSH) comes out as `ET_EXEC` with `.text` at `0x42800000`
-(entry `0x42800008`) and `.rodata`/`.data`/`.bss` from `0x3d010000`, in two
-PT_LOAD segments matching the two cache-MMU windows, and its 369 664-byte
-ROMFS image lands in the kernel's `.flash.rodata`.
-
-**★ IT BOOTS.** On 2026-07-25 the ESP32-S3 reached an interactive NSH under
-`CONFIG_BUILD_KERNEL`, with `/system/bin/init` running as a user ELF process
-in its own address environment out of PSRAM:
+**`CONFIG_BUILD_KERNEL` boots to an interactive NSH on the ESP32-S3, and a
+second user process runs.** As of 2026-07-25, on the WROOM-2 board:
 
 ```
 load_absmodule: Successfully loaded module /system/bin/init
@@ -58,143 +24,197 @@ nsh> uname -a
 NuttX 0.0.0 ... xtensa esp32s3-devkit
 nsh> free
       total       used       free  ...  name
-     386080       9608     376472  ...  Kmem
-    4194304    1245184    2949120  ...  Page
+     386080       9608     376472  ...  Kmem     <- internal DRAM kernel heap
+    4194304    1245184    2949120  ...  Page     <- PSRAM page pool
+nsh> ls /system/bin
+ dd  getprime  init  ostest  sh
+nsh> /system/bin/getprime
+thread #0 finished, found 1230 primes, last one was 9973
+Done
+/system/bin/getprime took 1200 msec
 ```
 
-`Kmem` is the internal DRAM kernel heap; `Page` is the PSRAM pool, with
-1 245 184 bytes (19 × 64 KB) held by init's text, data and heap.
+`/system/bin/init` is a real user ELF process with its own address
+environment, its text and data in PSRAM behind the cache MMU, and a 1 MB
+process heap. `getprime` is a second process that loads, runs and exits.
 
-**NEXT — the kernel stack.** A *second* user process cannot be spawned yet;
-the cause is diagnosed exactly and is the first item under "Remaining work".
+### What is broken
 
-## Hardware / build environment
+1. **The shell faults on its own return path after spawning a program.**
+   `getprime` completes correctly, then NSH dies. This is the immediate
+   blocker — see §7.1.
+2. **There is no memory protection yet.** Processes are isolated in the
+   *mapping* sense (separate address environments, separate physical pages)
+   but not in the *protection* sense: nothing configures the World Controller
+   or the PMS under BUILD_KERNEL. See §7.2. This is the project's actual
+   thesis and the largest remaining piece of work.
+3. Smaller items in §7.3.
+
+### Scope reminder: what the silicon already ruled out
+
+Copy-on-write and demand paging are **proven infeasible** on this chip —
+there is no synchronous, restartable *write* fault (details and the
+experiments are in the progress log). `fork()` does not need them: it is to
+be implemented **eagerly** (allocate the child's pages, copy the parent's
+regions, clone the address environment). The target envelope is a small
+number of long-lived, statically sized isolated processes.
+
+---
+
+## 2. Hardware and build environment
 
 - Board: **ESP32-S3-DevKitC-1** with an **ESP32-S3-WROOM-2 (N32R8V)** module —
-  32 MB octal flash + 8 MB octal PSRAM. Not the XIAO the older docs assume.
-- Toolchain / kconfig / esptool live under `<workspace>/.tools/`; `source
-  .tools/env.sh`. genromfs was compiled from source into `.tools/venv/bin`
-  (no Homebrew formula). Full details in the auto-memory
-  `nuttx-esp32s3-build-env.md`.
-- Serial: CP2102 UART bridge at `/dev/cu.usbserial-2140` (flash + console,
-  115200); native USB-JTAG at `/dev/cu.usbmodem*` (OpenOCD
-  `board/esp32s3-builtin.cfg`).
-- `CONFIG_MM_PGSIZE` was extended to allow 32768/65536 (commit `e6a105169e`);
-  the addrenv uses **65536** so one `mm_pgalloc()` page == one 64 KB cache-MMU
-  page (naturally 64 KB-aligned by the granule allocator).
+  32 MB octal flash, 8 MB octal PSRAM. Not the XIAO the older docs assume.
+- Toolchain, kconfig shims and esptool live under `<workspace>/.tools/`;
+  `source ../.tools/env.sh` from `nuttx/`. `genromfs` was built from source
+  into `.tools/venv/bin` (no Homebrew formula).
+- Serial: **`/dev/cu.usbserial-2140`** is flash + console (115200, CP2102
+  bridge, esptool auto-reset works). `/dev/cu.usbmodem*` is the native
+  USB-JTAG used by OpenOCD — different port, no conflict.
+- Debugger (both present, outside the repo):
+  - `~/.espressif/tools/openocd-esp32/v0.11.0-esp32-20221026/openocd-esp32/bin/openocd`
+  - `~/.espressif/tools/xtensa-esp-elf-gdb/12.1_20221002/xtensa-esp-elf-gdb/bin/xtensa-esp32s3-elf-gdb`
 
-## The ESP32-S3 address-environment model (how it differs from RISC-V)
+---
 
-There is **no general paging MMU and no page-table-base register**. External
-PSRAM is reached through one **global** cache-MMU remap table with **separate
-instruction-bus (.text) and data-bus (.data/.bss/heap) windows** at 64 KB
-granularity. Consequences baked into the port:
+## 3. The ESP32-S3 address-environment model
 
-- `struct arch_addrenv_s` (in `arch/xtensa/include/arch.h`) is **not**
-  page-table-based. It holds `textvbase/datavbase/heapvbase/heapsize` plus
-  **physical-PSRAM-page arrays** `textpages[]/datapages[]/heappages[]` (one
-  64 KB page per entry) and `ntext/ndata/nheap` counts.
-- "Mapping" a page just **records** it in the addrenv array. The global table
-  is (re)programmed only in **`up_addrenv_select`**.
-- `up_addrenv_select` = the novel core: fast-path return if the environment is
-  already resident; else suspend the data cache, rewrite the IBUS (.text) and
-  DBUS (.data/heap) window entries to this group's pages via
-  `esp32s3_mmu_map_ibus/dbus(SOC_MMU_ACCESS_SPIRAM, vaddr, page, 1)` (one page
-  at a time — `mm_pgalloc` pages are not contiguous), invalidate the
-  instruction cache, resume. Instruction fetch keeps running from the
-  unchanged flash mapping via ICACHE, so `select` is safe to execute from
-  flash (no IRAM placement needed).
-- `find_page(addrenv, vaddr)` = classify the window, index the array.
-- `page_vaddr`/`pa_to_va` = fixed page-pool offset translation
-  (`esp32s3_pgvaddr`), because the pgpool is permanently kernel-mapped.
+There is **no general paging MMU and no page-table base register**. External
+PSRAM is reached through **one global cache-MMU remap table**, shared by the
+instruction and data buses, at 64 KB granularity. Consequences baked into the
+port:
 
-### Locked design decisions
+- `struct arch_addrenv_s` (`arch/xtensa/include/arch.h`) is **not**
+  page-table based. It holds `textvbase/datavbase/heapvbase/heapsize` plus
+  **physical page arrays** `textpages[]/datapages[]/heappages[]` (one 64 KB
+  page each) and the counts `ntext/ndata/nheap`.
+- "Mapping" a page only **records** it in the array. The global table is
+  (re)programmed in **`up_addrenv_select()`**, which is the novel core of the
+  port: fast-path return if the environment is already resident, else suspend
+  the data cache, rewrite the IBUS (.text) and DBUS (.data/heap) window
+  entries to this group's pages, invalidate, resume.
+- `CONFIG_MM_PGSIZE` is **65536**, so one `mm_pgalloc()` page is exactly one
+  cache-MMU page. `mm/pgalloc` was extended to permit 32 K/64 K (`e6a105169e`).
 
-1. **User pages live in octal PSRAM**, via the cache-MMU windows.
-2. **Isolation = the MMU remap alone, not per-select PMS.** All processes
-   share the same window VAs; only one environment is resident at a time, so a
-   running process sees only its own pages. PMS (WORLD1 ↔ cache-window access,
-   WORLD0 ↔ everything) is therefore set **once at boot**; `select` does not
-   touch it. (This deviates from the original plan's "reprogram PMS split
-   lines in select", which was for the abandoned demand-paging model.)
-3. **User stacks come from the process heap** — `CONFIG_ARCH_STACK_DYNAMIC`
-   and `CONFIG_ARCH_KERNEL_STACK` are off, so no ustack/kstack allocators are
-   needed. `up_addrenv_mprot` **is** required after all — the ELF loader calls
-   it — but it can only return `OK`: a cache-MMU entry has no permission bits,
-   so a mapped user page is always readable and writable by its owner and a
-   process can write to its own `.text`. Isolation between groups is
-   unaffected; it comes from the window remap, not from page permissions.
-4. **`fork()` is eager** — `up_addrenv_clone` is a plain descriptor memcpy
-   (threads of a group *share* the environment); the process-duplicating
-   `fork()` is a separate higher-level op (see below).
+### The single shared table — the fact that bites
+
+The entry index is `(vaddr & SOC_MMU_VADDR_MASK) >> 16` with
+`SOC_MMU_VADDR_MASK == 0x1FFFFFF`, and `ext_mem_defs.h` carries a
+`_Static_assert` that the IRAM0 and DRAM0 linear addresses are equal.
+Therefore **IBUS `0x42000000 + X` and DBUS `0x3C000000 + X` are the same
+table entry** — the same physical page seen two ways. This is how the kernel
+sees its own flash as code at `0x42xxxxxx` and as rodata at `0x3Cxxxxxx`.
+
+Three things follow, all of which have already caused bugs:
+
+- Text does not need mapping "into both buses" — it already is.
+- Text must be *written* through the data-bus alias (NuttX does this via
+  `up_textheap_data_address()`, which subtracts `0x6000000`), then made
+  visible to instruction fetch by a cache writeback + I-cache invalidate.
+- One global table means a table entry reused by a different process — or by
+  the kernel's own PSRAM window — can leave **stale instruction-cache lines**
+  behind. They read back as zeroes.
+
+### The memory map, measured over JTAG
+
+Table base `0x600c5000`, entry `i` at `+i*4`. Entry format:
+`physical_page | 0x8000` (SPIRAM), with `0x4000` marking it invalid.
+
+| what | address | entry | observed |
+|---|---|---|---|
+| kernel PSRAM window | `0x3c0a0000`–`0x3c8a0000` | 10–137 | entry 10 = `0x8000` (PSRAM page 0) |
+| page pool | `0x3c400000`–`0x3c800000` | 64–127 | PSRAM offset `0x360000`, 4 MB |
+| user `.text` (IBUS) | `0x42800000` | 128 | `0x8040` = PSRAM page 64 |
+| user `.data` (DBUS) | `0x3d000000` | 256 | `0x8041` |
+| user heap (DBUS) | `0x3d200000` | 288 | `0x8043` |
+
+`esp32s3_spiram.c` maps PSRAM at `mmu_valid_space()`, i.e. immediately after
+the last entry the flash mappings occupy (index 9 on this image) — so the
+window **moves as the kernel image grows**. That is why
+`CONFIG_ARCH_PGPOOL_PBASE` must be `0x360000` (the PSRAM *offset* of the
+pool's virtual base), not `0x400000`, and why `up_allocate_pgheap()` now
+logs both ranges and panics if they disagree.
+
+⚠ **Known latent collision:** user `.text` at entry 128 lies *inside* the
+kernel's PSRAM window (10–137), so mapping it destroys the kernel's view of
+PSRAM page 118. It is harmless only by luck — the pool stops at page 117.
+The user windows should be moved above entry 137. See §7.3.
+
+---
+
+## 4. Locked design decisions
+
+1. **User pages live in octal PSRAM**, via the IBUS (.text) and DBUS
+   (.data/heap) cache windows.
+2. **Isolation comes from the window remap alone, not from per-select PMS.**
+   All processes share the same window virtual addresses and only one
+   environment is resident at a time, so PMS is to be programmed **once at
+   boot**; `up_addrenv_select()` does not touch it.
+3. **`up_addrenv_mprot()` cannot be honoured.** A cache-MMU entry has only a
+   valid bit, a memory type and a page number — no permission bits. It
+   returns OK, and a process can therefore write its own `.text`. Isolation
+   between groups is unaffected. It is *not* a no-op though: it is the
+   loader's "text is now executable" moment and does the cache sync.
+4. **Each thread has a kernel stack** (`CONFIG_ARCH_KERNEL_STACK`). **This
+   supersedes the earlier "user stacks come from the process heap, kernel
+   stack off" decision**, which was wrong: a system call runs its body in the
+   calling thread's context, so without a kernel stack the kernel runs on the
+   *user* stack — which `up_addrenv_select()` then remaps out from under it.
+5. **`fork()` is eager.** `up_addrenv_clone()` is a plain descriptor memcpy
+   (threads of a group *share* an environment); the process-duplicating
+   `fork()` is a separate higher-level operation.
 
 ### ⚠ Deferred isolation-hardening item (do not lose)
 
-`up_addrenv_select` only remaps the pages a group actually uses. Window
-entries **above** a group's page count still point at the previously-resident
-group's pages, so a misbehaving task that touches its window beyond its own
-allocation could reach stale mappings. A well-behaved task never does, and the
-guard-page/SIGSEGV abort (`CONFIG_ESP32S3_PAGEFAULT_ABORT`) is the interim
-backstop, but **full isolation needs the unused window entries invalidated**.
-Deferred to on-target bring-up because invalidating cache-MMU entries is
-sharp-edged (an invalid in-window entry reads 0 silently, it does not fault).
-There is a `TODO(Unit F hardening)` comment at the exact spot in
-`esp32s3_addrenv.c`.
+`up_addrenv_select()` only remaps the pages a group actually uses. Window
+entries **above** a group's page count still point at the previously resident
+group's pages, so a task touching its window beyond its own allocation could
+reach stale mappings. Full isolation needs the unused entries invalidated.
+Deferred because invalidating cache-MMU entries is sharp-edged — an invalid
+in-window entry reads 0 silently rather than faulting. There is a
+`TODO(Unit F hardening)` comment at the exact spot in `esp32s3_addrenv.c`.
 
-## What is committed (branch `gsoc/dynamic-elf-baseline`)
+---
 
-Newest first (this thread's work):
+## 5. What is committed
 
-- `4b862af4cb` esp32s3-devkit: user-program layout and boot ROMFS for kernel
-  builds (`scripts/gnu-elf.ld` linking `.text`/`.data` at the window
-  addresses; `src/romfs.h`, `src/romfs_stub.c`, the romdisk registration in
-  `esp32s3_bringup.c`, and the `src/Make.defs` selection that compiles the
-  placeholder away instead of swapping it out)
-- `ff6cf241bb` xtensa/esp32s3: accept `up_addrenv_mprot`
-- `f3c29741ef` xtensa: support fully linked ELF programs
-  (`ARCH_HAVE_ELF_EXECUTABLE`; `-r` conditional on
-  `CONFIG_BINFMT_ELF_RELOCATABLE`; `crt0.o` in the export package)
-- `3029abe27c` xtensa/esp32s3: page pool and heap growth for BUILD_KERNEL
-  (`esp32s3_pgalloc.c` — `up_allocate_pgheap()` and `pgalloc()` — plus
-  `esp32s3_addrenv_mapnew()`)
-- `6bf42e73eb` xtensa: build the kernel-mode trampolines for BUILD_KERNEL
-  (`BUILD_PROTECTED` → `!BUILD_FLAT` in `common/Make.defs`)
-- `4f34a9853f` xtensa: enable the syscall privilege path for BUILD_KERNEL
-  (chip_macros.h WCL privilege macros `BUILD_PROTECTED`→`!BUILD_FLAT`;
-  xtensa_swint.c SYS_signal_handler → `ARCH_DATA_RESERVE->ar_sigtramp` under
-  KERNEL, like riscv_swint)
-- `ff683866ef` fix `up_addrenv_pa_to_va` return type (`void *`, not uintptr_t)
-- `f32134db35` Unit E part 3 — clone/attach/detach
-- `69e905cfd7` Unit E part 2 — **up_addrenv_select** cache-MMU remap
-- `ffb8544ac7` Unit E part 1 — create/destroy/vtext/vdata/vheap/heapsize +
-  find_page/page_vaddr/user_vaddr/page_wipe/pa_to_va/va_to_pa +
-  esp32s3_addrenv.h helpers
-- `e6a105169e` mm/pgalloc — 32 KB / 64 KB page-size support
-- `9c1c4cc487` Unit D — `struct arch_addrenv_s`
-- `bb61a86d0e` Unit C — advertise MMU/addrenv capability (BUILD_KERNEL
-  selectable; flat/protected byte-identical)
-- `9d3867af55` doc — clarify eager fork() is not blocked
+Newest first, on `gsoc/dynamic-elf-baseline`:
 
-Files: `arch/xtensa/src/esp32s3/esp32s3_addrenv.{c,h}`,
-`esp32s3_addrenv_utils.c`, `Make.defs` (addrenv gated `ARCH_ADDRENV`;
-mmu/pms/wcl gated `BUILD_PROTECTED||ARCH_ADDRENV`); `arch/xtensa/include/arch.h`;
-`arch/xtensa/Kconfig`; `arch/xtensa/src/esp32s3/chip_macros.h`;
-`arch/xtensa/src/common/xtensa_swint.c`; `include/nuttx/pgalloc.h`; `mm/Kconfig`.
+| commit | what |
+|---|---|
+| `1b02d09dd3` | per-thread **kernel stack** (see §7.1 for what is still wrong) |
+| `3e98f4e7a7` | doc: first BUILD_KERNEL boot |
+| `907d814aff` | **cache coherency** for loaded text + page-pool validation |
+| `df99d323dd` | `sig_trampoline` in crt0 for BUILD_KERNEL |
+| `fbe07821b8` | `up_allocate_kheap()` for BUILD_KERNEL |
+| `d04701d22f` | **IRAM placement** for kernel builds (`ARCHLIB` macro) |
+| `4b862af4cb` | board `gnu-elf.ld` + boot ROMFS plumbing |
+| `ff6cf241bb` | `up_addrenv_mprot()` |
+| `f3c29741ef` | fully linked ELF programs on Xtensa |
+| `3029abe27c` | `esp32s3_pgalloc.c` — page pool and heap growth |
+| `6bf42e73eb` | kernel-mode trampolines gated `!BUILD_FLAT` |
+| `4f34a9853f` | syscall privilege path for BUILD_KERNEL |
+| `f32134db35` `69e905cfd7` `ffb8544ac7` | Unit E — the `up_addrenv_*` set |
+| `e6a105169e` | `mm/pgalloc` 32 K/64 K page support |
+| `9c1c4cc487` `bb61a86d0e` | Units D and C — `arch_addrenv_t`, capability Kconfig |
 
-All units are nxstyle-clean and build-gated so existing flat/protected configs
-are unchanged. (Note: the addrenv `.c` files cannot be syntax-checked standalone
-because the real `esp32s3_mmu.h` pulls the esp-hal header chain; they were
-stub-compiled during development and are now validated by the real BUILD_KERNEL
-build.)
+Everything is gated so that existing **flat and protected builds are
+unchanged**; `esp32s3-devkit:elf_oct` (flat, silicon-validated) and
+`esp32s3-devkit:knsh` (protected, boots to nsh) both still build clean.
 
-## Reproducing the BUILD_KERNEL build
+**Not committed:** `boards/xtensa/esp32s3/esp32s3-devkit/src/romfs_boot.c` is
+a generated artifact and is deliberately untracked. The working config is
+**not** saved as a board defconfig yet — §6 reproduces it exactly.
 
-Not yet saved as a board defconfig — it builds, but the memory map is
-unvalidated and the boot wiring is missing, so it cannot boot yet. A
-`savedefconfig` of the working config is worth regenerating before it is
-committed as, say, `esp32s3-devkit:kernel`.
+---
 
-From `nuttx/`, `source ../.tools/env.sh`, then:
+## 6. How to build, flash and debug
+
+### 6.1 Configure
+
+Not yet a board defconfig. From `nuttx/`, `source ../.tools/env.sh`, then run
+these **one per line** — note `zsh` does not word-split unquoted variables, so
+a `for` loop over tweak strings silently applies nothing:
 
 ```sh
 ./tools/configure.sh esp32s3-devkit:knsh
@@ -213,28 +233,18 @@ kconfig-tweak --set-val CONFIG_ARCH_DATA_VBASE   0x3d000000   # DBUS window
 kconfig-tweak --set-val CONFIG_ARCH_DATA_NPAGES  8
 kconfig-tweak --set-val CONFIG_ARCH_HEAP_VBASE   0x3d200000   # DBUS window
 kconfig-tweak --set-val CONFIG_ARCH_HEAP_NPAGES  16
-kconfig-tweak --set-val CONFIG_ARCH_PGPOOL_PBASE 0x400000     # PSRAM offset
-kconfig-tweak --set-val CONFIG_ARCH_PGPOOL_VBASE 0x3c400000   # kernel PSRAM VA
+kconfig-tweak --set-val CONFIG_ARCH_PGPOOL_VBASE 0x3c400000
+kconfig-tweak --set-val CONFIG_ARCH_PGPOOL_PBASE 0x360000     # PSRAM *offset*
 kconfig-tweak --set-val CONFIG_ARCH_PGPOOL_SIZE  4194304      # DECIMAL (int)
 
-# The init process and the other user programs: separate ELFs in a ROMFS
-# image, mounted at /system/bin and exec'd from there.
-
+# Init process and the other user programs: separate ELFs in a ROMFS image,
+# mounted at /system/bin and exec'd from there.
 kconfig-tweak --enable  CONFIG_ELF
 kconfig-tweak --enable  CONFIG_BINFMT_ELF_EXECUTABLE
 kconfig-tweak --disable CONFIG_BINFMT_ELF_RELOCATABLE
 kconfig-tweak --enable  CONFIG_FS_ROMFS
 kconfig-tweak --enable  CONFIG_LIBC_EXECFUNCS
 kconfig-tweak --enable  CONFIG_LIBC_ENVPATH
-
-# CONFIG_ARCH_KERNEL_STACK defaults to CONFIG_LIBC_EXECFUNCS, so enabling the
-# latter switches it on -- and this port assumes it off (user stacks come
-# from the process heap; the Unit B.1 SIGSEGV delivery depends on there being
-# no kernel stack).  Nothing implements up_addrenv_kstackalloc() on Xtensa,
-# so leaving it on does not link.  Order matters: disable it after
-# LIBC_EXECFUNCS.
-
-kconfig-tweak --disable CONFIG_ARCH_KERNEL_STACK
 kconfig-tweak --enable  CONFIG_SCHED_WAITPID
 kconfig-tweak --enable  CONFIG_SCHED_HAVE_PARENT
 kconfig-tweak --enable  CONFIG_INIT_MOUNT
@@ -246,13 +256,21 @@ kconfig-tweak --enable  CONFIG_SYSTEM_NSH
 kconfig-tweak --set-str CONFIG_SYSTEM_NSH_PROGNAME "init"
 kconfig-tweak --enable  CONFIG_NSH_FILE_APPS
 
-# Real hardware: WROOM-2 octal flash + octal PSRAM, and a single self-
-# contained image.  ESP32S3_APP_FORMAT_LEGACY is only "default y if
-# BUILD_PROTECTED"; a kernel build is one image, so turning it off selects
-# SIMPLE_BOOT and the image flashes whole at 0x0 with no ESP-IDF bootloader.
-# Note this board wants STR sampling, not FLASH_SAMPLE_MODE_DTR, which
-# esp32s3_spiflash.c rejects outright for octal mode.
+# Kernel stack.  Required (see §4.4).  The 1568-byte default is far too
+# small: the whole ELF-loader system-call body runs on it.
+kconfig-tweak --enable  CONFIG_ARCH_KERNEL_STACK
+kconfig-tweak --set-val CONFIG_ARCH_KERNEL_STACKSIZE 8192
 
+# The 2048-byte user stack defaults are too small once NSH is a process.
+kconfig-tweak --set-val CONFIG_INIT_STACKSIZE 8192
+kconfig-tweak --set-val CONFIG_POSIX_SPAWN_DEFAULT_STACKSIZE 8192
+kconfig-tweak --set-val CONFIG_ELF_STACKSIZE 8192
+
+# Real hardware: WROOM-2 octal flash + octal PSRAM, single self-contained
+# image.  ESP32S3_APP_FORMAT_LEGACY is only "default y if BUILD_PROTECTED";
+# a kernel build is one image, so turning it off selects SIMPLE_BOOT and the
+# image flashes whole at 0x0 with NO ESP-IDF bootloader.  This board wants
+# STR sampling, not DTR, which esp32s3_spiflash.c rejects for octal mode.
 kconfig-tweak --disable CONFIG_ARCH_CHIP_ESP32S3WROOM1N4
 kconfig-tweak --enable  CONFIG_ARCH_CHIP_ESP32S3WROOM2N32R8V
 kconfig-tweak --disable CONFIG_ESP32S3_FLASH_MODE_DIO
@@ -263,37 +281,12 @@ kconfig-tweak --enable  CONFIG_ESP32S3_SPIFLASH
 kconfig-tweak --enable  CONFIG_ESP32S3_SPIRAM
 kconfig-tweak --enable  CONFIG_ESP32S3_SPIRAM_MODE_OCT
 
-# The page pool's physical base is the PSRAM *offset* of its virtual base,
-# and PSRAM lands at 0x3c0a0000 on this image -- see below.
-
-kconfig-tweak --set-val CONFIG_ARCH_PGPOOL_PBASE 0x360000
-
-# The 2048-byte defaults are too small once NSH is a user process.
-
-kconfig-tweak --set-val CONFIG_INIT_STACKSIZE 8192
-kconfig-tweak --set-val CONFIG_POSIX_SPAWN_DEFAULT_STACKSIZE 8192
-kconfig-tweak --set-val CONFIG_ELF_STACKSIZE 8192
-
 make olddefconfig && make -j8
 ```
 
-Flash the whole image at 0x0 (kill OpenOCD first if it is attached, it holds
-the target halted):
+### 6.2 Build the user programs and the boot ROMFS
 
-```sh
-esptool.py -c esp32s3 -p /dev/cu.usbserial-2140 -b 460800 \
-           write_flash 0x0 nuttx.bin
-```
-
-**Changing any of the flash/PSRAM options needs `make clean`.** The
-esp-hal-3rdparty objects do not depend on `sdkconfig.h`, so an incremental
-build silently keeps the old settings.
-
-`INIT_MOUNT_SOURCE` and `INIT_MOUNT_FSTYPE` default to `/dev/ram0` and
-`romfs`, which is what the board's romdisk registration provides.
-
-That first `make` links the kernel against the empty ROMFS placeholder. Build
-the user programs against it and link the real image in:
+The first `make` links against an empty ROMFS placeholder. Then:
 
 ```sh
 make export
@@ -304,135 +297,175 @@ make import
 cd ../nuttx && make -j8
 ```
 
-`romfs_boot.c` is a generated artifact and is deliberately not committed; the
-path above resolves through the board symlinks to
-`boards/xtensa/esp32s3/esp32s3-devkit/src/`. Check the result with
-`xtensa-esp32s3-elf-nm nuttx | grep romfs_img` — the symbol must be `D`, not
-absent, and `.flash.rodata` should grow by the image size.
+Check it took: `xtensa-esp32s3-elf-nm nuttx | grep romfs_img` must show a
+**strong `D`** symbol, and `.flash.rodata` should grow by the image size.
 
-**Note `zsh` does not word-split unquoted variables**, so a `for` loop over
-tweak strings silently passes each one as a single argument and applies
-nothing. Run them one per line, and check `.config` afterwards.
+### 6.3 Flash and console
 
-**Gotchas:** `ARCH_PGPOOL_SIZE` is Kconfig type `int` → must be **decimal**,
-not hex. The memory map above is a **first guess** and must be validated
-on-target — the user windows must not collide with the kernel's own flash
-rodata / text mappings or the kernel PSRAM (pgpool) window in the same
-IBUS/DBUS ranges (DBUS `0x3C000000-0x3E000000`, IBUS `0x42000000-0x44000000`;
-the kernel's dynamic PSRAM map starts at `esp32s3_spiram.c`'s
-`g_mapped_vaddr_start`). Cache-MMU paddr for PSRAM is a **0-based offset**, so
-setting `ARCH_PGPOOL_PBASE` to the pool's PSRAM offset makes a page value equal
-its MMU paddr directly.
+```sh
+esptool.py -c esp32s3 -p /dev/cu.usbserial-2140 -b 460800 \
+           write_flash 0x0 nuttx.bin
+```
 
-## Remaining work
+A console harness lives in the session scratchpad (`console.py`: pyserial,
+DTR low + RTS pulse = normal boot, then feeds commands). It is trivial to
+rewrite: open at 115200, `dtr=False`, pulse `rts`, read.
 
-### Next unit — the kernel stack (precisely diagnosed on target)
+### 6.4 JTAG debugging (this is how the hard bugs were found)
 
-Spawning a **second** user process crashes in `_window_overflow12`, called
-from `addrenv_select()` (`sched/addrenv/addrenv.c:355`), storing to
-`0xffffffd0` — a frame pointer of zero, minus the `s32e` offset.
+```sh
+$OPENOCD -s $OPENOCD_SHARE/openocd/scripts -f board/esp32s3-builtin.cfg &
+$GDB -batch -x probe.gdb nuttx
+```
 
-The cause is a design decision that turns out to be wrong. With
-`CONFIG_ARCH_KERNEL_STACK=n` the kernel runs on the **user** stack, and
-`addrenv_select()` reprograms the data-bus window part way through its own
-execution: the stack disappears from under the kernel's feet, and the next
-register-window spill writes into whatever the new process has there. A
-kernel build needs a stack that does not move when the address environment
-does.
+with `probe.gdb` doing `target remote :3333`, `monitor reset halt`,
+`hb xtensa_user_panic`, `continue`, then `info registers pc ps epc1 exccause`
+and `x/8xb` at the addresses of interest.
 
-So: implement `up_addrenv_kstackalloc()` and `up_addrenv_kstackfree()`
-(mirror `riscv_addrenv_kstack.c`) and enable `CONFIG_ARCH_KERNEL_STACK`.
-Note it *defaults* to `CONFIG_LIBC_EXECFUNCS`, so it turns itself on — it
-was only forced off earlier because nothing implemented the allocator. The
-earlier "user stacks come from the process heap, kernel stack off" decision
-recorded in this document is superseded for that reason.
+**Kill OpenOCD before running esptool** — it holds the target halted and the
+flash will silently not happen.
 
-### The memory map — measured, still worth tidying
+The decisive trick for this port: **read the same address through both bus
+aliases**. `x/8xb 0x4280919c` (IBUS) vs `x/8xb 0x3c80919c` (DBUS) is what
+proved the stale-I-cache bug — zeros on one, correct bytes on the other.
 
-The map is no longer guesswork — it was read off the hardware over JTAG. The
-cache-MMU table base is `0x600c5000`, entry `i` at `+i*4`, each entry being
-`physical_page | 0x8000` (PSRAM) with `0x4000` marking it invalid. On the
-booting image:
+---
 
-- PSRAM is mapped at **`0x3c0a0000`-`0x3c8a0000`**, i.e. entries **10-137**
-  (`mmu_valid_space()` picks the first entry after the flash mappings, which
-  end at index 9). Entry 10 reads `0x8000` — PSRAM page 0. So the page pool
-  at VA `0x3c400000` is PSRAM offset `0x360000`, which is what
-  `CONFIG_ARCH_PGPOOL_PBASE` must be.
-- User `.text` at IBUS `0x42800000` is entry **128**, which reads `0x8040`
-  (PSRAM page 64) after `up_addrenv_select()` — while its neighbour entry
-  129 still reads `0x8077`, PSRAM page 119, the kernel's own mapping.
+## 7. Remaining work, in priority order
 
-**That is the collision this section warned about, confirmed:** entry 128
-lies inside the kernel's PSRAM window, so mapping user text there destroys
-the kernel's view of PSRAM page 118. It is harmless only by luck — the pool
-(PSRAM `0x360000`-`0x760000`, pages 54-117) stops just short of it. The
-windows should still be moved to indices above 137, or the pool and the
-kernel window shrunk to make room, before anything else depends on this.
+### 7.1 Fix the register-window chain across the kernel-stack switch
 
-The rest of this section is the reasoning that led there, kept because it
-explains why the layout has to be chosen deliberately. The ESP32-S3 has
-**one** 512-entry cache-MMU table **shared by both buses**: the entry index is
-`(vaddr & SOC_MMU_VADDR_MASK) >> 16` with `SOC_MMU_VADDR_MASK == 0x1FFFFFF`,
-and `ext_mem_defs.h` carries a `_Static_assert` that the IRAM0 and DRAM0
-linear addresses are the same. So IBUS `0x42000000 + X` and DBUS
-`0x3C000000 + X` are the *same table entry* — which is exactly how the kernel
-sees its own flash as code at `0x42xxxxxx` and as rodata at `0x3Cxxxxxx`.
+**This is the immediate blocker.** `getprime` runs and exits correctly, then
+the shell that spawned it faults:
 
-Two consequences:
+```
+xtensa_user_panic: User Exception: EXCCAUSE=0000 task: /system/bin/init
+  PC: 42809e24   A0: 82804821   A1: 3d203d80
+  A2: 00000004   A3: 00000004   A6: 00000004   A7: 00000004   A9: 00000004
+```
 
-1. A user `.text` page at IBUS `0x42800000` (index 128) is also visible as
-   data at DBUS `0x3C800000`, and a user data page at DBUS `0x3D000000`
-   (index 256) is visible as code at IBUS `0x43000000`. That is inherent to
-   the chip; note it rather than fight it.
-2. **The current guessed map is unsafe.** `esp32s3_spiram.c` maps PSRAM at
-   `mmu_valid_space()`, i.e. immediately after the last used flash entry, and
-   8 MB of PSRAM is 128 entries. Starting from a low index that easily reaches
-   index 128 — the guessed `ARCH_TEXT_VBASE`. The guessed
-   `ARCH_PGPOOL_VBASE = 0x3c400000` (index 64) may or may not fall inside what
-   SPIRAM actually mapped, since that placement is computed at runtime.
+`PC 0x42809e24` is the last four bytes of the process's `.text` (which ends
+at `0x42809e28`) — padding, not a function — and the repeated `0x00000004`
+registers say this is a **register window restored from the wrong place**,
+not a damaged stack.
 
-So the pgpool and the user windows must be placed **deliberately**, not left
-to `esp32s3_spiram.c`'s dynamic choice, and `CONFIG_ARCH_PGPOOL_VBASE` must be
-a compile-time constant that provably lands inside the kernel's PSRAM
-mapping. Decide the partition of the 512 entries (kernel flash / kernel PSRAM
-pgpool / user text / user data / user heap) first, then make the boot code
-enforce it. Note also that enabling PSRAM on this WROOM-2 config needs
-`CONFIG_ESP32S3_SPIRAM` + `SPIRAM_MODE_OCT` + `SPIFLASH`, and that
-`flash_ops.o` must be deleted by hand after that config change (stale-object
-trap — see the build-environment memory note).
+Cause: ARM and RISC-V can simply swap SP, but Xtensa's windowed ABI keeps a
+**frame chain** — `retw` underflows and restores the caller's window from
+memory *below* `a1`. `xtensa_swint.c` moves `a1` to the kernel stack for the
+outermost system call, which leaves that chain pointing into the user stack,
+so the eventual return reads the wrong memory.
 
-### Boot wiring (after the map is fixed)
+Direction: force a full window spill before the switch and/or save and
+restore `WindowBase`/`WindowStart` around it. NuttX's Xtensa port already has
+**`SYS_flush_context`** ("flush windows to the stack") — read how that is used
+before writing anything. Ruled out already: the signal-handler path (the
+`kstkptr` handling was added, the fault did not change).
 
-At startup: map the PSRAM pgpool at its chosen entries (as `esp32s3_spiram.c`
-does, `cache_dbus_mmu_set(SOC_MMU_ACCESS_SPIRAM, …, paddr=0, …)`) →
-`up_allocate_pgheap()` already reports `ARCH_PGPOOL_PBASE`/`SIZE` to
-`mm_pginitialize()` → set PMS **once** (WORLD1 gets the user cache windows,
-WORLD0 everything), per the isolation-via-remap decision. Then bring up to
-`nsh` under BUILD_KERNEL via OpenOCD/GDB (expect iterative EPC1 root-causing,
-as in the protected WROOM-2 bring-up).
+### 7.2 Configure the World Controller and PMS — the actual isolation
 
-First things to check on target, in order: does it reach `board_late_initialize`
-and register `/dev/ram0`; does `/system/bin` mount; does binfmt load
-`/system/bin/init` (watch `up_addrenv_create` for `-E2BIG`, meaning a region
-needs more pages than `ARCH_*_NPAGES`); does `up_addrenv_select` produce a
-sane window; does the first user instruction at `0x42800008` fetch.
+**Nothing programs the protection hardware in a kernel build.**
+`esp32s3_userspace.c` is gated `CONFIG_BUILD_PROTECTED` in
+`arch/xtensa/src/esp32s3/Make.defs:42`, and it is the *only* caller of the
+WCL and PMS setup. So under BUILD_KERNEL:
 
-### Eager fork() (final task)
+- `configure_mpu()` never runs — no SRAM split line, no WORLD0/WORLD1
+  permissions;
+- `esp32s3_wcl_set_vecbase(PMS_WORLD_1, …)` and
+  `esp32s3_wcl_set_world0_entry()` never run;
+- `esp32s3_pmsirqinitialize()` is an empty macro
+  (`esp32s3_userspace.h:66`), so the PMS violation ISR is never registered
+  and the Unit B.1 per-task SIGSEGV abort is absent.
 
-On a booting BUILD_KERNEL: implement the process-duplicating `fork()` as
-`up_addrenv_create(child)` sized to the parent's regions → copy each parent
-page into the child's page through the kernel `page_vaddr` mappings (memcpy) →
-set the child's saved return frame (return 0 in the child, child PID in the
-parent). No COW, no fault handling. Costs full RAM duplication + copy time per
-fork; no lazy stack/heap growth — acceptable for the static-sandbox target.
+`xtensa_lowerprivilege()` *does* flip the task to WORLD1
+(`regs[REG_INT_CTX] = WCL_WORLD_USER`), but the hardware that would give
+WORLD1 meaning was never configured — so today's processes are separated,
+not protected.
 
-## References
+The design question to answer: the protected build points WORLD1's VECBASE at
+`UIRAM_START`, a *user* vector table that a kernel build does not have. So
+decide what WORLD1's VECBASE should be (presumably the kernel's own vectors)
+and which of the **13** WCL world-entry slots
+(`WCL_ENTRY_MAX`, `esp32s3_wcl.c`) must be registered so the CPU returns to
+WORLD0 for each vector the user can reach — the six window overflow/underflow
+vectors, the user exception vector, the level 2-5 interrupt vectors, and the
+double exception vector.
+
+The work is a BUILD_KERNEL counterpart to `configure_mpu()`, plus registering
+the PMS violation ISR. This is where the remaining engineering substance is,
+and it is what makes the project's isolation claim true.
+
+### 7.3 Map and packaging cleanups
+
+- Move the user windows above entry 137 so they stop overlapping the kernel's
+  PSRAM window (§3), or shrink the kernel window to make room.
+- Invalidate unused window entries in `up_addrenv_select()` (§4, deferred
+  item).
+- Save a board defconfig once the above lands — a defconfig implies "this
+  works", so it should not be committed while §7.1 stands.
+
+### 7.4 Eager `fork()`
+
+Once processes are isolated: `up_addrenv_create()` for the child sized to the
+parent's regions, copy each parent page into the child's through the kernel
+`page_vaddr` mappings, set the child's return frame (0 in the child, the pid
+in the parent). No COW, no fault handling. Costs a full copy per fork and has
+no lazy growth — acceptable for the static-sandbox target.
+
+---
+
+## 8. Gotchas that cost real time
+
+- **esp-hal stale objects.** The `esp-hal-3rdparty` objects do not depend on
+  `sdkconfig.h`. Any flash/PSRAM/boot-format config change needs `make clean`
+  or the build silently keeps the old settings. Symptom: an image byte-identical
+  to the previous one.
+- **`zsh` does not word-split unquoted variables.** A `for` loop over
+  `kconfig-tweak` argument strings applies nothing and reports success.
+- **`CONFIG_ARCH_KERNEL_STACK` defaults to `CONFIG_LIBC_EXECFUNCS`**, so it
+  turns itself on when execfuncs is enabled. That is now what we want, but it
+  is why it appeared unbidden earlier.
+- **`ARCH_PGPOOL_SIZE` is Kconfig type `int`** — decimal, not hex.
+- **This board wants STR flash sampling, not DTR.** `esp32s3_spiflash.c` has
+  a hard `#error "Not yet implemented"` for octal + DTR. The committed
+  `elf_oct` config is the reference for what this board needs.
+- **Kill OpenOCD before flashing.**
+- **An unmapped cache window swallows writes and reads back zero without
+  faulting.** Every mapping mistake in this port has been silent. Assume
+  nothing; read it back over JTAG.
+
+### The five on-target bugs already found and fixed — do not re-derive them
+
+1. **IRAM placement** (`d04701d22f`) — the section scripts place IRAM code by
+   archive name and every rule said `*libarch.a`; a kernel build archives into
+   **`libkarch.a`**, so all 265 rules missed and the octal-flash bring-up
+   functions stayed in mapped flash, called while that mapping was being
+   reconfigured. Boot loop with no output. Fixed with an `ARCHLIB` macro.
+2. **`up_allocate_kheap()`** (`fbe07821b8`) — had only PROTECTED and FLAT
+   branches, so BUILD_KERNEL left `kbase`/`ktop` uninitialised and the heap
+   landed at NULL. GCC warned about it.
+3. **`crt0.c` `sig_trampoline`** (`df99d323dd`) — referenced but never defined
+   on Xtensa; the kernel path had never been compiled. Cannot come from
+   `xtensa_signal_handler.S` (that is in libarch, and user programs link only
+   `-lmm -lc -lproxies`). GCC has **no `naked` attribute on Xtensa**, so it is
+   file-scope assembly.
+4. **Cache coherency** (`907d814aff`) — the "runs, then executes a hole" bug.
+   Text is written through the DBUS alias but fetched through IBUS, and one
+   global table means stale I-cache lines from a previous mapping read back as
+   zeroes. Fixed in `up_addrenv_coherent()` and `up_addrenv_mprot()`.
+5. **`ARCH_PGPOOL_PBASE`** (`907d814aff`) — PSRAM maps at `0x3c0a0000`, so the
+   pool's physical base is `0x360000`, not `0x400000`; every page wipe was
+   landing 640 KB away.
+
+---
+
+## 9. References
 
 - Design note: `2026-dynamic-elf-mmu-isolation.md`
+- Dated evidence, including why COW/demand paging are dead:
+  `2026-dynamic-elf-progress-log.md`
 - Delivery plan / checklist: `2026-dynamic-elf-delivery-plan.md`,
   `2026-dynamic-elf-checklist.md`
-- Silicon findings (why COW/demand-paging are dead): the 2026-07-24/25 entries
-  in `2026-dynamic-elf-progress-log.md`
-- RISC-V template being mirrored: `arch/risc-v/src/common/riscv_addrenv*.c`,
-  `arch/risc-v/include/arch.h`
+- Templates being mirrored: `arch/risc-v/src/common/riscv_addrenv*.c`,
+  `riscv_addrenv_kstack.c`, `arch/arm/src/armv7-a/arm_syscall.c`
+  (kernel-stack switch in C), `boards/risc-v/qemu-rv/rv-virt` and
+  `boards/risc-v/k230/canmv230` (ROMFS kernel-build boards)
