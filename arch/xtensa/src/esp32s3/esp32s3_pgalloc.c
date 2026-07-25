@@ -28,6 +28,7 @@
 
 #include <assert.h>
 #include <debug.h>
+#include <inttypes.h>
 
 #include <nuttx/addrenv.h>
 #include <nuttx/arch.h>
@@ -37,6 +38,10 @@
 #include "sched/sched.h"
 
 #include "esp32s3_addrenv.h"
+
+#ifdef CONFIG_ESP32S3_SPIRAM
+#  include "esp32s3_spiram.h"
+#endif
 
 #ifdef CONFIG_MM_PGALLOC
 
@@ -70,6 +75,38 @@
 void up_allocate_pgheap(void **heap_start, size_t *heap_size)
 {
   DEBUGASSERT(heap_start && heap_size);
+
+#ifdef CONFIG_ESP32S3_SPIRAM
+  /* Where the kernel's PSRAM window lands is decided at run time:
+   * esp32s3_spiram.c maps PSRAM immediately after the last cache-MMU entry
+   * the flash mappings occupy, so it moves as the kernel image grows.  The
+   * page pool is described to the OS by compile-time constants, so the two
+   * have to be checked against each other -- and loudly, because getting it
+   * wrong is otherwise silent: an unmapped cache window swallows writes and
+   * reads back as zero without faulting, so a misplaced pool would simply
+   * lose every page handed out of it.
+   */
+
+    {
+      uintptr_t ramstart = (uintptr_t)esp_spiram_allocable_vaddr_start();
+      uintptr_t ramend   = (uintptr_t)esp_spiram_allocable_vaddr_end();
+
+      _info("PSRAM window %08" PRIxPTR "-%08" PRIxPTR ", "
+            "page pool %08x-%08x\n",
+            ramstart, ramend,
+            CONFIG_ARCH_PGPOOL_VBASE, CONFIG_ARCH_PGPOOL_VEND);
+
+      if ((uintptr_t)CONFIG_ARCH_PGPOOL_VBASE < ramstart ||
+          (uintptr_t)CONFIG_ARCH_PGPOOL_VEND > ramend)
+        {
+          _err("ERROR: page pool %08x-%08x is outside the mapped PSRAM "
+               "window %08" PRIxPTR "-%08" PRIxPTR "\n",
+               CONFIG_ARCH_PGPOOL_VBASE, CONFIG_ARCH_PGPOOL_VEND,
+               ramstart, ramend);
+          PANIC();
+        }
+    }
+#endif
 
   *heap_start = (void *)CONFIG_ARCH_PGPOOL_PBASE;
   *heap_size  = (size_t)CONFIG_ARCH_PGPOOL_SIZE;
