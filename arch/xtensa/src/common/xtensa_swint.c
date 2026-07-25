@@ -152,6 +152,19 @@ int xtensa_swint(int irq, void *context, void *arg)
 
           rtcb->xcp.nsyscalls = index;
 
+#ifdef CONFIG_ARCH_KERNEL_STACK
+          /* Leaving the outermost system call: hand the thread back its own
+           * stack, which it has not touched while the kernel borrowed its
+           * context.
+           */
+
+          if (index == 0 && rtcb->xcp.ustkptr != NULL)
+            {
+              regs[REG_A1]      = (uintptr_t)rtcb->xcp.ustkptr;
+              rtcb->xcp.ustkptr = NULL;
+            }
+#endif
+
           /* Handle any signal actions that were deferred while processing
            * the system call.
            */
@@ -292,6 +305,20 @@ int xtensa_swint(int irq, void *context, void *arg)
           regs[REG_A3]        = regs[REG_A4]; /* signal */
           regs[REG_A4]        = regs[REG_A5]; /* info */
           regs[REG_A5]        = regs[REG_A6]; /* ucontext */
+
+#ifdef CONFIG_ARCH_KERNEL_STACK
+          /* The handler runs in user mode, so it has to run on the user
+           * stack.  If the signal caught this thread part way through a
+           * system call it is currently on its kernel stack, so put that
+           * aside and hand the thread its own stack back for the duration.
+           */
+
+          if (rtcb->xcp.ustkptr != NULL)
+            {
+              rtcb->xcp.kstkptr = (uint32_t *)regs[REG_A1];
+              regs[REG_A1]      = (uintptr_t)rtcb->xcp.ustkptr;
+            }
+#endif
         }
         break;
 #endif
@@ -318,6 +345,18 @@ int xtensa_swint(int irq, void *context, void *arg)
           xtensa_raiseprivilege(regs);        /* Privileged mode */
 
           rtcb->xcp.sigreturn = 0;
+
+#ifdef CONFIG_ARCH_KERNEL_STACK
+          /* The handler is done; if it had borrowed the user stack back
+           * from an interrupted system call, return to the kernel stack.
+           */
+
+          if (rtcb->xcp.kstkptr != NULL)
+            {
+              regs[REG_A1]      = (uintptr_t)rtcb->xcp.kstkptr;
+              rtcb->xcp.kstkptr = NULL;
+            }
+#endif
         }
         break;
 #endif
@@ -356,6 +395,27 @@ int xtensa_swint(int irq, void *context, void *arg)
 
 #ifndef CONFIG_BUILD_FLAT
           xtensa_raiseprivilege(regs);        /* Privileged mode */
+#endif
+
+#ifdef CONFIG_ARCH_KERNEL_STACK
+          /* The system call itself runs in this task's own context, so
+           * without help it would run the kernel on the *user* stack.  That
+           * cannot be allowed in a kernel build: the user stack lives in a
+           * cache-MMU window, and any system call that selects a different
+           * address environment -- exec() loading a program, for one --
+           * reprograms that window and the kernel's stack disappears from
+           * under it, taking the frames it is standing on.
+           *
+           * So the outermost system call moves to the thread's kernel
+           * stack, which lives in kernel memory and is unaffected by
+           * address environment changes.  Nested calls are already on it.
+           */
+
+          if (index == 0 && rtcb->xcp.ktopstk != NULL)
+            {
+              rtcb->xcp.ustkptr = (uint32_t *)regs[REG_A1];
+              regs[REG_A1]      = (uintptr_t)rtcb->xcp.ktopstk;
+            }
 #endif
 
           /* Offset A2 to account for the reserved values */
