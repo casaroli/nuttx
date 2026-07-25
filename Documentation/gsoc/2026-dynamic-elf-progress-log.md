@@ -1042,6 +1042,104 @@ Invalidate the unused window entries in `up_addrenv_select()`, which is both
 the remaining isolation gap and the map cleanup already on the list.  Then
 eager `fork()`.
 
+### 2026-07-25 — The user windows are cleaned up, and one page per region was never wiped
+
+#### Completed
+
+Three changes, all on the map rather than on the permission control.
+
+- **The unused window entries are invalidated.**  `up_addrenv_select()` only
+  ever rewrote as many entries as the incoming group has pages; the rest of
+  each window still pointed at the pages of whoever was resident before.  A
+  new `esp32s3_mmu_unmap()` writes `MMU_TABLE_INVALID_VAL` into the entries
+  past `ntext`/`ndata`/`nheap`.  This is the item that was deferred as
+  `TODO(Unit F hardening)`.
+- **The user text window moved out of the kernel's.**  It was at
+  `0x42800000`, cache-MMU entry 128, inside the kernel's PSRAM window; it is
+  now at `0x42c00000`, entry 192.  `up_allocate_pgheap()` gained a run-time
+  check that compares the user windows against the kernel's *by entry*, since
+  the kernel window starts wherever the flash mappings end and so moves as
+  the image grows -- it had already moved from entry 10 to entry 11 since the
+  overlap was first written down.
+- **`CONFIG_ARCH_PGPOOL_PBASE` was stale, and one page per region was going
+  out unwiped.**  Same cause: the window had moved up one entry, so the pool
+  vbase `0x3c400000` maps PSRAM page 53, not page 54.  `esp32s3_pgvaddr()`
+  was therefore one page low, and `esp32s3_pgwipe()` was wiping the page
+  *below* the one just allocated.  Since `up_addrenv_create()` allocates
+  ascending, each page got wiped by its successor's allocation and only the
+  last page of each region survived unwiped -- carrying the previous tenant's
+  data into a new process's own address space.  `PBASE` is now `0x350000`,
+  and a new `esp32s3_mmu_paddr()` lets `up_allocate_pgheap()` check it
+  against what the cache MMU actually maps instead of deriving it.
+
+#### Evidence
+
+The unwiped page, on the WROOM-2, before and after.  `0x3d2f0000` is the last
+page of a process's own 1 MB heap window:
+
+```
+getprime                       (runs and exits)
+pffault r 0x3d2f0000    before: SURVIVED, read aabc6aaa   <- getprime's data
+pffault r 0x3d2f0000    after:  SURVIVED, read 00000000
+pffault r 0x3d2e0000    both:   SURVIVED, read 00000000   <- wiped by its successor
+```
+
+The invalidation, read over JTAG with NSH resident (`ntext=1`, `ndata=2`,
+`nheap=16`), table base `0x600c5000`:
+
+```
+text  entries 192-199   8036 4000 4000 4000 4000 4000 4000 4000
+data  entries 256-263   8037 8038 4000 4000 4000 4000 4000 4000
+heap  entries 288-303   8039 ... 8048   (all sixteen in use)
+```
+
+`0x4000` is `MMU_TABLE_INVALID_VAL`.  This had to be read over JTAG: from the
+shell an invalidated entry reads back as zero rather than faulting, so
+`pffault r 0x42c10000` returning 0 proves nothing on its own.
+
+The `PBASE` check was verified by deliberately restoring the wrong value and
+booting: `up_allocate_pgheap: ERROR: page pool vbase 3c400000 maps physical
+00350000, but CONFIG_ARCH_PGPOOL_PBASE is 00360000`, then a panic.
+
+Regression: `ostest` reaches "Exiting with status 0", `getprime` runs, `ps`
+shows no zombies and the page pool returns to its 1245184-byte baseline.  The
+§7.1 boundary is unchanged -- kernel data, kernel vectors and the World
+Controller all still take SIGSEGV.  `esp32s3-devkit:elf_oct` (flat) and
+`esp32s3-devkit:knsh` (protected) build clean from `make distclean`.
+
+#### Blockers or Risks
+
+**Processes are still not isolated from each other, and the window
+invalidation was never going to do it.**  Measured before any of the above:
+
+```
+pffault r 0x3c410000    SURVIVED, read 3d01176c   <- NSH's .bss address,
+                                                     out of NSH's text page
+```
+
+A user process reads another process's pages through the kernel's own PSRAM
+window at `0x3c0b0000`, which is a plain valid mapping of the whole pool.
+Still true after this change (`0x3c410000` now reads `42c09118`, a literal
+out of the new text window).  The permission control cannot express the
+difference: `APB_CTRL_SRAM_ACEn_*` is indexed by *physical* address, and a
+process's own pages are pool pages, so denying WORLD1 the pool physically
+would deny it its own memory.
+
+The lever is therefore virtual, not permission-based: the kernel must stop
+keeping the whole pool mapped while an unprivileged task runs.  NuttX already
+has the shape for this -- `CONFIG_ARCH_KMAP_VBASE`/`ARCH_KMAP_NPAGES`, the
+scratch region used when `ARCH_PGPOOL_MAPPING` is off.  The kernel's only
+uses of the pool window are `esp32s3_pgwipe()`, `up_addrenv_page_vaddr()` and
+`up_addrenv_pa_to_va()` (and, later, the fork copy), all short and all in
+kernel context, so a one- or two-entry scratch window mapped on demand would
+serve.  Note that Kmem is internal DRAM in this configuration, so the kernel
+needs PSRAM for nothing else.
+
+#### Next
+
+Replace the permanent page-pool window with an on-demand kernel mapping.
+Then eager `fork()`.
+
 ## Update Format
 
 For future entries, use:
