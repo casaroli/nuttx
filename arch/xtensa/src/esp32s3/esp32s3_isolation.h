@@ -71,6 +71,26 @@ void esp32s3_isolation_revoke_peripherals(void);
  ****************************************************************************/
 
 void esp32s3_isolation_worlds(void);
+
+/****************************************************************************
+ * Name: esp32s3_isolation_permissions
+ *
+ * Description:
+ *   Program the permission control for a kernel build: what the
+ *   unprivileged world may reach, which is the WORLD1 vector table and
+ *   nothing else in internal memory, and arm the violation monitors.  This
+ *   is the kernel-build counterpart to configure_mpu() in
+ *   esp32s3_userspace.c, which serves the protected user image.
+ *
+ * Input Parameters:
+ *   None.
+ *
+ * Returned Value:
+ *   None.
+ *
+ ****************************************************************************/
+
+void esp32s3_isolation_permissions(void);
 #endif
 
 /****************************************************************************
