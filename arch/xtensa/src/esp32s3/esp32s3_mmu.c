@@ -130,3 +130,41 @@ int IRAM_ATTR esp32s3_mmu_map_ibus(uint32_t ext_ram, uint32_t vaddr,
 {
   return cache_ibus_mmu_set(ext_ram, vaddr, paddr, 64, (int)npages, 0);
 }
+
+/****************************************************************************
+ * Name: esp32s3_mmu_paddr
+ ****************************************************************************/
+
+bool esp32s3_mmu_paddr(uint32_t vaddr, uint32_t *paddr)
+{
+  uint32_t entry = FLASH_MMU_TABLE[MMU_ENTRY_OF(vaddr)];
+
+  if ((entry & MMU_TABLE_INVALID_VAL) != 0)
+    {
+      return false;
+    }
+
+  *paddr = (entry & MMU_ADDRESS_MASK) * MMU_PAGE_SIZE +
+           (vaddr & (MMU_PAGE_SIZE - 1));
+  return true;
+}
+
+/****************************************************************************
+ * Name: esp32s3_mmu_unmap
+ ****************************************************************************/
+
+void IRAM_ATTR esp32s3_mmu_unmap(uint32_t vaddr, uint32_t npages)
+{
+  uint32_t entry = MMU_ENTRY_OF(vaddr);
+  uint32_t i;
+
+  /* One table, one entry per 64 KB, shared by the instruction and the data
+   * bus: the IBUS and DBUS linear addresses are asserted equal in
+   * ext_mem_defs.h, so a single write covers both views of the page.
+   */
+
+  for (i = 0; i < npages && entry + i < SOC_MMU_ENTRY_NUM; i++)
+    {
+      FLASH_MMU_TABLE[entry + i] = MMU_TABLE_INVALID_VAL;
+    }
+}
