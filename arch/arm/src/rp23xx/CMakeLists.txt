@@ -56,6 +56,10 @@ if(CONFIG_RP23XX_PWM)
   list(APPEND SRCS rp23xx_pwm.c)
 endif()
 
+if(CONFIG_RP23XX_SYSTIMER_TICKLESS)
+  list(APPEND SRCS rp23xx_oneshot.c)
+endif()
+
 if(CONFIG_RP23XX_I2C)
   list(APPEND SRCS rp23xx_i2c.c)
 endif()

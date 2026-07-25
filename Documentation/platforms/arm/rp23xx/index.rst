@@ -41,6 +41,7 @@ Flash ROM Boot   Working       Does not require boot2 from pico-sdk
                                If picotool is available a nuttx.uf2 file will be created
 SRAM Boot        Working       Requires external SWD debugger
 PSRAM            Working       Three modes of heap allocation described below
+Tickless         Working       Optional, RP2350 TIMER via the alarm/oneshot
 ==============   ============  =====
 
 Installation
@@ -168,6 +169,28 @@ applications, as if there was no PSRAM configured. The
 external PSRAM is configured as a separate user heap called
 `psram` and can be used through the global variable
 `g_psramheap` after including `rp23xx_heaps.h`
+
+Tickless OS
+===========
+
+By default the OS tick is a periodic ARM SysTick interrupt.  The RP2350 can
+instead run tickless, driving the scheduler from a hardware alarm so the CPU
+is only interrupted when a timer actually expires.
+
+Enable `RP23XX_SYSTIMER_TICKLESS` together with `SCHED_TICKLESS` and
+`SCHED_TICKLESS_ALARM`.  Choose the timer block with the "Tickless timer
+block" option (`RP23XX_SYSTIMER_TICKLESS_TIMER0`, the default, or
+`RP23XX_SYSTIMER_TICKLESS_TIMER1`).  The system time is then taken from that
+block -- a free-running 64-bit microsecond counter -- and its ALARM0 provides
+the next-event interrupt through the alarm/oneshot lower-half
+(`rp23xx_oneshot.c`).  Because the 64-bit counter is the monotonic time base,
+timekeeping is exact to 1 us, and a single alarm can schedule up to ~71
+minutes ahead, so long idle periods need no wake-ups.  This is mutually
+exclusive with `RP23XX_SYSTIMER_SYSTICK`.
+
+The block chosen here is claimed exclusively by the scheduler and is removed
+from the `/dev/timer` driver's choices (see the Timer section), so the tickless
+clock and a `/dev/timer` device can run at the same time on different blocks.
 
 Programming
 ============
