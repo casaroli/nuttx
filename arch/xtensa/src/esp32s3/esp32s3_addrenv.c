@@ -35,6 +35,7 @@
 #include <nuttx/arch.h>
 #include <nuttx/irq.h>
 #include <nuttx/pgalloc.h>
+#include <nuttx/sched.h>
 
 #include "soc/ext_mem_defs.h"
 
@@ -354,6 +355,17 @@ int up_addrenv_select(const arch_addrenv_t *addrenv)
 
   cache_state = esp32s3_dcache_suspend(false);
 
+  /* TODO(Unit F hardening): only the pages this group actually uses are
+   * remapped below.  Window entries beyond ntext/ndata/nheap still point at
+   * the previously-resident group's pages, so a buggy or malicious task that
+   * touches its window above its own allocation could reach stale mappings.
+   * A well-behaved task never does, and the guard-page/SIGSEGV abort
+   * (CONFIG_ESP32S3_PAGEFAULT_ABORT) is the backstop, but full isolation
+   * needs the unused window entries invalidated here.  Deferred to on-target
+   * bring-up because invalidating cache-MMU entries has documented sharp
+   * edges (an invalid in-window entry reads 0 silently, it does not fault).
+   */
+
   /* Point the instruction-bus (.text) window at this group's pages */
 
   for (i = 0; i < addrenv->ntext; i++)
@@ -405,6 +417,56 @@ int up_addrenv_select(const arch_addrenv_t *addrenv)
 int up_addrenv_coherent(const arch_addrenv_t *addrenv)
 {
   DEBUGASSERT(addrenv);
+  return OK;
+}
+
+/****************************************************************************
+ * Name: up_addrenv_clone
+ *
+ * Description:
+ *   Duplicate an address environment.  The threads of a task group share one
+ *   address environment, so cloning it is simply copying the descriptor: the
+ *   copy references the same PSRAM pages.  (A true fork() that gives the
+ *   child its own pages is a separate, higher-level operation built on
+ *   up_addrenv_create() + a content copy.)
+ *
+ ****************************************************************************/
+
+int up_addrenv_clone(const arch_addrenv_t *src, arch_addrenv_t *dest)
+{
+  DEBUGASSERT(src && dest);
+  memcpy(dest, src, sizeof(arch_addrenv_t));
+  return OK;
+}
+
+/****************************************************************************
+ * Name: up_addrenv_attach
+ *
+ * Description:
+ *   Called when a task or thread is created in order to instantiate an
+ *   address environment.  On the ESP32-S3 the group's environment is made
+ *   resident lazily by up_addrenv_select() at context-switch time, so there
+ *   is nothing to do here.
+ *
+ ****************************************************************************/
+
+int up_addrenv_attach(struct tcb_s *ptcb, struct tcb_s *tcb)
+{
+  return OK;
+}
+
+/****************************************************************************
+ * Name: up_addrenv_detach
+ *
+ * Description:
+ *   Called when a task or thread exits.  The group's pages are released by
+ *   up_addrenv_destroy() when the final member leaves, so there is nothing
+ *   per-thread to undo here.
+ *
+ ****************************************************************************/
+
+int up_addrenv_detach(struct tcb_s *tcb)
+{
   return OK;
 }
 
