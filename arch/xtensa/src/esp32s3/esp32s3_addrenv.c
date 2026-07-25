@@ -33,11 +33,28 @@
 
 #include <nuttx/addrenv.h>
 #include <nuttx/arch.h>
+#include <nuttx/irq.h>
 #include <nuttx/pgalloc.h>
 
+#include "soc/ext_mem_defs.h"
+
 #include "esp32s3_addrenv.h"
+#include "esp32s3_mmu.h"
 
 #ifdef CONFIG_ARCH_ADDRENV
+
+/****************************************************************************
+ * Private Data
+ ****************************************************************************/
+
+/* The ESP32-S3 cache MMU is a single global remap table: only one user
+ * address environment can be resident in the shared .text/.data/.heap
+ * windows at a time.  Track which one it is so up_addrenv_select() can skip
+ * the (expensive) remap when the incoming environment is already active --
+ * the common thread<->thread, ISR and syscall case.
+ */
+
+static const arch_addrenv_t *g_current_addrenv;
 
 /****************************************************************************
  * Private Functions
@@ -207,6 +224,16 @@ int up_addrenv_destroy(arch_addrenv_t *addrenv)
 {
   DEBUGASSERT(addrenv);
 
+  /* If this environment is the resident one, forget it so a later select of
+   * a different environment that happens to reuse this address does not take
+   * the fast path by mistake.
+   */
+
+  if (addrenv == g_current_addrenv)
+    {
+      g_current_addrenv = NULL;
+    }
+
   free_region(addrenv->textpages, &addrenv->ntext);
   free_region(addrenv->datapages, &addrenv->ndata);
   free_region(addrenv->heappages, &addrenv->nheap);
@@ -276,6 +303,109 @@ ssize_t up_addrenv_heapsize(const arch_addrenv_t *addrenv)
 {
   DEBUGASSERT(addrenv);
   return (ssize_t)addrenv->heapsize;
+}
+
+/****************************************************************************
+ * Name: up_addrenv_select
+ *
+ * Description:
+ *   After an address environment has been established for a task group (via
+ *   up_addrenv_create()), this function may be called to instantiate that
+ *   address environment in the virtual address space.  On the ESP32-S3 there
+ *   is no page-table-base register to load; instead the shared user
+ *   cache-MMU windows (.text on the instruction bus, .data/.bss and heap on
+ *   the data bus) are reprogrammed to point at this environment's PSRAM
+ *   pages.  Only one user environment can be resident at a time, so
+ *   isolation between groups is provided by this remap: while a group runs,
+ *   only its own pages are visible in the windows.
+ *
+ *   The remap is skipped when 'addrenv' is already the resident environment
+ *   (thread<->thread within a group, ISRs, syscalls), which pays nothing.
+ *
+ * Input Parameters:
+ *   addrenv - Describes the address environment to instantiate.
+ *
+ * Returned Value:
+ *   Zero (OK) on success; a negated errno value on failure.
+ *
+ ****************************************************************************/
+
+int up_addrenv_select(const arch_addrenv_t *addrenv)
+{
+  irqstate_t flags;
+  uint32_t   cache_state;
+  uint16_t   i;
+
+  DEBUGASSERT(addrenv);
+
+  /* Fast path: this environment is already resident */
+
+  if (addrenv == g_current_addrenv)
+    {
+      return OK;
+    }
+
+  flags = enter_critical_section();
+
+  /* Suspend the data cache while the windows are rewritten.  Instruction
+   * fetches keep running from the (unchanged) flash mapping through the
+   * instruction cache, so this function may execute from flash.
+   */
+
+  cache_state = esp32s3_dcache_suspend(false);
+
+  /* Point the instruction-bus (.text) window at this group's pages */
+
+  for (i = 0; i < addrenv->ntext; i++)
+    {
+      esp32s3_mmu_map_ibus(SOC_MMU_ACCESS_SPIRAM,
+                           ESP32S3_TEXT_VBASE + i * MM_PGSIZE,
+                           addrenv->textpages[i], 1);
+    }
+
+  /* Point the data-bus (.data/.bss, then heap) windows at this group's
+   * pages
+   */
+
+  for (i = 0; i < addrenv->ndata; i++)
+    {
+      esp32s3_mmu_map_dbus(SOC_MMU_ACCESS_SPIRAM,
+                           ESP32S3_DATA_VBASE + i * MM_PGSIZE,
+                           addrenv->datapages[i], 1);
+    }
+
+  for (i = 0; i < addrenv->nheap; i++)
+    {
+      esp32s3_mmu_map_dbus(SOC_MMU_ACCESS_SPIRAM,
+                           ESP32S3_HEAP_VBASE + i * MM_PGSIZE,
+                           addrenv->heappages[i], 1);
+    }
+
+  /* Drop stale instruction lines from the previous mapping and resume */
+
+  esp32s3_icache_invalidate_all();
+  esp32s3_dcache_resume(cache_state);
+
+  g_current_addrenv = addrenv;
+
+  leave_critical_section(flags);
+  return OK;
+}
+
+/****************************************************************************
+ * Name: up_addrenv_coherent
+ *
+ * Description:
+ *   Flush D-Cache and invalidate I-Cache in preparation for a change in
+ *   address environments.  The cache maintenance is performed by
+ *   up_addrenv_select() itself on the ESP32-S3, so nothing is needed here.
+ *
+ ****************************************************************************/
+
+int up_addrenv_coherent(const arch_addrenv_t *addrenv)
+{
+  DEBUGASSERT(addrenv);
+  return OK;
 }
 
 #endif /* CONFIG_ARCH_ADDRENV */
