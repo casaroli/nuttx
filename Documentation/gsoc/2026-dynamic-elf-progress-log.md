@@ -875,6 +875,10 @@ version string embedded in both images.
 
 #### Blockers or Risks
 
+*(Resolved the same day by `1018acde8c` -- see the next entry.  The diagnosis
+below was wrong in its particulars: the register dump it reasons from showed a
+stale `EXCCAUSE`, and the assertion was ostest's own, not a CPU exception.)*
+
 **`ostest` fails in the signal handler test, and it is not a regression.**
 Delivering a signal to a user task whose handler lives in user space crashes:
 the task ends with `EXCCAUSE 3` (LoadStoreError) and an `EXCVADDR` of
@@ -904,6 +908,67 @@ WORLD1 denied the rest of IRAM, all of DRAM, the caches and every peripheral,
 the monitors enabled and the violation ISR registered (`esp_irq.c` still gates
 that on `BUILD_PROTECTED`), and `CONFIG_ESP32S3_PAGEFAULT_ABORT` enabled in the
 board configuration so a violation kills the task rather than the system.
+
+### 2026-07-25 — Signals reach a user process, and ostest passes
+
+#### Completed
+
+`1018acde8c` — signal delivery to a user process in a kernel build.  Three
+separate faults in one path, none of which a protected build can show, since
+it has no kernel stack and therefore already runs the kernel on the user
+stack:
+
+1. **The handler ran on the kernel stack.**  `SYS_signal_handler` switched the
+   stack pointer back to user only when `xcp.ustkptr` was set, and that holds a
+   value only while a system call is in progress.  A signal caught in user
+   code -- the ordinary case -- left it NULL.  The decision belongs to
+   `xcp.kstack`, which says "user process" rather than "mid system call".
+2. **A system call made by the handler destroyed the context that was to
+   resume the thread.**  The outermost system call restarts the kernel stack at
+   its top.  That is right on entry from user code and wrong during signal
+   delivery: the dispatch is suspended further down the same stack, and the
+   interrupted context it saved sits in the topmost frame.  The handler's
+   first `printf()` wrote over both.  While a handler runs -- exactly when
+   `xcp.kstkptr` is set -- the call must continue below where the dispatch
+   left the stack.
+3. **The handler was passed a kernel pointer.**  The `siginfo` is a local in
+   `nxsig_deliver()`.  It is now copied onto the user stack, as
+   `riscv_swint.c` does.  Latent today; fatal the moment WORLD1 loses access
+   to kernel memory, which is the next unit.
+
+#### Evidence
+
+On the WROOM-2, `esp32s3-devkit:kernel_oct`:
+
+```
+waiter_main: sem_wait() successfully interrupted by signal
+sighand_test: done
+signest_test: done
+ostest_main: Exiting with status 0
+```
+
+That is the first clean `ostest` under BUILD_KERNEL.  Afterwards `ps` shows
+only Idle, lpwork and init, `Kmem` and the page pool are back at their
+baselines (17944 used, 1245184 of 4194304), and `getprime` still runs.
+`esp32s3-devkit:knsh` and `esp32s3-devkit:elf_oct` build clean; neither
+compiles this code, which is inside `CONFIG_ARCH_KERNEL_STACK`.
+
+#### Blockers or Risks
+
+How the failure was read the first time is worth recording, because the
+evidence was actively misleading.  The register dump showed `EXCCAUSE 3` with
+an `EXCVADDR` that looked like a mis-restored register window, which sent the
+first diagnosis toward the windowed ABI and `SYS_flush_context`.  It was
+neither: `up_saveusercontext()` does not fill those fields, so they were
+stale, and the "assertion" was ostest's own `ASSERT(false)` -- its `printf()`
+lost in an unflushed stdio buffer -- reported through the `_assert` system
+call.  What settled it was tracing the actual addresses: the frame pointers in
+`up_schedule_sigaction()` and `xtensa_swint()`, printed and compared against
+the kernel stack bounds.
+
+#### Next
+
+Unchanged: the PMS permissions.
 
 ## Update Format
 
