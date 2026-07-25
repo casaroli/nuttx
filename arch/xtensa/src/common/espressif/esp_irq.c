@@ -81,7 +81,7 @@
 #  include "hardware/esp32s3_soc.h"
 #  include "esp_gpio.h"
 #  include "esp32s3_rtc_gpio.h"
-#  include "esp32s3_userspace.h"
+#  include "esp32s3_isolation.h"
 #  ifdef CONFIG_SMP
 #    include "esp32s3_smp.h"
 #    define ESP_FROMCPU1_PERIPH     ESP32S3_PERIPH_INT_FROM_CPU1
