@@ -41,6 +41,12 @@ endif
 
 ifeq ($(CONFIG_BUILD_PROTECTED),y)
 CHIP_CSRCS += esp32s3_userspace.c
+endif
+
+# The MMU/PMS/WCL primitives back both the protected user split and the
+# BUILD_KERNEL address-environment remap.
+
+ifneq ($(filter y,$(CONFIG_BUILD_PROTECTED) $(CONFIG_ARCH_ADDRENV)),)
 CHIP_CSRCS += esp32s3_mmu.c esp32s3_pms.c esp32s3_wcl.c
 endif
 
