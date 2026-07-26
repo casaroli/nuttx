@@ -34,6 +34,7 @@
 
 #include <nuttx/sched.h>
 #include <nuttx/arch.h>
+#include <nuttx/fork.h>
 #include <arch/irq.h>
 
 #include "riscv_fork.h"
@@ -134,18 +135,33 @@ pid_t riscv_fork(const struct fork_s *context, int type)
       return (pid_t)ERROR;
     }
 
-  /* Copy parent user stack to child */
+  if (type == FORK_TYPE_FORK)
+    {
+      /* A fork() child inherits the parent's stack address:  its copy of the
+       * parent's stack is already in place, with its contents, at the same
+       * virtual address, so there is nothing to copy and nothing to
+       * relocate.  The child simply resumes on the stack pointer the parent
+       * called with.
+       */
 
-  stacktop = (uintptr_t)parent->stack_base_ptr + parent->adj_stack_size;
-  DEBUGASSERT(stacktop > parent->xcp.sregs[REG_SP]);
-  stackutil = stacktop - parent->xcp.sregs[REG_SP];
+      newsp = parent->xcp.sregs[REG_SP];
+    }
+  else
+    {
+      /* Copy parent user stack to child */
 
-  /* Copy goes to child's user stack top */
+      stacktop = (uintptr_t)parent->stack_base_ptr + parent->adj_stack_size;
+      DEBUGASSERT(stacktop > parent->xcp.sregs[REG_SP]);
+      stackutil = stacktop - parent->xcp.sregs[REG_SP];
 
-  newtop = (uintptr_t)child->stack_base_ptr + child->adj_stack_size;
-  newsp = newtop - stackutil;
+      /* Copy goes to child's user stack top */
 
-  memcpy((void *)newsp, (const void *)parent->xcp.sregs[REG_SP], stackutil);
+      newtop = (uintptr_t)child->stack_base_ptr + child->adj_stack_size;
+      newsp = newtop - stackutil;
+
+      memcpy((void *)newsp, (const void *)parent->xcp.sregs[REG_SP],
+             stackutil);
+    }
 
 #ifdef CONFIG_SCHED_THREAD_LOCAL
   /* Save child's thread pointer */

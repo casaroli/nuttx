@@ -115,10 +115,8 @@ static pid_t arm_fork_direct(struct tcb_s *parent,
     {
       /* The child is running on the parent's own stack -- a borrowing
        * vfork() child, which is safe because the parent is suspended for
-       * the child's whole lifetime.  There is nothing to relocate:  the
-       * register save area was already placed below the borrowed region by
-       * up_initial_state(), and every stack address the child inherits is
-       * still the address it names.
+       * the child's whole lifetime.  There is nothing to relocate:  every
+       * stack address the child inherits is still the address it names.
        */
 
       newsp = oldsp;
@@ -258,6 +256,11 @@ static pid_t arm_fork_direct(struct tcb_s *parent,
  *   in a system call at all, so it inherits none of the parent's nesting
  *   state.
  *
+ *   A process in a kernel build keeps its register save area on its kernel
+ *   stack, so building the child's context writes nothing to any user stack
+ *   -- see up_initial_state().  That is what lets a child which shares the
+ *   parent's stack addresses be left exactly as it is.
+ *
  * Input Parameters:
  *   parent - The calling task's TCB
  *   type   - One of the FORK_TYPE_* constants
@@ -312,8 +315,11 @@ static pid_t arm_fork_syscall(struct tcb_s *parent, int type)
 
   if (child->stack_base_ptr == parent->stack_base_ptr)
     {
-      /* A borrowing vfork() child, running on the parent's own stack.  There
-       * is nothing to relocate; see the same case in arm_fork_direct().
+      /* The child is running on the parent's stack addresses:  either a
+       * fork() child, which inherited them and already has its own copy of
+       * the contents in its duplicated address environment, or a borrowing
+       * vfork() child, which is using the parent's memory outright.  Either
+       * way there is nothing to copy and nothing to relocate.
        */
 
       newsp = oldsp;
@@ -324,14 +330,6 @@ static pid_t arm_fork_syscall(struct tcb_s *parent, int type)
       newtop = (uint32_t)child->stack_base_ptr +
                          child->adj_stack_size;
       newsp  = newtop - stackutil;
-
-      /* Put the child's register save area where the parent's is:  just
-       * below the stack the caller was using.  It cannot be left at the top
-       * of the child's stack, which is where up_initial_state() put it,
-       * because the copy of the parent's stack below is about to land there.
-       */
-
-      child->xcp.regs = (uint32_t *)(newsp - XCPTCONTEXT_SIZE);
 
       memcpy((void *)newsp, (const void *)oldsp, stackutil);
 

@@ -69,7 +69,10 @@
  ****************************************************************************/
 
 #if defined(CONFIG_ARCH_ADDRENV) && defined(CONFIG_ARCH_HAVE_FORK)
-static int nxtask_fork_addrenv(FAR struct tcb_s *child);
+static void fork_inherit_stack(FAR struct tcb_s *parent,
+                               FAR struct tcb_s *child);
+static void fork_inherit_tls(FAR struct tcb_s *child);
+static void fork_restore_parent_env(void);
 #endif
 
 /****************************************************************************
@@ -143,6 +146,111 @@ static int vfork_borrow_stack(FAR struct tcb_s *parent,
 }
 #endif /* CONFIG_ARCH_VFORK_STACK_BORROW */
 
+#if defined(CONFIG_ARCH_ADDRENV) && defined(CONFIG_ARCH_HAVE_FORK)
+/****************************************************************************
+ * Name: fork_inherit_stack
+ *
+ * Description:
+ *   Give the fork() child the parent's stack at the parent's virtual
+ *   address, rather than a relocated copy of it.
+ *
+ *   The child's address environment is a duplicate of the parent's, so the
+ *   parent's stack is already present in it -- same contents, same virtual
+ *   address, its own pages.  There is therefore nothing to allocate and
+ *   nothing to copy:  the child adopts the parent's geometry verbatim.
+ *
+ *   This is what makes the child "an exact copy of the calling process".
+ *   Same contents at the same addresses is not an incidental property of
+ *   that, it is the property.  A relocated stack breaks it observably, in
+ *   plain C, with no undefined behaviour involved:
+ *
+ *     int  local = 1;
+ *     int *p     = &local;
+ *
+ *     if (fork() == 0)
+ *       {
+ *         *p = 5;
+ *         assert(local == 5);   -- fails if the child's stack moved
+ *       }
+ *
+ *   With a relocated stack `p' still names the parent's stack address, which
+ *   in the child's duplicated image is a copy of the parent's stack -- valid
+ *   memory, wrong object -- while the child's live `local' sits on the new
+ *   stack.  Architectures whose frames are stack-pointer-relative stay
+ *   silent about it; one whose frame chain holds absolute stack addresses,
+ *   such as the windowed ABI of Xtensa, faults on the first return.
+ *
+ *   TCB_FLAG_FREE_STACK is deliberately left clear.  The child does not own
+ *   this allocation independently of its address environment:  the stack is
+ *   part of the duplicated image and is released with it when the child
+ *   exits, so up_release_stack() must not also free it.
+ *
+ * Input Parameters:
+ *   parent - The parent task's TCB
+ *   child  - The child task's TCB
+ *
+ ****************************************************************************/
+
+static void fork_inherit_stack(FAR struct tcb_s *parent,
+                               FAR struct tcb_s *child)
+{
+  child->stack_alloc_ptr = parent->stack_alloc_ptr;
+  child->stack_base_ptr  = parent->stack_base_ptr;
+  child->adj_stack_size  = parent->adj_stack_size;
+  child->flags          &= ~TCB_FLAG_FREE_STACK;
+}
+
+/****************************************************************************
+ * Name: fork_inherit_tls
+ *
+ * Description:
+ *   Retarget the thread-local storage the fork() child inherited.
+ *
+ *   tls_dup_info() cannot be used here.  It carves a fresh TLS block off the
+ *   stack with up_stack_frame() and copies the parent's into it, which on an
+ *   inherited stack would carve a *second* block out of a stack that already
+ *   has one and shift stack_base_ptr away from the parent's.  The child's
+ *   copy of the parent's TLS is already in place, at the same address, so
+ *   only the two fields that name the task itself have to be corrected.
+ *
+ *   The write lands in user memory at an address the parent also occupies,
+ *   so the child's address environment must be current for it -- otherwise
+ *   the parent's own TLS is what gets modified.
+ *
+ * Input Parameters:
+ *   child - The child task's TCB
+ *
+ * Returned Value:
+ *   Zero (OK) on success; a negated errno value on failure.
+ *
+ ****************************************************************************/
+
+static void fork_inherit_tls(FAR struct tcb_s *child)
+{
+  FAR struct tls_info_s *info = (FAR struct tls_info_s *)
+                                child->stack_alloc_ptr;
+
+  info->tl_task = child->group->tg_info;
+  info->tl_tid  = child->pid;
+}
+
+/****************************************************************************
+ * Name: fork_restore_parent_env
+ *
+ * Description:
+ *   Undo the addrenv_select() that nxtask_setup_fork() made on the child's
+ *   behalf, putting the caller back in its own address environment.  The
+ *   environment to go back to does not have to be remembered:  the caller is
+ *   the parent, and what was current before was the parent's own.
+ *
+ ****************************************************************************/
+
+static void fork_restore_parent_env(void)
+{
+  addrenv_restore(this_task()->addrenv_own);
+}
+#endif /* CONFIG_ARCH_ADDRENV && CONFIG_ARCH_HAVE_FORK */
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -161,10 +269,13 @@ static int vfork_borrow_stack(FAR struct tcb_s *parent,
  *   - the address environment.  task_fork() and vfork() join the parent's,
  *     so the child shares .data, .bss and the heap.  fork() duplicates it,
  *     so the child gets its own copy at the same virtual addresses.
- *   - the stack.  Normally the child gets a stack of its own, which the
+ *   - the stack.  A task_fork() child gets a stack of its own, which the
  *     architecture-specific code then fills with a relocated copy of the
- *     parent's.  A vfork() child on an architecture that selects
- *     CONFIG_ARCH_VFORK_STACK_BORROW instead borrows the parent's.
+ *     parent's; relocation is honest there, since task_fork() never claimed
+ *     to be a copy of the parent.  A fork() child instead inherits the
+ *     parent's stack address outright -- see fork_inherit_stack() -- and a
+ *     vfork() child on an architecture that selects
+ *     CONFIG_ARCH_VFORK_STACK_BORROW borrows the parent's.
  *
  * Input Parameters:
  *   retaddr   - Address at which the child resumes
@@ -250,30 +361,62 @@ FAR struct tcb_s *nxtask_setup_fork(start_t retaddr, int type,
     }
 
 #if defined(CONFIG_ARCH_ADDRENV)
-  if (ttype != TCB_FLAG_TTYPE_KERNEL && type != FORK_TYPE_FORK)
+  if (ttype != TCB_FLAG_TTYPE_KERNEL)
     {
-      /* task_fork() and vfork():  join the parent address environment,
-       * exactly as pthread_create() does.  The child shares .data, .bss and
-       * the heap.
-       */
+      if (type != FORK_TYPE_FORK)
+        {
+          /* task_fork() and vfork():  join the parent address environment,
+           * exactly as pthread_create() does.  The child shares .data, .bss
+           * and the heap.
+           */
 
-      ret = addrenv_join(parent, child);
+          ret = addrenv_join(parent, child);
+        }
+      else
+        {
+          /* POSIX fork():  duplicate the parent's address environment now,
+           * before anything else is set up.  The duplicate holds a copy of
+           * the parent's contents -- including its stack -- at the parent's
+           * virtual addresses, which is what lets the child go on to inherit
+           * the stack address rather than be given a relocated copy.  See
+           * fork_inherit_stack().
+           */
+
+          ret = addrenv_fork(parent, child);
+          if (ret >= 0)
+            {
+              /* Make the child's address environment current for the rest of
+               * the setup, and for the architecture code that runs after it.
+               *
+               * From here on, everything written on the child's behalf
+               * has to land in the child's image rather than the parent's,
+               * because
+               * the two occupy the same virtual addresses:  its thread-local
+               * storage, and -- on architectures that keep the register save
+               * area on the user stack rather than on a kernel stack -- the
+               * register context the child is resumed from.  Writing those
+               * under the parent's environment corrupts the parent and
+               * leaves the child reading whatever the snapshot happened to
+               * contain.
+               *
+               * Reads are unaffected:  everything the setup reads from the
+               * parent -- environ, the argument vector -- is legible at the
+               * same address in the child, precisely because it is a copy.
+               *
+               * nxtask_start_fork() puts the parent's environment back.
+               */
+
+              FAR struct addrenv_s *oldenv;
+
+              ret = addrenv_select(child->addrenv_own, &oldenv);
+            }
+        }
+
       if (ret < 0)
         {
           goto errout_with_tcb;
         }
     }
-
-  /* POSIX fork() deliberately does *not* establish the child's address
-   * environment here.  Everything that follows -- the stack, the argument
-   * vector, thread-local storage -- is allocated out of the parent's user
-   * heap and written through the parent's mappings, because the parent's is
-   * the address environment that is current.  Duplicating before that point
-   * would snapshot a heap that does not yet contain the child's stack, and
-   * would then fill a stack the child cannot see.  So the duplication is
-   * deferred to nxtask_start_fork(), by which time the architecture code has
-   * finished building the child's stack and the snapshot captures it.
-   */
 #else
   /* Without address environments there is only one address space, so
    * everything except the stack is shared no matter which primitive was
@@ -305,8 +448,22 @@ FAR struct tcb_s *nxtask_setup_fork(start_t retaddr, int type,
   argv = nxsched_get_stackargs(parent);
   nxtask_setup_name(child, argv[0]);
 
-  /* Allocate the stack for the TCB -- or borrow the parent's */
+  /* Allocate the stack for the TCB -- or inherit the parent's, or borrow
+   * it
+   */
 
+#if defined(CONFIG_ARCH_ADDRENV) && defined(CONFIG_ARCH_HAVE_FORK)
+  if (type == FORK_TYPE_FORK && ttype != TCB_FLAG_TTYPE_KERNEL)
+    {
+      /* The child's copy of the parent's stack is already in place, at the
+       * parent's address, courtesy of the duplication above.
+       */
+
+      fork_inherit_stack(parent, child);
+      ret = OK;
+    }
+  else
+#endif
 #ifdef CONFIG_ARCH_VFORK_STACK_BORROW
   if (type == FORK_TYPE_VFORK)
     {
@@ -357,20 +514,35 @@ FAR struct tcb_s *nxtask_setup_fork(start_t retaddr, int type,
       goto errout_with_tcb;
     }
 
-  /* Setup thread local storage */
+  /* Set up thread local storage and the argument vector.
+   *
+   * A fork() child that inherited its stack already has both, byte for
+   * byte, at the addresses the parent has them at -- they came across with
+   * the rest of the image.  Re-creating them would carve fresh frames off a
+   * stack that already contains them, moving stack_base_ptr away from the
+   * parent's and undoing the inheritance.  Only the TLS fields that name
+   * the task itself need correcting.
+   */
 
-  ret = tls_dup_info(child, parent);
-  if (ret < OK)
+#if defined(CONFIG_ARCH_ADDRENV) && defined(CONFIG_ARCH_HAVE_FORK)
+  if (type == FORK_TYPE_FORK && ttype != TCB_FLAG_TTYPE_KERNEL)
     {
-      goto errout_with_tcb;
+      fork_inherit_tls(child);
     }
-
-  /* Setup to pass parameters to the new task */
-
-  ret = nxtask_setup_stackargs(child, argv[0], &argv[1]);
-  if (ret < OK)
+  else
+#endif
     {
-      goto errout_with_tcb;
+      ret = tls_dup_info(child, parent);
+      if (ret < OK)
+        {
+          goto errout_with_tcb;
+        }
+
+      ret = nxtask_setup_stackargs(child, argv[0], &argv[1]);
+      if (ret < OK)
+        {
+          goto errout_with_tcb;
+        }
     }
 
   /* Now we have enough in place that we can join the group */
@@ -380,6 +552,18 @@ FAR struct tcb_s *nxtask_setup_fork(start_t retaddr, int type,
   return child;
 
 errout_with_tcb:
+#if defined(CONFIG_ARCH_ADDRENV) && defined(CONFIG_ARCH_HAVE_FORK)
+  /* Get back into the parent's address environment before unwinding.  If the
+   * duplication above never happened this is the environment we are already
+   * in, and addrenv_restore() is then a no-op.
+   */
+
+  if (type == FORK_TYPE_FORK && ttype != TCB_FLAG_TTYPE_KERNEL)
+    {
+      fork_restore_parent_env();
+    }
+#endif
+
   nxsched_release_tcb((FAR struct tcb_s *)child, ttype);
 errout:
   set_errno(-ret);
@@ -394,9 +578,7 @@ errout:
  *   The architecture-specific code calls this once it has built the child's
  *   register context and stack.
  *
- *   For POSIX fork() this is also where the parent's address environment is
- *   duplicated -- see the note in nxtask_setup_fork() for why it cannot
- *   happen earlier.  For vfork() this additionally suspends the caller.
+ *   For vfork() this additionally suspends the caller.
  *
  * Input Parameters:
  *   child - The tcb_s struct instance created by nxtask_setup_fork()
@@ -415,15 +597,14 @@ pid_t nxtask_start_fork(FAR struct tcb_s *child, int type)
   DEBUGASSERT(child);
 
 #if defined(CONFIG_ARCH_ADDRENV) && defined(CONFIG_ARCH_HAVE_FORK)
+  /* The architecture code has finished writing the child's image, so put the
+   * parent back in its own address environment.  See nxtask_setup_fork().
+   */
+
   if (type == FORK_TYPE_FORK &&
       (child->flags & TCB_FLAG_TTYPE_MASK) != TCB_FLAG_TTYPE_KERNEL)
     {
-      int ret = nxtask_fork_addrenv(child);
-      if (ret < 0)
-        {
-          nxtask_abort_fork(child, -ret);
-          return (pid_t)ERROR;
-        }
+      fork_restore_parent_env();
     }
 #endif
 
@@ -444,60 +625,6 @@ pid_t nxtask_start_fork(FAR struct tcb_s *child, int type)
 
   return pid;
 }
-
-#if defined(CONFIG_ARCH_ADDRENV) && defined(CONFIG_ARCH_HAVE_FORK)
-/****************************************************************************
- * Name: nxtask_fork_addrenv
- *
- * Description:
- *   Give a POSIX fork() child its own copy of the parent's memory.
- *
- *   This runs late, after the architecture code has allocated the child's
- *   stack out of the parent's user heap and filled it with a copy of the
- *   parent's, and it runs with the *parent's* address environment still
- *   current.  That ordering is the whole point:  the snapshot taken here
- *   therefore contains the child's stack, with its contents, at the virtual
- *   address the child will actually run on.  Duplicating any earlier would
- *   hand the child a stack it could not see.
- *
- *   Having taken the snapshot, the parent no longer needs its own copy of
- *   that allocation -- the child owns the duplicate, at the same address, in
- *   its own address environment -- so it is returned to the parent's heap.
- *   The child's copy remains marked allocated in the child's heap, and
- *   up_release_stack() will free it there when the child exits.
- *
- * Input Parameters:
- *   child - The child's TCB
- *
- * Returned Value:
- *   Zero (OK) on success; a negated errno value on failure.
- *
- ****************************************************************************/
-
-static int nxtask_fork_addrenv(FAR struct tcb_s *child)
-{
-  FAR void *stack = child->stack_alloc_ptr;
-  int ret;
-
-  ret = addrenv_fork(this_task(), child);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  /* Release the parent's copy of the child's stack.  Note that this must
-   * come after the snapshot, and that it does not disturb the child:  the
-   * child's heap metadata was copied while the allocation was still live.
-   */
-
-  if (stack != NULL && (child->flags & TCB_FLAG_FREE_STACK) != 0)
-    {
-      kumm_free(stack);
-    }
-
-  return OK;
-}
-#endif /* CONFIG_ARCH_ADDRENV && CONFIG_ARCH_HAVE_FORK */
 
 #ifdef CONFIG_ARCH_HAVE_VFORK
 /****************************************************************************
@@ -632,6 +759,20 @@ void nxtask_vfork_resume(FAR struct tcb_s *child)
 
 void nxtask_abort_fork(FAR struct tcb_s *child, int errcode)
 {
+#if defined(CONFIG_ARCH_ADDRENV) && defined(CONFIG_ARCH_HAVE_FORK)
+  /* A child holding an address environment of its own, rather than a
+   * reference to the caller's, is a fork() child, and nxtask_setup_fork()
+   * left that environment selected.  Get back into the parent's before
+   * unwinding.  See nxtask_setup_fork().
+   */
+
+  if (child->addrenv_own != NULL &&
+      child->addrenv_own != this_task()->addrenv_own)
+    {
+      fork_restore_parent_env();
+    }
+#endif
+
   /* The TCB was added to the active task list by nxtask_setup_scheduler() */
 
   dq_rem((FAR dq_entry_t *)child, list_inactivetasks());
