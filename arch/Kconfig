@@ -30,7 +30,7 @@ config ARCH_ARM64
 	select ARCH_64BIT
 	select ARCH_HAVE_BACKTRACE
 	select ARCH_HAVE_INTERRUPTSTACK
-	select ARCH_HAVE_TASK_FORK if !BUILD_KERNEL && !BUILD_PROTECTED
+	select ARCH_HAVE_TASK_FORK
 	select ARCH_HAVE_VFORK
 	select ARCH_HAVE_STACKCHECK
 	select ARCH_HAVE_CUSTOMOPT
@@ -535,6 +535,7 @@ config ARCH_VFORK_STACK_RESERVE
 config ARCH_HAVE_ADDRENV_FORK
 	bool
 	default y if ARCH_RISCV
+	default y if ARCH_ARM64 && ARCH_USE_MMU
 	default n
 	depends on ARCH_ADDRENV && !ARCH_STACK_DYNAMIC
 	---help---
@@ -544,16 +545,21 @@ config ARCH_HAVE_ADDRENV_FORK
 		addresses.  This is what POSIX fork() is built on.
 
 		up_addrenv_fork() is implemented for armv7-a, arm64 (MMU), RISC-V and
-		x86_64, but only RISC-V selects this, because fork() additionally
-		needs the architecture to build the child's register context from the
-		*user's* saved syscall frame.  In a kernel build fork() is reached
-		through a system call, so the return address and stack pointer the
-		architecture's fork entry point sees are the kernel's, not the
-		caller's.  RISC-V handles this (riscv_swint.c records the frame in
-		xcp.sregs, and riscv_fork.c has a CONFIG_LIB_SYSCALL variant that uses
-		it); arm, arm64 and x86_64 do not, and a child forked there resumes at
-		a kernel address.  Those architectures need that path before they can
-		select this.
+		x86_64, but only RISC-V and arm64 select this, because fork()
+		additionally needs the architecture to build the child's register
+		context from the *user's* saved syscall frame.  In a kernel build
+		fork() is reached through a system call, so the return address and
+		stack pointer the architecture's fork entry point sees are the
+		kernel's, not the caller's.  RISC-V and arm64 handle this
+		(riscv_swint.c and arm64_syscall.c record the frame in xcp.sregs, and
+		riscv_fork.c and arm64_fork.c build the child from it); arm and
+		x86_64 do not, and a child forked there resumes at a kernel address.
+		Those architectures need that path before they can select this.
+
+		The arm64 MPU configurations are excluded because up_addrenv_fork()
+		lives in arm64_addrenv_mmu.c:  an MPU address environment is a set of
+		protection regions over one physical address space, not a mapping that
+		can be duplicated at the same virtual addresses.
 
 config ARCH_HAVE_FORK
 	bool

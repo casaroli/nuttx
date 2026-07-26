@@ -146,26 +146,41 @@ and ``up_fork()`` -- which share one snapshot sequence and differ only in a
 ``addrenv_join()`` for ``task_fork()`` and ``vfork()``, ``addrenv_fork()`` for
 ``fork()``.
 
-To add real ``fork()`` to an architecture, implement ``up_addrenv_fork()`` and
-add ``ARCH_HAVE_ADDRENV_FORK`` to the ``default y if`` list in
-``arch/Kconfig``.  Nothing else is required:  the ``up_fork()`` entry point and
-the libc wrapper are already there and become live automatically.
+To add real ``fork()`` to an architecture, two things are needed.  First,
+implement ``up_addrenv_fork()`` and add ``ARCH_HAVE_ADDRENV_FORK`` to the
+``default y if`` list in ``arch/Kconfig``.  Second -- and this is the part that
+is easy to miss -- in a kernel or protected build all three primitives arrive
+through a system call, so the return address and stack pointer the
+architecture's fork entry point can observe for itself belong to the *kernel*,
+not to the caller.  A child built from those resumes at a kernel address on a
+kernel stack.
+
+The architecture must therefore record the caller's exception frame when it
+traps and build the child from that instead.  Two architectures do it, and
+they are worth copying:
+
+* RISC-V: ``riscv_swint.c`` stores the frame in ``xcp.sregs``, and
+  ``riscv_fork.c`` has a ``CONFIG_LIB_SYSCALL`` variant of ``riscv_fork()``
+  that rebuilds the child from it.
+* arm64: ``arm64_vectors.S`` hands the frame to ``dispatch_syscall()``, which
+  stores it in ``xcp.sregs``; ``arm64_fork()`` then dispatches to
+  ``arm64_fork_syscall()`` or ``arm64_fork_direct()`` according to whether
+  ``TCB_FLAG_SYSCALL`` is set, so a kernel thread that calls the entry point
+  directly still works.
+
+Nothing else is required:  the ``up_fork()`` entry point and the libc wrapper
+are already there and become live automatically.
 
 Known gaps
 ==========
 
-**Only RISC-V selects** ``ARCH_HAVE_ADDRENV_FORK`` **today, so only RISC-V
-kernel builds have** ``fork()``.  ``up_addrenv_fork()`` is implemented for
+**Only RISC-V and arm64 select** ``ARCH_HAVE_ADDRENV_FORK`` **today, so only
+their kernel builds have** ``fork()``.  ``up_addrenv_fork()`` is implemented for
 armv7-a, arm64 (MMU), RISC-V and x86_64, and the generic path is complete --
-but ``fork()`` in a kernel build arrives through a system call, so the return
-address and stack pointer the architecture's fork entry point observes belong
-to the kernel, not to the caller.  RISC-V already solves this: ``riscv_swint.c``
-records the user's syscall frame in ``xcp.sregs`` and ``riscv_fork.c`` has a
-``CONFIG_LIB_SYSCALL`` variant that rebuilds the child from it.  arm, arm64 and
-x86_64 have no equivalent, and a child forked there resumes at a kernel
-address and faults.  Giving those architectures the same syscall-frame path is
-what stands between them and ``fork()``; nothing else in this change has to
-move.
+but arm and x86_64 still lack the syscall-frame path described above, and a
+child forked there resumes at a kernel address and faults.  Giving those
+architectures the same path is what stands between them and ``fork()``;
+nothing else in this change has to move.
 
 **Xtensa has neither** ``fork()`` **nor** ``vfork()``.  It never had ``fork()``
 either -- ``ARCH_HAVE_FORK`` was never selected for it -- because the hybrid
