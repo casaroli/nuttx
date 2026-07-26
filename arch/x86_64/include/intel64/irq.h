@@ -514,9 +514,10 @@ struct xcpt_syscall_s
 struct xcptcontext
 {
 #ifdef CONFIG_ENABLE_ALL_SIGNALS
-#ifdef CONFIG_BUILD_KERNEL
+#ifndef CONFIG_BUILD_FLAT
   /* This is the saved address to use when returning from a user-space
-   * signal handler.
+   * signal handler.  Any build with unprivileged user code needs it, not
+   * only a kernel build.
    */
 
   uintptr_t sigreturn;

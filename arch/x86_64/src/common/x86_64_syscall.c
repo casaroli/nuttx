@@ -36,6 +36,7 @@
 #include <nuttx/addrenv.h>
 #include <nuttx/arch.h>
 #include <nuttx/sched.h>
+#include <nuttx/userspace.h>
 
 #include "x86_64_internal.h"
 
@@ -122,7 +123,7 @@ uint64_t *x86_64_syscall(uint64_t *regs)
 
   switch (cmd)
     {
-#ifdef CONFIG_BUILD_KERNEL
+#ifndef CONFIG_BUILD_FLAT
       /* cmd=SYS_task_start:  This a user task start
        *
        *   void up_task_start(main_t taskentry, int argc, char *argv[])
@@ -138,18 +139,39 @@ uint64_t *x86_64_syscall(uint64_t *regs)
 
       case SYS_task_start:
         {
-          /* Set up to return to the user-space _start function in
-           * unprivileged mode.  We need:
+          /* Set up to enter user space in unprivileged mode.  Which user
+           * address to enter depends on the build.
+           *
+           * In a kernel build every process is a separately linked ELF whose
+           * entry point is its own _start (x86_64/src/common/crt0.c), and
+           * that is what taskentry is; it calls the start-up stub itself.
+           * We need:
            *
            *   RDI = argc
            *   RSI = argv
            *   RCX = taskentry (SYSRETQ return address)
            *
+           * In a protected build there is one user blob and no per-process
+           * _start, so the start-up stub has to be entered directly -- it is
+           * published in the blob's header as USERSPACE->task_startup -- and
+           * taskentry becomes its first argument.  We need:
+           *
+           *   RDI = taskentry
+           *   RSI = argc
+           *   RDX = argv
+           *   RCX = USERSPACE->task_startup (SYSRETQ return address)
            */
 
+#ifdef CONFIG_BUILD_PROTECTED
+          regs[REG_RDI] = arg1;
+          regs[REG_RSI] = arg2;
+          regs[REG_RDX] = arg3;
+          regs[REG_RCX] = (uint64_t)USERSPACE->task_startup;
+#else
           regs[REG_RDI] = arg2;
           regs[REG_RSI] = arg3;
           regs[REG_RCX] = arg1;
+#endif
 
           break;
         }
@@ -209,10 +231,18 @@ uint64_t *x86_64_syscall(uint64_t *regs)
           rtcb->xcp.sigreturn = regs[REG_RCX];
 
           /* Set up to return to the user-space trampoline function in
-           * unprivileged mode.
+           * unprivileged mode.  A kernel build publishes it per process in
+           * the reserved region at the base of the process's data; a
+           * protected build has one user blob and publishes it in the blob's
+           * header instead.  ARCH_DATA_RESERVE is a CONFIG_BUILD_KERNEL-only
+           * concept -- include/nuttx/addrenv.h only defines it there.
            */
 
+#ifdef CONFIG_BUILD_PROTECTED
+          regs[REG_RCX] = (uint64_t)USERSPACE->signal_handler;
+#else
           regs[REG_RCX] = (uint64_t)ARCH_DATA_RESERVE->ar_sigtramp;
+#endif
 
           /* Change the parameter ordering to match the expectation of struct
            * userpace_s signal_handler.
@@ -288,7 +318,7 @@ uint64_t *x86_64_syscall(uint64_t *regs)
           break;
         }
 #endif  /* CONFIG_ENABLE_ALL_SIGNALS*/
-#endif  /* CONFIG_BUILD_KERNEL */
+#endif  /* !CONFIG_BUILD_FLAT */
 
       /* This is not an architecture-specific system call.  If NuttX is
        * built as a standalone kernel with a system call interface, then
