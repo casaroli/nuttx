@@ -460,7 +460,17 @@ int addrenv_restore(FAR struct addrenv_s *addrenv)
 
 void addrenv_take(FAR struct addrenv_s *addrenv)
 {
-  atomic_fetch_add(&addrenv->refs, 1);
+  /* A task can legitimately have no address environment -- addrenv_switch()
+   * and addrenv_drop() both treat that as "nothing to do".  It is the normal
+   * case in a protected build:  one address space for everybody, the
+   * architecture's up_addrenv_*() are stubs, and no task ever owns one.
+   * There is then nothing to reference count.
+   */
+
+  if (addrenv != NULL)
+    {
+      atomic_fetch_add(&addrenv->refs, 1);
+    }
 }
 
 /****************************************************************************
@@ -480,6 +490,16 @@ void addrenv_take(FAR struct addrenv_s *addrenv)
 
 int addrenv_give(FAR struct addrenv_s *addrenv)
 {
+  /* See addrenv_take():  nothing was counted, so nothing is given back.  A
+   * non-zero count is returned so that callers never conclude the (absent)
+   * address environment has become unreferenced and should be destroyed.
+   */
+
+  if (addrenv == NULL)
+    {
+      return 1;
+    }
+
   return atomic_fetch_sub(&addrenv->refs, 1) - 1;
 }
 
