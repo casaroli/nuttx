@@ -5,9 +5,20 @@ port. Everything needed to pick this up cold is here: what works, what does
 not, how to build and flash it, how to debug it, and what to do next. Read
 this first; the design note `mmu-isolation.md` is the background.
 
-Branch: `esp32s3/build-kernel`, on **Apache NuttX master** (both `nuttx/` and
-`apps/`). It carries only this port: 51 commits in `nuttx/` and
-`examples/pffault` in `apps/`.
+Branch: `esp32s3/build-kernel`, in both `nuttx/` and `apps/`.
+
+**It is no longer based on Apache master.** Both repos sit on
+`casaroli/fork-vfork-semantics`, which gives `fork()`, `vfork()` and
+`task_fork()` separate meanings and separate syscalls. That branch supersedes
+the generic half of what this port used to carry, so Xtensa is wired onto it
+rather than duplicating it (§7.3, §7.4). The apache-master-based line is
+preserved at the `pre-semantics-rebase` / `apps-pre-semantics` tags.
+
+The other side of that work lives in `/Users/marco/ia/nuttx-fork/`, and its
+`apps` provides `testing/ostest/{fork,vfork,task_fork}.c`. Two documents at
+the workspace root belong to that conversation, not to this port:
+`fork-vfork-semantics-issue.md` (the original proposal) and
+`fork-stack-semantics-followup.md` (our feedback, awaiting their reply).
 
 The dated experiment log this port was originally developed alongside lived in
 `Documentation/gsoc/2026-dynamic-elf-progress-log.md` on the older
@@ -635,7 +646,8 @@ would want it too — worth revisiting when §7.3 lands rather than before.
 
 ### 7.3 Eager `fork()` — done
 
-`4c260f497f`.  `fork()` means what POSIX says on this port: the child gets
+`4b22fe69c5` (was `4c260f497f` before the rebase; the generic half now comes
+from the semantics branch and only the Xtensa wiring is ours).  `fork()` means what POSIX says on this port: the child gets
 its own copy of the parent's memory, at the same virtual addresses.
 Measured on the WROOM-2 with `examples/forktest`, which forks from six
 frames deep so several register windows are live and spilled:
@@ -730,67 +742,51 @@ large, untestable diff and it is not this port's job.
 
 ### 7.5 What is next
 
-The port meets its goals and nothing in it is known broken.  What it is not,
-is upstream: 35 code commits that work on silicon and that nobody else can
-use.  Landing them is the main line of work; everything below is ordered
-around that.
+Two open failures, both on the semantics branch's new code rather than on
+this port's, and both waiting on the conversation in
+`fork-stack-semantics-followup.md`.
 
-**Step 1 — failure injection on `fork()`, before any of it goes out.**
-`fork()` has been exercised by one happy-path test.  Reviewers will ask what
-happens when it fails, and the answer is currently unknown.  The specific
-worry: `up_addrenv_fork()` on allocation failure calls
-`up_addrenv_destroy(child)` **while `addrenv_select()` has made the child's
-environment current**, after which `nxtask_setup_fork()`'s `errout_with_tcb`
-runs `addrenv_restore()` and `nxsched_release_tcb()`.  That ordering has
-never executed, and teardown under a swapped address environment is the exact
-shape that produced three of §7.3's bugs.
+**`vfork()` hangs** at `vfork_test: Started`. We are the first user of
+`CONFIG_ARCH_VFORK_STACK_BORROW` anywhere -- nothing on their branch selects
+it, and its help text names Xtensa's windowed ABI as the reason it exists --
+so this is most likely a defect in code that has never executed, not
+something Xtensa-specific. Since `vfork_test` runs *before* `fork_test` in
+`ostest_main`, it blocks the rest; to get past it temporarily, drop the
+`select ARCH_HAVE_VFORK` from `ARCH_XTENSA` in `arch/Kconfig`.
 
-Worth running on the board, mostly as extensions to `examples/forktest`:
+**`ostest`'s `fork_test` returns `ENOMEM`** from a path not yet found. Ruled
+out: page-pool exhaustion. The pool was widened from 64 to 72 pages with
+roughly 40 in use, and `alloc_region()`'s failure path -- which now carries a
+`berr()` for exactly this reason -- never triggers. Our own `forktest`
+exercised the same code path and passed, so it is likely something ostest
+does that a small program does not.
 
-- **Page-pool exhaustion.**  The pool is 64 pages; NSH holds 19 and
-  `forktest` 20, so a fork needing 20 more sits at 59 of 64.  A slightly
-  larger process makes `alloc_region()` fail part-way and takes the path
-  above.  Does the parent survive with a sane `errno`, and does `free` return
-  to its 1245184 baseline?
-- **`fork()` from a pthread** — `nxtask_setup_fork()` has a separate branch
-  for it (`parent = nxsched_get_tcb(ptcb->group->tg_pid)`), never run against
-  the copy path.
-- **`fork()` then `exec()` in the child** — the common idiom, and `exec()`
-  under a freshly copied address environment is new ground.
-- **Nested fork**, and **repeated fork/exit** against the `free` baseline as
-  a leak check.
+Then, unchanged from before:
 
-**Step 2 — upstream, as a series.**  Roughly in dependency order; each is a
-separate PR with its own story and on-target evidence.
+- **Failure injection on `fork()`.** `up_addrenv_fork()` failing part-way
+  calls `up_addrenv_destroy()` while the child's environment is current; that
+  path has still never executed. Also `fork()` from a pthread, `fork()` then
+  `exec()` in the child, nested fork, and repeated fork/exit against the
+  `free` baseline.
+- **Upstreaming**, in the six series set out below. Group 1 is unaffected by
+  any of the above and could go out at any time.
+- **Deliberately not next:** the DMA route for page copy and wipe (end of
+  §7.2), and building anything on top of the port.
 
 | # | what | commits |
 |---|---|---|
-| 1 | **standalone bug fixes**, no dependency on this port | `2956eaf7f0` mm/pgalloc 32/64 KB pages · `9a2b408540` octal-flash init in IRAM (repairs an existing *protected* build) · `cc3a6fc032` ARCHLIB IRAM placement · `3c8f7da049` `up_allocate_kheap()` BUILD_KERNEL branch · `2895ec8c27` `sig_trampoline` in crt0 · `eb3c2d9957` `addrenv_switch()` on voluntary context switch |
-| 2 | **Unit A**, expose MMU/WCL/PMS primitives — pure refactor, byte-identical | `4a658951e1` |
-| 3 | **recoverable faults + per-task abort** — useful without BUILD_KERNEL | `0cd5b40375` `cc93605a62` `1618108ab5` + `apps` `examples/pffault` |
-| 4 | **the address-environment port** — Units C/D/E and BUILD_KERNEL enablement | `a5514a8e01` `8b70856f04` `678b0a8bd6` `7628274dba` `6c8383e5e1` `87af44e289` `0267135a00` `44a7e2d6a4` `c8ae883a95` `c24550f1c8` `95ec66b509` `00cecc30b4` `133798d75a` `514b26a956` `6df87015da` `bca936d2bf` |
-| 5 | **isolation** — world split, WORLD1 vector table, PMS permissions | `e15f277b94` `3a47869397` `790a2120ca` `b859e49c3d` |
-| 6 | **process isolation and `fork()`** | `7677557cd5` `c63c939817` `21fc83d861` `4c260f497f` + `apps` `examples/forktest` |
+| 1 | **standalone bug fixes**, no dependency on this port | `mm/pgalloc` 32/64 KB pages · octal-flash init in IRAM (repairs an existing *protected* build) · ARCHLIB IRAM placement · `up_allocate_kheap()` BUILD_KERNEL branch · `sig_trampoline` in crt0 · `addrenv_switch()` on voluntary context switch |
+| 2 | **Unit A**, expose MMU/WCL/PMS primitives — pure refactor |
+| 3 | **recoverable faults + per-task abort** — useful without BUILD_KERNEL, plus `apps` `examples/pffault` |
+| 4 | **the address-environment port** — Units C/D/E and BUILD_KERNEL enablement |
+| 5 | **isolation** — world split, WORLD1 vector table, PMS permissions |
+| 6 | **process isolation and `fork()`** |
 
-Group 1 is nearly free and could go out immediately: each commit is a defect
-a reviewer can judge without caring about this port at all.  `eb3c2d9957` in
-particular fixes a real bug for *any* Xtensa address-environment build.
+Use `git log --oneline` to recover the hashes; they change with every rebase,
+and this branch has been rebased twice.
 `binfmt/elf`'s `nx_priority` fix is already out as
-[apache/nuttx#19537](https://github.com/apache/nuttx/pull/19537) — 33 checks
-green, awaiting review; its one CI failure is `apps/audioutils/lame` failing
-to link SSE2 symbols on the sim builder and is unrelated.
-
-Group 4 carries the one piece of this work that no CI here can check: seven
-architectures gained a one-line change when `nxtask_setup_fork()` took its
-`share`/`usp` parameters, and they pass `(true, 0)` to reach the unchanged
-path.  Upstream CI is the first thing that will actually compile them.
-
-**Deliberately not next:** the DMA route for page copy and wipe (end of
-§7.2), and building something on top of the port to demonstrate it.  Both are
-more attractive once it has landed, and neither improves the odds of it
-landing.  A flat-build `vfork()` for Xtensa is also not needed by anything —
-it would want an assembly entry that spills the windows *and* captures
-`WINDOWBASE`/`WINDOWSTART`, which `up_saveusercontext()` does not do.
+[apache/nuttx#19537](https://github.com/apache/nuttx/pull/19537) and is also
+carried on the semantics branch.
 
 ---
 
@@ -842,6 +838,16 @@ it would want an assembly entry that spills the windows *and* captures
     error, and executes nothing. Fixed in `710c168cd6`; upstream bug, worth
     a PR. `nm bin/<prog> | grep nx_` is how to check what a program actually
     asks for.
+- **The pool's virtual address moves, so do not hard-code it in a test.**
+  `esp32s3_spiram.c` maps PSRAM after the last flash mapping, so the kernel
+  window shifts as the image grows -- it has been at `0x3c0a0000`,
+  `0x0x3c0b0000` and `0x3c0d0000`, putting the pool at `0x3c400000` and then
+  `0x3c420000`. `up_allocate_pgheap()` derives the pool's virtual base from
+  the cache MMU and is unaffected, but a `pffault r <hard-coded>` check is
+  not: after a drift it reads *non-pool* PSRAM, which is deliberately still
+  mapped, and looks exactly like the isolation having broken. Take the
+  address from the `up_allocate_pgheap:` boot line, which prints where the
+  pool actually landed.
 - **checkpatch tracks braces per section banner.** A `static const struct
   foo g_x[] = {...}` under a `Private Functions` banner produces a stream of
   "Bad left brace alignment" errors that have nothing to do with the
