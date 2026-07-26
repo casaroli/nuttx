@@ -202,7 +202,7 @@ static pid_t arm_fork_direct(struct tcb_s *parent,
           /* REVISIT:  This logic is *not* common. */
 
 #if defined(CONFIG_ARCH_ARMV7A)
-#  ifdef CONFIG_BUILD_KERNEL
+#  ifndef CONFIG_BUILD_FLAT
 
           child->xcp.syscall[index].cpsr =
             parent->xcp.syscall[index].cpsr;

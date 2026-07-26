@@ -231,8 +231,14 @@
 #ifdef CONFIG_LIB_SYSCALL
 struct xcpt_syscall_s
 {
-#ifdef CONFIG_BUILD_KERNEL
-  uint32_t cpsr;        /* The CPSR value */
+#ifndef CONFIG_BUILD_FLAT
+  /* The caller's CPSR.  Needed in every build where the caller may have been
+   * unprivileged, which is a kernel build and a protected one alike:  the
+   * system call is dispatched in a privileged mode, so the mode to return to
+   * has to be remembered.  A flat build has only one mode.
+   */
+
+  uint32_t cpsr;
 #endif
   uint32_t sysreturn;   /* The return PC */
 };
@@ -266,7 +272,7 @@ struct xcptcontext
 
   uint32_t *saved_regs;
 
-#ifdef CONFIG_BUILD_KERNEL
+#ifndef CONFIG_BUILD_FLAT
   /* This is the saved address to use when returning from a user-space
    * signal handler.
    */

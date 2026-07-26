@@ -37,6 +37,7 @@
 #include <nuttx/arch.h>
 #include <nuttx/macro.h>
 #include <nuttx/sched.h>
+#include <nuttx/userspace.h>
 
 #include "addrenv.h"
 #include "arm.h"
@@ -165,7 +166,7 @@ uint32_t *arm_syscall(uint32_t *regs)
   struct tcb_s **running_task = &g_running_tasks[cpu];
   struct tcb_s *tcb = this_task();
   uint32_t cmd;
-#ifdef CONFIG_BUILD_KERNEL
+#ifndef CONFIG_BUILD_FLAT
   uint32_t cpsr;
 #endif
 
@@ -229,7 +230,7 @@ uint32_t *arm_syscall(uint32_t *regs)
            */
 
           regs[REG_PC]        = rtcb->xcp.syscall[index].sysreturn;
-#ifdef CONFIG_BUILD_KERNEL
+#ifndef CONFIG_BUILD_FLAT
           regs[REG_CPSR]      = rtcb->xcp.syscall[index].cpsr;
 #endif
           /* The return value must be in R0-R1.  dispatch_syscall()
@@ -308,21 +309,46 @@ uint32_t *arm_syscall(uint32_t *regs)
        *   R3 = argv
        */
 
-#ifdef CONFIG_BUILD_KERNEL
+#ifndef CONFIG_BUILD_FLAT
       case SYS_task_start:
         {
-          /* Set up to return to the user-space _start function in
-           * unprivileged mode.  We need:
+          /* Set up to enter user space in unprivileged mode.  Which user
+           * address to enter depends on the build:
+           *
+           * In a kernel build every process is a separately linked ELF whose
+           * entry point is its own _start (arch/arm/src/common/crt0.c), and
+           * that is what taskentry is; it calls the start-up stub itself.
+           * We need:
            *
            *   R0   = argc
            *   R1   = argv
            *   PC   = taskentry
            *   CSPR = user mode
+           *
+           * In a protected build there is one user blob and no per-process
+           * _start, so the start-up stub has to be entered directly -- it is
+           * published in the blob's header as USERSPACE->task_startup -- and
+           * taskentry becomes its first argument.  Getting this wrong is not
+           * subtle:  the task runs, and then faults on its way out, because
+           * nothing called exit() for it.  We need:
+           *
+           *   R0   = taskentry
+           *   R1   = argc
+           *   R2   = argv
+           *   PC   = USERSPACE->task_startup
+           *   CSPR = user mode
            */
 
+#ifdef CONFIG_BUILD_PROTECTED
+          regs[REG_PC]   = (uint32_t)USERSPACE->task_startup;
+          regs[REG_R0]   = regs[REG_R1];
+          regs[REG_R1]   = regs[REG_R2];
+          regs[REG_R2]   = regs[REG_R3];
+#else
           regs[REG_PC]   = regs[REG_R1];
           regs[REG_R0]   = regs[REG_R2];
           regs[REG_R1]   = regs[REG_R3];
+#endif
 
           cpsr           = regs[REG_CPSR] & ~PSR_MODE_MASK;
           regs[REG_CPSR] = cpsr | PSR_MODE_USR;
@@ -364,7 +390,7 @@ uint32_t *arm_syscall(uint32_t *regs)
         break;
 #endif
 
-#if defined(CONFIG_BUILD_KERNEL) && defined(CONFIG_ENABLE_ALL_SIGNALS)
+#if !defined(CONFIG_BUILD_FLAT) && defined(CONFIG_ENABLE_ALL_SIGNALS)
       /* R0=SYS_signal_handler:  This a user signal handler callback
        *
        * void signal_handler(_sa_sigaction_t sighand, int signo,
@@ -389,10 +415,17 @@ uint32_t *arm_syscall(uint32_t *regs)
           rtcb->xcp.sigreturn  = regs[REG_PC];
 
           /* Set up to return to the user-space trampoline function in
-           * unprivileged mode.
+           * unprivileged mode.  Where the trampoline is found differs:  a
+           * kernel build keeps it in the per-process reserved area at the
+           * base of the .bss/.data region, a protected build in the header
+           * of the one user blob.
            */
 
+#ifdef CONFIG_BUILD_KERNEL
           regs[REG_PC]   = (uint32_t)ARCH_DATA_RESERVE->ar_sigtramp;
+#else
+          regs[REG_PC]   = (uint32_t)USERSPACE->signal_handler;
+#endif
           cpsr           = regs[REG_CPSR] & ~PSR_MODE_MASK;
           regs[REG_CPSR] = cpsr | PSR_MODE_USR;
 
@@ -483,7 +516,7 @@ uint32_t *arm_syscall(uint32_t *regs)
 #endif
         }
         break;
-#endif /* CONFIG_BUILD_KERNEL && CONFIG_ENABLE_ALL_SIGNALS */
+#endif /* !CONFIG_BUILD_FLAT && CONFIG_ENABLE_ALL_SIGNALS */
 
       /* This is not an architecture-specific system call.  If NuttX is built
        * as a standalone kernel with a system call interface, then all of the
@@ -509,7 +542,7 @@ uint32_t *arm_syscall(uint32_t *regs)
           /* Setup to return to dispatch_syscall in privileged mode. */
 
           rtcb->xcp.syscall[index].sysreturn = regs[REG_PC];
-#ifdef CONFIG_BUILD_KERNEL
+#ifndef CONFIG_BUILD_FLAT
           rtcb->xcp.syscall[index].cpsr      = regs[REG_CPSR];
 #endif
 
@@ -528,7 +561,7 @@ uint32_t *arm_syscall(uint32_t *regs)
             }
 
           regs[REG_PC]   = (uint32_t)dispatch_syscall;
-#ifdef CONFIG_BUILD_KERNEL
+#ifndef CONFIG_BUILD_FLAT
           cpsr           = regs[REG_CPSR] & ~PSR_MODE_MASK;
           regs[REG_CPSR] = cpsr | PSR_MODE_SYS;
 #endif
