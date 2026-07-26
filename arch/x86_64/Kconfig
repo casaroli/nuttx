@@ -202,4 +202,17 @@ config ARCH_PVHBOOT
 	---help---
 		This allows x86 QEMU `-kernel` boot in PVH protocol.
 
+config ARCH_HAVE_SYSCALL
+	bool
+	default y if LIB_SYSCALL
+	---help---
+		Build the SYSCALL/SYSRET system call interface:
+		x86_64_syscall_entry() as the IA32_LSTAR landing point,
+		x86_64_syscall() as its dispatcher, and the IA32_STAR programming
+		and per-CPU user stack pointer that go with them.
+
+		Any build with a system call interface at all -- every protected and
+		every kernel build -- needs this, which is why it follows
+		LIB_SYSCALL.
+
 endif # ARCH_X86_64
