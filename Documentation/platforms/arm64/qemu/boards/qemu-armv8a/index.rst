@@ -424,6 +424,40 @@ Running with QEMU:
      -net none -chardev stdio,id=con,mux=on -serial chardev:con \
      -mon chardev=con,mode=readline -kernel ./nuttx
 
+Single Core /w protected mode (GICv3)
+-------------------------------------
+
+The ``pnsh`` configuration is a ``CONFIG_BUILD_PROTECTED`` build.  Unlike the
+MPU-based protected builds found elsewhere in NuttX, it uses the MMU:  one
+address space, divided once at boot by a fixed set of mappings that leave the
+kernel blob and the kernel heap unreachable from EL0.  It is not
+``CONFIG_BUILD_KERNEL`` -- there are no per-process address environments, and
+so no ``fork()``; ``vfork()`` and ``task_fork()`` are available as usual.
+
+Configuring NuttX and compile:
+
+.. code:: console
+
+   $ ./tools/configure.sh -l qemu-armv8a:pnsh
+   $ make
+
+The two-pass build produces the kernel blob in ``nuttx`` and the user blob in
+``nuttx_user.bin``, which is linked to run at ``CONFIG_NUTTX_USERSPACE``.
+QEMU loads the kernel with ``-kernel`` and the user blob with a generic
+loader device at that same address:
+
+.. code:: console
+
+   $ qemu-system-aarch64 -cpu cortex-a53 -nographic \
+     -machine virt,virtualization=on,gic-version=3 \
+     -net none -chardev stdio,id=con,mux=on -serial chardev:con \
+     -mon chardev=con,mode=readline \
+     -kernel ./nuttx -device loader,file=./nuttx_user.bin,addr=0x41000000
+
+If ``CONFIG_NUTTX_USERSPACE`` is changed, the ``addr=`` above has to change
+with it.  The kernel blob is linked from ``0x40280000`` and the linker script
+fails the build if it grows past ``CONFIG_NUTTX_USERSPACE``.
+
 Inter-VM share memory Device (ivshmem)
 --------------------------------------
 
