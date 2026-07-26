@@ -70,6 +70,8 @@
 
 #include <nuttx/spinlock.h>
 
+#include <arch/arch.h>
+
 #include "addrenv.h"
 #include "pgalloc.h"
 #include "x86_64_mmu.h"
@@ -192,10 +194,30 @@ static int create_spgtables(arch_addrenv_t *addrenv)
 static void copy_kernel_mappings(arch_addrenv_t *addrenv)
 {
   uintptr_t *pdpt = (uintptr_t *)x86_64_pgvaddr(addrenv->spgtables[1]);
+  int        i;
 
   /* Kernel mapping - lower 1GB maps to 4GB-5GB */
 
   pdpt[4] = X86_PDPT_KERNEL_MAP;
+
+  /* Inherit the boot identity mapping of the low 4GB as well.  The kernel
+   * goes on running under whichever address environment was selected last --
+   * a kernel thread never gets one of its own, and addrenv_switch() leaves
+   * the previous one in place for it -- so without these entries every MMIO
+   * register the kernel touches faults as soon as any process address
+   * environment is current.  The HPET at 0xfed00000 is what finds this:  its
+   * page directory hangs off PDPT entry 3, which is not part of the linear
+   * window above.
+   *
+   * The four entries point at the boot page directories rather than at
+   * copies, so anything intel64_map_region() adds later is inherited too.
+   * They carry no X86_PAGE_USER bit, so user code still cannot reach them.
+   */
+
+  for (i = 0; i < X86_MMU_LOWMEM_PDPTS; i++)
+    {
+      pdpt[i] = g_pdpt[i];
+    }
 }
 
 /****************************************************************************

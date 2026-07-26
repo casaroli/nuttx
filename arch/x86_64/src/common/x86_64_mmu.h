@@ -57,6 +57,14 @@
 #define X86_MMU_VADDR_INDEX(vaddr, ptlevel) \
   ((vaddr >> X86_MMU_VADDR_SHIFT(ptlevel)) & X86_MMU_VPN_MASK)
 
+/* How many PDPT entries the boot identity mapping of low memory occupies.
+ * intel64_head.S fills g_pdpt_low[0..3], one page directory per 1GB, which
+ * is the whole of the 32-bit address space -- everything the kernel reaches
+ * by its physical address, MMIO included.
+ */
+
+#define X86_MMU_LOWMEM_PDPTS    4
+
 /****************************************************************************
  * Public Function Prototypes
  ****************************************************************************/
