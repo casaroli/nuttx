@@ -199,7 +199,8 @@ to move.
 
 The *protected* configurations are excluded deliberately rather than
 left unimplemented, and that holds whether the protection comes from an MPU
-(ARMv8-R) or from a static set of MMU mappings (``qemu-armv8a:pnsh``).  A
+(ARMv8-R) or from a static set of MMU mappings (``qemu-armv8a:pnsh``,
+``qemu-armv7a:pnsh``).  A
 protected build has one address space carved up once at boot; its
 ``up_addrenv_*()`` are stubs, and there is no mapping to duplicate at the same
 virtual addresses, so POSIX ``fork()`` semantics cannot be provided at all.

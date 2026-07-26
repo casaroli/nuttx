@@ -60,6 +60,39 @@ This is a configuration of testing the BUILD_KERNEL configuration::
   Hello, World!!
   nsh>
 
+PNSH (Single Core)
+------------------
+
+The ``pnsh`` configuration is a ``CONFIG_BUILD_PROTECTED`` build.  Unlike the
+MPU-based protected builds found elsewhere in NuttX -- a Cortex-A has no MPU --
+it uses the MMU:  one address space, divided once at boot by a fixed set of L1
+sections that leave the kernel blob, the kernel heap and the page table itself
+unreachable from user mode.  It is not ``CONFIG_BUILD_KERNEL`` -- there are no
+per-process address environments, and so no ``fork()``; ``vfork()`` and
+``task_fork()`` are available as usual.
+
+Because an L1 section is 1MB, every kernel/user boundary is 1MB aligned:
+``CONFIG_NUTTX_USERSPACE`` is ``0x200000``, giving the kernel the first 2MB of
+flash and the user blob the next 2MB, and the RAM is split at
+``0x40800000``.  See ``boards/arm/qemu/qemu-armv7a/scripts/memory.ld``.
+
+Configuring NuttX and compile::
+
+     $ ./tools/configure.sh -l qemu-armv7a:pnsh
+     $ make
+
+The two-pass build produces the kernel blob in ``nuttx`` and the user blob in
+``nuttx_user``.  QEMU loads the kernel with ``-kernel`` and the user blob with
+a generic loader device, which places it from its own ELF headers::
+
+     $ qemu-system-arm -cpu cortex-a7 -nographic -machine virt,highmem=off \
+     -kernel ./nuttx -device loader,file=./nuttx_user
+
+Both blobs are linked into the flash region and copy their own ``.data`` to
+RAM at start-up, so nothing else has to be told where they are.  If either
+blob outgrows its half the link fails naming the region, rather than the
+kernel quietly overwriting the user blob at run time.
+
 Inter-VM share memory Device (ivshmem)
 --------------------------------------
 
