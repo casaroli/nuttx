@@ -620,6 +620,43 @@
                               PMD_STRONGLY_ORDERED | PMD_SECT_DOM(0) | \
                               PMD_SECT_XN)
 
+/* Section flags for the user half of a protected build.  There the boundary
+ * between kernel and user is a fixed set of L1 sections, made once at boot
+ * and never changed, rather than the per-process L2 tables a kernel build
+ * builds out of the MMU_L2_U*FLAGS below.  So the "all threads run at PL1"
+ * assumption the section flags above are written under does not hold, and
+ * these two say so.  Nothing else uses them, so no existing board's mappings
+ * change.
+ *
+ * Both are section granular, which is what makes a protected build place its
+ * user blob -- and the split between the read-only and writable halves of it
+ * -- on 1MB boundaries.
+ */
+
+#ifdef CONFIG_SMP
+#  define MMU_SECT_SHARED     PMD_SECT_S
+#else
+#  define MMU_SECT_SHARED     (0)
+#endif
+
+/* User text and rodata:  readable and executable at PL0, and read-only at
+ * PL1 as well, since nothing has any business writing to it once the user
+ * blob is in place.
+ */
+
+#define MMU_UTEXTSECTFLAGS   (PMD_TYPE_SECT | PMD_SECT_AP_R01 | \
+                              PMD_CACHEABLE | PMD_SECT_DOM(0) | \
+                              MMU_SECT_SHARED)
+
+/* User data, bss, heap and stacks:  read/write at PL0, and execute-never so
+ * that the writable half of user space is not writable and executable at
+ * once.
+ */
+
+#define MMU_UDATASECTFLAGS   (PMD_TYPE_SECT | PMD_SECT_AP_RW01 | \
+                              PMD_CACHEABLE | PMD_SECT_DOM(0) | \
+                              PMD_SECT_XN | MMU_SECT_SHARED)
+
 /* MMU Flags for each type memory region (level 1 and 2) */
 
 #define MMU_L1_TEXTFLAGS      (PMD_TYPE_PTE | PMD_PTE_DOM(0))
