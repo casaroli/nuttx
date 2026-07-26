@@ -156,7 +156,7 @@ not to the caller.  A child built from those resumes at a kernel address on a
 kernel stack.
 
 The architecture must therefore record the caller's exception frame when it
-traps and build the child from that instead.  Two architectures do it, and
+traps and build the child from that instead.  Three architectures do it, and
 they are worth copying:
 
 * RISC-V: ``riscv_swint.c`` stores the frame in ``xcp.sregs``, and
@@ -167,6 +167,21 @@ they are worth copying:
   ``arm64_fork_syscall()`` or ``arm64_fork_direct()`` according to whether
   ``TCB_FLAG_SYSCALL`` is set, so a kernel thread that calls the entry point
   directly still works.
+* armv7-a: ``arm_syscall()`` stores the frame in ``xcp.sregs``, and
+  ``arm_fork()`` dispatches to ``arm_fork_syscall()`` or
+  ``arm_fork_direct()``.  Note that the discriminator here is a saved user
+  stack pointer, ``xcp.ustkptr``, not ``TCB_FLAG_SYSCALL``:  armv7-a
+  dispatches a system call by re-pointing the caller's own exception frame at
+  ``dispatch_syscall()``, so the caller *is* the task that runs the kernel
+  side of the call.  What makes its snapshot useless is not the system call
+  as such but the switch to the kernel stack, which leaves the kernel-side
+  frames on a stack the child gets no copy of.  A protected build without a
+  kernel stack dispatches on the caller's own stack, so there the frames are
+  copied along with the caller's and ``arm_fork_direct()`` remains correct.
+  Because ``arm_syscall()`` has already re-pointed the frame by the time
+  ``arm_fork()`` runs, its PC, CPSR and SP are the kernel's; the caller's are
+  read from where ``arm_syscall()`` put them -- ``syscall[0].sysreturn``,
+  ``syscall[0].cpsr`` and ``ustkptr``.
 
 Nothing else is required:  the ``up_fork()`` entry point and the libc wrapper
 are already there and become live automatically.
@@ -174,15 +189,15 @@ are already there and become live automatically.
 Known gaps
 ==========
 
-**Only RISC-V and arm64 select** ``ARCH_HAVE_ADDRENV_FORK`` **today, so only
-their kernel builds have** ``fork()``.  ``up_addrenv_fork()`` is implemented for
-armv7-a, arm64 (MMU), RISC-V and x86_64, and the generic path is complete --
-but arm and x86_64 still lack the syscall-frame path described above, and a
-child forked there resumes at a kernel address and faults.  Giving those
-architectures the same path is what stands between them and ``fork()``;
-nothing else in this change has to move.
+**Only RISC-V, arm64 and armv7-a select** ``ARCH_HAVE_ADDRENV_FORK`` **today,
+so only their kernel builds have** ``fork()``.  ``up_addrenv_fork()`` is
+implemented for x86_64 as well, and the generic path is complete -- but x86_64
+still lacks the syscall-frame path described above, and a child forked there
+resumes at a kernel address and faults.  Giving that architecture the same
+path is what stands between it and ``fork()``; nothing else in this change has
+to move.
 
-The arm64 *protected* configurations are excluded deliberately rather than
+The *protected* configurations are excluded deliberately rather than
 left unimplemented, and that holds whether the protection comes from an MPU
 (ARMv8-R) or from a static set of MMU mappings (``qemu-armv8a:pnsh``).  A
 protected build has one address space carved up once at boot; its
