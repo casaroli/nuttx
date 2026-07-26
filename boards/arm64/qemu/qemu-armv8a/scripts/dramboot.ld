@@ -139,6 +139,17 @@ SECTIONS
 
   _szdata = _e_initstack - _sdata;
 
+#ifdef CONFIG_BUILD_PROTECTED
+  /* In a protected build the user blob is linked at CONFIG_NUTTX_USERSPACE,
+   * so the kernel blob has to stop below it.  Failing here is much easier to
+   * understand than the kernel silently overwriting the user blob at run
+   * time; raise CONFIG_NUTTX_USERSPACE if this trips.
+   */
+
+  ASSERT(g_idle_topstack <= CONFIG_NUTTX_USERSPACE,
+         "Kernel blob overruns CONFIG_NUTTX_USERSPACE")
+#endif
+
   /* Sections to be discarded */
   /DISCARD/ : {
        *(.exit.text)
