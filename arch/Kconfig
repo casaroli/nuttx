@@ -163,6 +163,9 @@ config ARCH_X86_64
 config ARCH_XTENSA
 	bool "Xtensa"
 	select ARCH_HAVE_BACKTRACE
+	select ARCH_HAVE_VFORK if LIB_SYSCALL
+	select ARCH_VFORK_STACK_BORROW if LIB_SYSCALL
+	select ARCH_FORK_STACK_INHERIT if ARCH_HAVE_FORK
 	select ARCH_HAVE_CPUINFO
 	select ARCH_HAVE_INTERRUPTSTACK
 	select ARCH_HAVE_STACKCHECK
@@ -532,6 +535,29 @@ config ARCH_VFORK_STACK_RESERVE
 		nxtask_start_vfork(), and blocking itself.  A canary is written at
 		the boundary and checked when the parent resumes, so a value that is
 		too small fails loudly rather than corrupting the parent's frames.
+
+config ARCH_FORK_STACK_INHERIT
+	bool
+	default n
+	depends on ARCH_HAVE_FORK
+	---help---
+		The fork() child keeps the parent's stack *address* rather than
+		being given a stack of its own inside the duplicated address
+		environment.  It still gets its own memory:  the duplication backs
+		that address with fresh pages holding a copy of the parent's
+		contents.
+
+		This is required on architectures whose stack frames contain
+		absolute stack addresses -- the windowed ABI of Xtensa, whose
+		register-window save areas hold the spilled stack pointer of each
+		frame.  Duplicating an address environment is only enough to keep
+		those pointers valid if the child's stack is at the same virtual
+		address the parent's was; a relocated copy inside the duplicate
+		leaves the child unwinding into a stack it never wrote.
+
+		Elsewhere it is a pure economy:  one fewer stack allocation, and no
+		stack copy, since the address environment duplication carries the
+		contents.
 
 config ARCH_HAVE_ADDRENV_FORK
 	bool

@@ -43,6 +43,8 @@
 #include "environ/environ.h"
 #include "group/group.h"
 #include "task/task.h"
+#include <nuttx/tls.h>
+
 #include "tls/tls.h"
 
 /* This file is the common core of task_fork(), vfork() and fork(); it is
@@ -70,6 +72,12 @@
 
 #if defined(CONFIG_ARCH_ADDRENV) && defined(CONFIG_ARCH_HAVE_FORK)
 static int nxtask_fork_addrenv(FAR struct tcb_s *child);
+#endif
+
+#ifdef CONFIG_ARCH_FORK_STACK_INHERIT
+#  define IS_ARCH_FORK_STACK_INHERIT 1
+#else
+#  define IS_ARCH_FORK_STACK_INHERIT 0
 #endif
 
 /****************************************************************************
@@ -189,6 +197,10 @@ FAR struct tcb_s *nxtask_setup_fork(start_t retaddr, int type,
   uint8_t ttype;
   int priority;
   int ret;
+#ifdef CONFIG_ARCH_FORK_STACK_INHERIT
+  FAR struct addrenv_s *oldenv = NULL;
+  bool selected = false;
+#endif
 
   DEBUGASSERT(retaddr != NULL);
   DEBUGASSERT(type == FORK_TYPE_TASK || type == FORK_TYPE_VFORK ||
@@ -248,6 +260,36 @@ FAR struct tcb_s *nxtask_setup_fork(start_t retaddr, int type,
     {
       goto errout_with_tcb;
     }
+
+#if defined(CONFIG_ARCH_FORK_STACK_INHERIT)
+  if (ttype != TCB_FLAG_TTYPE_KERNEL && type == FORK_TYPE_FORK)
+    {
+      /* The child keeps the parent's stack address, so the duplication has
+       * to happen *before* anything is built rather than after:  the setup
+       * below writes to that address, and until the child has its own pages
+       * behind it those writes land in the parent's stack.  The child's
+       * environment is then made current for the rest of the setup.
+       *
+       * Everything the setup reads from the parent -- environ, the argument
+       * vector -- is legible under it, at the same address and with the same
+       * contents, precisely because it is a copy.
+       */
+
+      ret = addrenv_fork(parent, child);
+      if (ret < 0)
+        {
+          goto errout_with_tcb;
+        }
+
+      ret = addrenv_select(child->addrenv_own, &oldenv);
+      if (ret < 0)
+        {
+          goto errout_with_tcb;
+        }
+
+      selected = true;
+    }
+#endif
 
 #if defined(CONFIG_ARCH_ADDRENV)
   if (ttype != TCB_FLAG_TTYPE_KERNEL && type != FORK_TYPE_FORK)
@@ -314,6 +356,28 @@ FAR struct tcb_s *nxtask_setup_fork(start_t retaddr, int type,
     }
   else
 #endif
+#ifdef CONFIG_ARCH_FORK_STACK_INHERIT
+  if (type == FORK_TYPE_FORK)
+    {
+      /* The child keeps the parent's stack address.  It is not sharing it:
+       * the address environment duplicated in nxtask_start_fork() backs that
+       * address with the child's own pages, holding a copy of what is there
+       * now -- which by then includes every frame the parent has live.
+       *
+       * Giving it a stack somewhere else would be enough on an architecture
+       * whose frames are stack-pointer-relative, and is not enough here.  A
+       * windowed ABI stores the caller's *absolute* stack pointer in each
+       * frame's base save area, so a relocated copy sends the child's first
+       * return to an address it never wrote.
+       */
+
+      child->stack_alloc_ptr = ptcb->stack_alloc_ptr;
+      child->stack_base_ptr  = ptcb->stack_base_ptr;
+      child->adj_stack_size  = ptcb->adj_stack_size;
+      ret = OK;
+    }
+  else
+#endif
     {
       stack_size = (uintptr_t)ptcb->stack_base_ptr -
                    (uintptr_t)ptcb->stack_alloc_ptr + ptcb->adj_stack_size;
@@ -359,7 +423,29 @@ FAR struct tcb_s *nxtask_setup_fork(start_t retaddr, int type,
 
   /* Setup thread local storage */
 
-  ret = tls_dup_info(child, parent);
+#ifdef CONFIG_ARCH_FORK_STACK_INHERIT
+  if (type == FORK_TYPE_FORK && ttype != TCB_FLAG_TTYPE_KERNEL)
+    {
+      /* The stack was inherited, so thread-local storage and the argument
+       * vector are already there, at the same addresses.  Building them
+       * again would carve a second TLS frame off a stack that has one, and
+       * write the argument vector over the frames the child is about to
+       * return through.  Only the fields that must differ are corrected.
+       */
+
+      FAR struct tls_info_s *info =
+        (FAR struct tls_info_s *)child->stack_alloc_ptr;
+
+      info->tl_task = child->group->tg_info;
+      info->tl_tid  = child->pid;
+      ret = OK;
+    }
+  else
+#endif
+    {
+      ret = tls_dup_info(child, parent);
+    }
+
   if (ret < OK)
     {
       goto errout_with_tcb;
@@ -367,19 +453,39 @@ FAR struct tcb_s *nxtask_setup_fork(start_t retaddr, int type,
 
   /* Setup to pass parameters to the new task */
 
-  ret = nxtask_setup_stackargs(child, argv[0], &argv[1]);
-  if (ret < OK)
+#ifdef CONFIG_ARCH_FORK_STACK_INHERIT
+  if (type != FORK_TYPE_FORK || ttype == TCB_FLAG_TTYPE_KERNEL)
+#endif
     {
-      goto errout_with_tcb;
+      ret = nxtask_setup_stackargs(child, argv[0], &argv[1]);
+      if (ret < OK)
+        {
+          goto errout_with_tcb;
+        }
     }
 
   /* Now we have enough in place that we can join the group */
 
   group_initialize(child);
+
+#ifdef CONFIG_ARCH_FORK_STACK_INHERIT
+  if (selected)
+    {
+      addrenv_restore(oldenv);
+    }
+#endif
+
   sinfo("parent=%p, returning child=%p\n", parent, child);
   return child;
 
 errout_with_tcb:
+#ifdef CONFIG_ARCH_FORK_STACK_INHERIT
+  if (selected)
+    {
+      addrenv_restore(oldenv);
+    }
+#endif
+
   nxsched_release_tcb((FAR struct tcb_s *)child, ttype);
 errout:
   set_errno(-ret);
@@ -416,7 +522,8 @@ pid_t nxtask_start_fork(FAR struct tcb_s *child, int type)
 
 #if defined(CONFIG_ARCH_ADDRENV) && defined(CONFIG_ARCH_HAVE_FORK)
   if (type == FORK_TYPE_FORK &&
-      (child->flags & TCB_FLAG_TTYPE_MASK) != TCB_FLAG_TTYPE_KERNEL)
+      (child->flags & TCB_FLAG_TTYPE_MASK) != TCB_FLAG_TTYPE_KERNEL &&
+      !IS_ARCH_FORK_STACK_INHERIT)
     {
       int ret = nxtask_fork_addrenv(child);
       if (ret < 0)
