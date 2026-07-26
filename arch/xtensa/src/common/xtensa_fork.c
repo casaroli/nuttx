@@ -91,9 +91,7 @@ static pid_t xtensa_fork(int type)
   struct tcb_s *child;
   uint32_t     *sregs  = parent->xcp.sregs;
   uintptr_t     usp;
-  uintptr_t     stacktop;
-  uintptr_t     stackutil;
-  uintptr_t     newtop;
+  uintptr_t     regstop;
   uintptr_t     newsp;
   int           index;
 
@@ -133,23 +131,33 @@ static pid_t xtensa_fork(int type)
       return (pid_t)ERROR;
     }
 
-  /* Copy the part of the parent's stack that is in use: everything from its
-   * user stack pointer to the top, which includes the register windows the
-   * exception entry spilled there.  A borrowing vfork() child already has
-   * the parent's stack, at the same addresses, so there is nothing to copy.
+  /* The child resumes on the parent's stack, at the parent's stack pointer,
+   * and there is nothing to copy.  Both primitives arrive here that way:  a
+   * fork() child inherits the parent's stack address inside its duplicated
+   * address environment, and a borrowing vfork() child shares the parent's
+   * outright.
+   *
+   * The test is on the stack *allocation*, not on stack_base_ptr:  a
+   * borrowing child's base is moved up by the up_stack_frame() calls that
+   * carve off its TLS block and argument vector, so the two bases differ
+   * even though the memory is the same.
+   *
+   * There is no relocating branch because a relocated stack cannot work on
+   * this architecture at all.  A frame's base save area holds the *absolute*
+   * a1 of its caller, so a copy is only usable at the address it was taken
+   * from; and the save area of the frame the child resumes into sits in the
+   * 16 bytes *below* usp, where SPILL_ALL_WINDOWS left it on the way into
+   * the kernel -- so a copy of [usp, stacktop) would not even contain the
+   * words the child's first retw reads.  That is what the earlier copying
+   * version of this function did, and it is why vfork() hung:  the child's
+   * first return restored a0/a1 from memory nobody had written.
    */
 
-  stacktop = (uintptr_t)parent->stack_base_ptr + parent->adj_stack_size;
-  DEBUGASSERT(stacktop > usp);
-  stackutil = stacktop - usp;
+  DEBUGASSERT(child->stack_alloc_ptr == parent->stack_alloc_ptr);
+  DEBUGASSERT((uintptr_t)parent->stack_base_ptr + parent->adj_stack_size >
+              usp);
 
-  newtop = (uintptr_t)child->stack_base_ptr + child->adj_stack_size;
-  newsp  = newtop - stackutil;
-
-  if (newsp != usp)
-    {
-      memcpy((void *)newsp, (const void *)usp, stackutil);
-    }
+  newsp = usp;
 
   /* Where the child's register context is restored from.  With a kernel
    * stack it must not be the user stack: the child is resumed by the same
@@ -159,15 +167,15 @@ static pid_t xtensa_fork(int type)
 #ifdef CONFIG_ARCH_KERNEL_STACK
   if (child->xcp.kstack != NULL)
     {
-      stacktop = (uintptr_t)child->xcp.ktopstk;
+      regstop = (uintptr_t)child->xcp.ktopstk;
     }
   else
 #endif
     {
-      stacktop = newsp;
+      regstop = newsp;
     }
 
-  child->xcp.regs = (uint32_t *)(stacktop - XCPTCONTEXT_SIZE);
+  child->xcp.regs = (uint32_t *)(regstop - XCPTCONTEXT_SIZE);
 
   /* Start from the parent's context, then correct what must differ */
 
