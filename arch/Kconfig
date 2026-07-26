@@ -41,6 +41,7 @@ config ARCH_ARM64
 	select ARCH_HAVE_TCBINFO
 	select ARCH_HAVE_THREAD_LOCAL
 	select ARCH_HAVE_PERF_EVENTS
+	select ARCH_HAVE_PROTECTED_MMU if ARCH_HAVE_MMU
 	select ONESHOT
 	select ONESHOT_COUNT
 	---help---
@@ -535,7 +536,7 @@ config ARCH_VFORK_STACK_RESERVE
 config ARCH_HAVE_ADDRENV_FORK
 	bool
 	default y if ARCH_RISCV
-	default y if ARCH_ARM64 && ARCH_USE_MMU
+	default y if ARCH_ARM64 && ARCH_USE_MMU && !BUILD_PROTECTED
 	default n
 	depends on ARCH_ADDRENV && !ARCH_STACK_DYNAMIC
 	---help---
@@ -556,10 +557,12 @@ config ARCH_HAVE_ADDRENV_FORK
 		x86_64 do not, and a child forked there resumes at a kernel address.
 		Those architectures need that path before they can select this.
 
-		The arm64 MPU configurations are excluded because up_addrenv_fork()
-		lives in arm64_addrenv_mmu.c:  an MPU address environment is a set of
-		protection regions over one physical address space, not a mapping that
-		can be duplicated at the same virtual addresses.
+		The arm64 protected configurations are excluded, MPU and MMU alike.
+		A protected build has one address space protected by a fixed set of
+		regions, and its up_addrenv_*() are stubs (arm64_addrenv_stub.c);
+		there is no mapping to duplicate at the same virtual addresses, so
+		POSIX fork() semantics cannot be provided.  vfork() and task_fork(),
+		which share the parent's memory, work there as everywhere else.
 
 config ARCH_HAVE_FORK
 	bool
@@ -882,6 +885,22 @@ config ARCH_USE_MMU
 		order to enable use of the MMU.  For most architectures, this is
 		not really an option:  It is required to use the MMU.  In those
 		cases, this selection will always be forced.
+
+config ARCH_HAVE_PROTECTED_MMU
+	bool
+	default n
+	depends on ARCH_HAVE_MMU
+	---help---
+		The architecture can build BUILD_PROTECTED over an MMU rather than an
+		MPU:  a single address space in which a fixed set of mappings, made
+		once at boot and never changed, denies unprivileged code access to the
+		kernel blob.  This is the same protection model as the MPU build --
+		one address space, static regions -- and is not the per-process
+		address environment of BUILD_KERNEL.
+
+		Architectures that select this must map the user blob and the user
+		heap so that they are reachable from EL0/user mode, and leave
+		everything else privileged-only.
 
 config ARCH_USE_MPU
 	bool "Enable MPU"

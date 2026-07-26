@@ -316,7 +316,7 @@ config BUILD_FLAT
 
 config BUILD_PROTECTED
 	bool "NuttX protected build"
-	depends on ARCH_USE_MPU
+	depends on ARCH_USE_MPU || (ARCH_USE_MMU && ARCH_HAVE_PROTECTED_MMU)
 	select LIB_SYSCALL
 	select BUILD_2PASS
 	---help---
@@ -325,9 +325,12 @@ config BUILD_PROTECTED
 		requires use of the two pass build with each blob being build on
 		each pass.
 
-		NOTE:  This build configuration requires that the platform support
-		a memory protection unit (MPU).  Support, however, may not be
-		implemented on all platforms.
+		NOTE:  This build configuration requires that the platform be able to
+		deny unprivileged code access to the kernel blob.  Usually that means
+		a memory protection unit (MPU); an architecture that can instead do it
+		with a static, unchanging set of MMU mappings selects
+		ARCH_HAVE_PROTECTED_MMU.  Support, however, may not be implemented on
+		all platforms.
 
 config BUILD_KERNEL
 	bool "NuttX kernel build"

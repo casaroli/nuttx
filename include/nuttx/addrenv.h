@@ -53,9 +53,17 @@
 
 /* Configuration ************************************************************/
 
-/* Pre-requisites */
+/* Pre-requisites.
+ *
+ * These describe a per-process address environment:  where each process's
+ * text, data and heap are mapped, and the page allocator those mappings are
+ * built from.  A protected build has none of that -- one address space,
+ * divided once at boot by a fixed set of regions, with address environments
+ * that are stubs -- so this applies to an MMU that is building address
+ * environments, not to one standing in for an MPU.
+ */
 
-#ifdef CONFIG_ARCH_USE_MMU
+#if defined(CONFIG_ARCH_USE_MMU) && !defined(CONFIG_BUILD_PROTECTED)
 #  ifndef CONFIG_MM_PGALLOC
 #    error CONFIG_MM_PGALLOC not defined
 #  endif

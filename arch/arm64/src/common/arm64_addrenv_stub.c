@@ -1,5 +1,5 @@
 /****************************************************************************
- * arch/arm64/src/common/arm64_addrenv_mpu.c
+ * arch/arm64/src/common/arm64_addrenv_stub.c
  *
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements.  See the NOTICE file distributed with

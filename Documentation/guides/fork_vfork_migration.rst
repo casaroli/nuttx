@@ -182,6 +182,17 @@ child forked there resumes at a kernel address and faults.  Giving those
 architectures the same path is what stands between them and ``fork()``;
 nothing else in this change has to move.
 
+The arm64 *protected* configurations are excluded deliberately rather than
+left unimplemented, and that holds whether the protection comes from an MPU
+(ARMv8-R) or from a static set of MMU mappings (``qemu-armv8a:pnsh``).  A
+protected build has one address space carved up once at boot; its
+``up_addrenv_*()`` are stubs, and there is no mapping to duplicate at the same
+virtual addresses, so POSIX ``fork()`` semantics cannot be provided at all.
+``vfork()`` and ``task_fork()``, which share the parent's memory, work there as
+everywhere else.  This is why ``ARCH_HAVE_ADDRENV_FORK`` carries
+``&& !BUILD_PROTECTED``:  ``ARCH_ADDRENV`` being set is not by itself evidence
+that address environments are real.
+
 **Xtensa has neither** ``fork()`` **nor** ``vfork()``.  It never had ``fork()``
 either -- ``ARCH_HAVE_FORK`` was never selected for it -- because the hybrid
 NuttX used to implement (shared memory, relocated stack copy) cannot work on a
