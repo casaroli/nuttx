@@ -41,51 +41,77 @@
  ****************************************************************************/
 
 /****************************************************************************
- * Name: fork
+ * Name: up_task_fork, up_vfork, up_fork
  *
  * Description:
- *   The up_fork() function is the base of fork() function that provided in
- *   libc, and fork() is implemented as a wrapper of up_fork() function.
- *   The fork() function has the same effect as posix fork(), except that the
- *   behavior is undefined if the process created by fork() either modifies
- *   any data other than a variable of type pid_t used to store the return
- *   value from fork(), or returns from the function in which fork() was
- *   called, or calls any other function before successfully calling _exit()
- *   or one of the exec family of functions.
+ *   These are the architecture-specific entry points of NuttX's three
+ *   cloning primitives.  All three need exactly the same thing from
+ *   assembly -- a snapshot of the caller's registers, stack pointer and
+ *   return address -- and differ only in what the C code then does with it,
+ *   so they share one snapshot sequence and are distinguished by a
+ *   FORK_TYPE_* constant passed to arm64_fork() in x1.
  *
- *   This thin layer implements fork by simply calling up_fork() with the
- *   fork() context as an argument.  The overall sequence is:
+ *   See include/nuttx/fork.h for what the three primitives mean.
  *
- *   1) User code calls fork().  fork() collects context information and
- *      transfers control up up_fork().
- *   2) arm64_fork() and calls nxtask_setup_fork().
- *   3) nxtask_setup_fork() allocates and configures the child task's TCB.
- *      This consists of:
+ *   The overall sequence is:
+ *
+ *   1) User code calls task_fork(), vfork() or fork().  Each is a libc
+ *      wrapper around the matching entry point here.
+ *   2) The entry point collects the context and calls arm64_fork().
+ *   3) arm64_fork() calls nxtask_setup_fork(), which allocates and
+ *      configures the child task's TCB.  This consists of:
  *      - Allocation of the child task's TCB.
  *      - Initialization of file descriptors and streams
  *      - Configuration of environment variables
- *      - Allocate and initialize the stack
+ *      - Establishing the child's address environment
+ *      - Allocating the stack, or borrowing the parent's
  *      - Setup the input parameters for the task.
  *      - Initialization of the TCB (including call to up_initial_state())
- *   4) arm64_fork() provides any additional operating context. arm64_fork must:
+ *   4) arm64_fork() provides any additional operating context:
  *      - Initialize special values in any CPU registers that were not
  *        already configured by up_initial_state()
- *   5) arm64_fork() then calls nxtask_start_fork()
- *   6) nxtask_start_fork() then executes the child thread.
+ *      - Relocate the copied stack, unless the child shares the parent's
+ *   5) arm64_fork() then calls nxtask_start_fork() or nxtask_start_vfork()
+ *   6) which executes the child thread.
  *
  * Input Parameters:
  *   None
  *
  * Returned Value:
- *   Upon successful completion, fork() returns 0 to the child process and
- *   returns the process ID of the child process to the parent process.
- *   Otherwise, -1 is returned to the parent, no child process is created,
- *   and errno is set to indicate the error.
+ *   Upon successful completion, 0 is returned to the child and the process
+ *   ID of the child is returned to the parent.  Otherwise, -1 is returned to
+ *   the parent, no child is created, and errno is set to indicate the error.
  *
  ****************************************************************************/
 
+#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+GTEXT(up_task_fork)
+SECTION_FUNC(text, up_task_fork)
+    mov    x1, #FORK_TYPE_TASK
+    b      arm64_fork_common
+#endif
+
+#ifdef CONFIG_ARCH_HAVE_VFORK
+GTEXT(up_vfork)
+SECTION_FUNC(text, up_vfork)
+    mov    x1, #FORK_TYPE_VFORK
+    b      arm64_fork_common
+#endif
+
+#ifdef CONFIG_ARCH_HAVE_FORK
 GTEXT(up_fork)
 SECTION_FUNC(text, up_fork)
+    mov    x1, #FORK_TYPE_FORK
+    b      arm64_fork_common
+#endif
+
+/* The shared snapshot.  x1 holds the FORK_TYPE_* selector on entry and is
+ * carried through to arm64_fork().  It is saved into the snapshot along with
+ * the other argument registers, which is harmless:  x0-x18 are caller-saved
+ * and arm64_fork() does not propagate them to the child.
+ */
+
+SECTION_FUNC(text, arm64_fork_common)
     /* Create a stack frame */
 
     sub    sp,  sp, #8 * FORK_REGS_SIZE    /* Allocate the structure on the stack */
@@ -118,14 +144,17 @@ SECTION_FUNC(text, up_fork)
 #ifdef CONFIG_ARCH_FPU
     mov     x0, sp
     stp  x0, x30, [sp, #-16]!
+    str  x1, [sp, #-16]!            /* Preserve the FORK_TYPE_* selector */
     bl     arm64_fork_fpureg_save
+    ldr  x1, [sp], #16
     ldp  x0, x30, [sp], #16
 #endif
 
-    /* Then, call arm64_fork(), passing it a pointer to the stack structure */
+    /* Then, call arm64_fork(), passing it a pointer to the stack structure.
+     * x1 already holds the FORK_TYPE_* selector.
+     */
 
     mov    x0, sp
-    mov    x1, #0
     bl  arm64_fork
 
     /* Release the stack data and return the value returned by arm64_fork */

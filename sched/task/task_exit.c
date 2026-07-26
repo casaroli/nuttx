@@ -157,5 +157,20 @@ int nxtask_exit(void)
 
   rtcb->lockcount--;
 
+  /* Publish anything that became ready to run while the TCB was being
+   * released.  The lockcount above was raised directly rather than through
+   * sched_lock(), so the matching decrement does not merge the pending list
+   * the way sched_unlock() would, and a task woken from inside
+   * nxsched_release_tcb() -- a vfork() parent released by
+   * nxtask_vfork_resume(), for instance -- would otherwise sit on
+   * g_pendingtasks with nothing left to move it off.
+   *
+   * nxsched_merge_pending() is a no-op while pre-emption is still disabled,
+   * and up_exit() re-reads this_task() after we return, so a change of the
+   * ready-to-run head here is picked up.
+   */
+
+  nxsched_merge_pending();
+
   return ret;
 }

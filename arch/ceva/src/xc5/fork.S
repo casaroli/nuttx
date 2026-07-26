@@ -34,30 +34,30 @@
  ****************************************************************************/
 
 	.file		"fork.S"
-	.extern		ceva_fork
+	.extern		ceva_task_fork
 
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
 
 /****************************************************************************
- * Name: up_fork
+ * Name: up_task_fork
  *
  * Description:
- *   The up_fork() function is the base of fork() function that provided in
- *   libc, and fork() is implemented as a wrapper of up_fork() function.
+ *   The up_task_fork() function is the base of fork() function that provided in
+ *   libc, and fork() is implemented as a wrapper of up_task_fork() function.
  *   The fork() function has the same effect as posix fork(), except that the behavior is
  *   undefined if the process created by fork() either modifies any data other than
  *   a variable of type pid_t used to store the return value from fork(), or returns
  *   from the function in which fork() was called, or calls any other function before
  *   successfully calling _exit() or one of the exec family of functions.
  *
- *   This thin layer implements fork by simply calling up_fork() with the fork()
+ *   This thin layer implements fork by simply calling up_task_fork() with the fork()
  *   context as an argument.  The overall sequence is:
  *
  *   1) User code calls fork().  fork() collects context information and
- *      transfers control up up_fork().
- *   2) ceva_fork()and calls nxtask_forksetup().
+ *      transfers control up up_task_fork().
+ *   2) ceva_task_fork()and calls nxtask_forksetup().
  *   3) task_forksetup() allocates and configures the child task's TCB.  This
  *      consists of:
  *      - Allocation of the child task's TCB.
@@ -65,11 +65,11 @@
  *      - Configuration of environment variables
  *      - Setup the input parameters for the task.
  *      - Initialization of the TCB (including call to up_initial_state()
- *   4) ceva_fork() provides any additional operating context. ceva_fork must:
+ *   4) ceva_task_fork() provides any additional operating context. ceva_task_fork must:
  *      - Allocate and initialize the stack
  *      - Initialize special values in any CPU registers that were not
  *        already configured by up_initial_state()
- *   5) ceva_fork() then calls nxtask_forkstart()
+ *   5) ceva_task_fork() then calls nxtask_forkstart()
  *   6) nxtask_forkstart() then executes the child thread.
  *
  * Input Parameters:
@@ -84,10 +84,10 @@
  ****************************************************************************/
 
 	.text
-	.public		up_fork
-	.func_start	3 up_fork
+	.public		up_task_fork
+	.func_start	3 up_task_fork
 
-up_fork:
+up_task_fork:
 	/* Create a stack frame */
 
 	subs sp, #XCPTCONTEXT_SIZE, sp
@@ -98,19 +98,19 @@ up_fork:
 	mov		sp, a1
 	trap
 
-	/* Then, call ceva_fork(), passing it a pointer to the stack structure */
+	/* Then, call ceva_task_fork(), passing it a pointer to the stack structure */
 
 	mov		sp, a0
 	nop
 	push {dw}	retreg
-	callr {t}	ceva_fork
+	callr {t}	ceva_task_fork
 	pop {dw}	retreg
 	nop
 
-	/* Release the stack data and return the value returned by ceva_fork */
+	/* Release the stack data and return the value returned by ceva_task_fork */
 
 	adds sp, #XCPTCONTEXT_SIZE, sp
 
 	ret
 
-	.func_end	3 up_fork
+	.func_end	3 up_task_fork

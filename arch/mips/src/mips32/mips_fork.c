@@ -40,6 +40,14 @@
 #include "mips_fork.h"
 #include "sched/sched.h"
 
+/* This architecture gives the child a relocated copy of the parent's stack;
+ * a borrowed stack would need that relocation to be skipped.
+ */
+
+#ifdef CONFIG_ARCH_VFORK_STACK_BORROW
+#  error "MIPS relocates the vfork() child stack; borrowing is not supported"
+#endif
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -89,7 +97,7 @@
  *
  ****************************************************************************/
 
-pid_t mips_fork(const struct fork_s *context)
+pid_t mips_fork(const struct fork_s *context, int type)
 {
   struct tcb_s *parent = this_task();
   struct tcb_s *child;
@@ -113,7 +121,7 @@ pid_t mips_fork(const struct fork_s *context)
         context->fp, context->sp, context->ra, context->gp);
 #else
   sinfo("fp:%08" PRIx32 " sp:%08" PRIx32 " ra:%08" PRIx32 "\n",
-        context->fp context->sp, context->ra);
+        context->fp, context->sp, context->ra);
 #endif
 #else
   sinfo("s5:%08" PRIx32 " s6:%08" PRIx32 " s7:%08" PRIx32
@@ -130,7 +138,8 @@ pid_t mips_fork(const struct fork_s *context)
 
   /* Allocate and initialize a TCB for the child task. */
 
-  child = nxtask_setup_fork((start_t)context->ra);
+  child = nxtask_setup_fork((start_t)context->ra, type,
+                            (uintptr_t)context->sp);
   if (!child)
     {
       sinfo("nxtask_setup_fork failed\n");
@@ -217,5 +226,5 @@ pid_t mips_fork(const struct fork_s *context)
    * will discard the TCB by calling nxtask_abort_fork().
    */
 
-  return nxtask_start_fork(child);
+  return nxtask_start_fork(child, type);
 }

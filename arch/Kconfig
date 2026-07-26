@@ -11,7 +11,8 @@ config ARCH_ARM
 	bool "ARM"
 	select ARCH_HAVE_BACKTRACE
 	select ARCH_HAVE_INTERRUPTSTACK
-	select ARCH_HAVE_FORK
+	select ARCH_HAVE_TASK_FORK
+	select ARCH_HAVE_VFORK
 	select ARCH_HAVE_STACKCHECK
 	select ARCH_HAVE_CUSTOMOPT
 	select ARCH_HAVE_STDARG_H
@@ -29,7 +30,8 @@ config ARCH_ARM64
 	select ARCH_64BIT
 	select ARCH_HAVE_BACKTRACE
 	select ARCH_HAVE_INTERRUPTSTACK
-	select ARCH_HAVE_FORK if !BUILD_KERNEL && !BUILD_PROTECTED
+	select ARCH_HAVE_TASK_FORK if !BUILD_KERNEL && !BUILD_PROTECTED
+	select ARCH_HAVE_VFORK
 	select ARCH_HAVE_STACKCHECK
 	select ARCH_HAVE_CUSTOMOPT
 	select ARCH_HAVE_STDARG_H
@@ -87,7 +89,8 @@ config ARCH_RISCV
 	select ARCH_HAVE_CPUINFO
 	select ARCH_HAVE_INTERRUPTSTACK
 	select ARCH_HAVE_STACKCHECK
-	select ARCH_HAVE_FORK
+	select ARCH_HAVE_TASK_FORK
+	select ARCH_HAVE_VFORK
 	select ARCH_HAVE_CUSTOMOPT
 	select ARCH_HAVE_SETJMP
 	select ARCH_HAVE_STDARG_H
@@ -111,7 +114,8 @@ config ARCH_SIM
 	select ARCH_HAVE_TICKLESS
 	select ARCH_HAVE_POWEROFF
 	select ARCH_HAVE_TESTSET
-	select ARCH_HAVE_FORK if !HOST_WINDOWS
+	select ARCH_HAVE_TASK_FORK if !HOST_WINDOWS
+	select ARCH_HAVE_VFORK if !HOST_WINDOWS
 	select ARCH_HAVE_SETJMP
 	select ARCH_HAVE_CUSTOMOPT
 	select ARCH_HAVE_TCBINFO
@@ -147,7 +151,8 @@ config ARCH_X86_64
 	select PCI_LATE_DRIVERS_REGISTER if PCI
 	select ARCH_TOOLCHAIN_GNU
 	select ARCH_HAVE_BACKTRACE
-	select ARCH_HAVE_FORK if !BUILD_KERNEL
+	select ARCH_HAVE_TASK_FORK if !BUILD_KERNEL
+	select ARCH_HAVE_VFORK
 	select ARCH_HAVE_SETJMP
 	select ARCH_HAVE_PERF_EVENTS
 	select ARCH_HAVE_POWEROFF
@@ -481,9 +486,104 @@ config ARCH_HAVE_CPUID_MAPPING
 	default n
 	depends on ARCH_HAVE_MULTICPU
 
-config ARCH_HAVE_FORK
+config ARCH_HAVE_TASK_FORK
 	bool
 	default n
+	---help---
+		The architecture can clone the calling task:  the child shares the
+		parent's .data/.bss/heap and runs on a private copy of the parent's
+		stack, concurrently with the parent.  This is the non-POSIX
+		task_fork() primitive; it is neither fork() nor vfork().
+
+config ARCH_HAVE_VFORK
+	bool
+	default n
+	---help---
+		The architecture can implement POSIX vfork():  the child shares the
+		parent's memory and the parent is suspended until the child calls
+		_exit() or one of the exec family of functions.
+
+config ARCH_VFORK_STACK_BORROW
+	bool
+	default n
+	depends on ARCH_HAVE_VFORK
+	---help---
+		The vfork() child borrows the parent's stack outright rather than
+		running on a relocated copy of it.  This is required on architectures
+		whose stack frames contain absolute stack addresses -- the windowed
+		ABI of Xtensa, whose register-window save areas hold the spilled
+		stack pointer of each frame -- and is a pure economy elsewhere.
+
+		It is safe because a vfork() parent is suspended for the whole
+		lifetime of the child.
+
+config ARCH_VFORK_STACK_RESERVE
+	int "vfork() parent stack reserve"
+	default 2048
+	depends on ARCH_VFORK_STACK_BORROW
+	---help---
+		How much of the parent's stack is withheld from a borrowing vfork()
+		child, in bytes.
+
+		The child is given the parent's stack below this reserve; the reserve
+		is headroom for the frames the parent still has to execute before it
+		comes to rest -- the remainder of nxtask_setup_fork(),
+		nxtask_start_vfork(), and blocking itself.  A canary is written at
+		the boundary and checked when the parent resumes, so a value that is
+		too small fails loudly rather than corrupting the parent's frames.
+
+config ARCH_HAVE_ADDRENV_FORK
+	bool
+	default y if ARCH_RISCV
+	default n
+	depends on ARCH_ADDRENV && !ARCH_STACK_DYNAMIC
+	---help---
+		The architecture implements up_addrenv_fork(), which duplicates an
+		address environment:  the copy is backed by freshly allocated pages
+		holding a copy of the parent's contents, mapped at the same virtual
+		addresses.  This is what POSIX fork() is built on.
+
+		up_addrenv_fork() is implemented for armv7-a, arm64 (MMU), RISC-V and
+		x86_64, but only RISC-V selects this, because fork() additionally
+		needs the architecture to build the child's register context from the
+		*user's* saved syscall frame.  In a kernel build fork() is reached
+		through a system call, so the return address and stack pointer the
+		architecture's fork entry point sees are the kernel's, not the
+		caller's.  RISC-V handles this (riscv_swint.c records the frame in
+		xcp.sregs, and riscv_fork.c has a CONFIG_LIB_SYSCALL variant that uses
+		it); arm, arm64 and x86_64 do not, and a child forked there resumes at
+		a kernel address.  Those architectures need that path before they can
+		select this.
+
+config ARCH_HAVE_FORK
+	bool
+	default y if ARCH_ADDRENV && ARCH_HAVE_ADDRENV_FORK
+	---help---
+		This configuration can provide POSIX fork() semantics:  the child
+		receives its own copy of the parent's memory at the same virtual
+		addresses, may modify anything, may return from the function that
+		called fork(), and runs concurrently with the parent.
+
+		Where this is not selected fork() is not provided at all, and code
+		that calls it fails to build -- see FORK_IS_TASK_FORK.
+
+config FORK_IS_TASK_FORK
+	bool "Provide fork() as an alias for task_fork() (legacy)"
+	default n
+	depends on ARCH_HAVE_TASK_FORK && !ARCH_HAVE_FORK
+	---help---
+		Provide fork() on configurations that cannot implement POSIX fork()
+		semantics, by aliasing it to task_fork().
+
+		This preserves the historical NuttX fork() behaviour exactly:  the
+		child shares the parent's data and heap, runs on a private copy of
+		the parent's stack, and runs concurrently with the parent.  It does
+		NOT provide POSIX fork() semantics:  writes by the child are visible
+		to the parent, and vice versa.
+
+		Enable this only to keep legacy applications building.  New code
+		should call task_fork() explicitly, or use pthread_create() or
+		posix_spawn().
 
 config ARCH_HAVE_CRC32
 	bool

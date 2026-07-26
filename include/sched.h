@@ -233,6 +233,22 @@ int    task_create_with_stack(FAR const char *name, int priority,
 int    task_delete(pid_t pid);
 int    task_restart(pid_t pid);
 
+/* task_fork() clones the calling task:  the child shares the parent's
+ * .data, .bss and heap -- the memory relationship of a thread -- but runs on
+ * a private copy of the parent's stack, and runs concurrently with the
+ * parent.  Like fork() it returns twice:  0 in the child, the child's pid in
+ * the parent.
+ *
+ * This is not fork() and not vfork().  It is the behaviour NuttX published
+ * under the name fork() until this API existed.  New code should prefer
+ * pthread_create(), which is the same memory relationship spelled clearly,
+ * or posix_spawn().
+ */
+
+#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+pid_t  task_fork(void);
+#endif
+
 int    task_setcancelstate(int state, FAR int *oldstate);
 int    task_setcanceltype(int type, FAR int *oldtype);
 void   task_testcancel(void);
