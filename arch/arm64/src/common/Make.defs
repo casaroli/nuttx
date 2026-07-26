@@ -113,11 +113,18 @@ endif
 
 ifeq ($(CONFIG_ARCH_ADDRENV),y)
 
-ifeq ($(CONFIG_ARCH_USE_MMU),y)
+# A protected build has a single address space carved up by a fixed set of
+# regions, so there is nothing for the address environment interfaces to do;
+# the stubs satisfy them.  That is true whether the regions are MPU or MMU
+# ones, which is why this comes before the MMU/MPU choice below.
+
+ifeq ($(CONFIG_BUILD_PROTECTED),y)
+CMN_CSRCS += arm64_addrenv_stub.c
+else ifeq ($(CONFIG_ARCH_USE_MMU),y)
 CMN_CSRCS += arm64_addrenv_mmu.c arm64_pgalloc.c arm64_addrenv_perms.c
 CMN_CSRCS += arm64_addrenv_utils.c arm64_addrenv_shm.c arm64_addrenv_pgmap.c
 else ifeq ($(CONFIG_ARCH_USE_MPU),y)
-CMN_CSRCS += arm64_addrenv_mpu.c
+CMN_CSRCS += arm64_addrenv_stub.c
 endif
 
 ifeq ($(CONFIG_ARCH_STACK_DYNAMIC),y)

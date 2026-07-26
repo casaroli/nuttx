@@ -104,12 +104,19 @@ if(CONFIG_ARCH_KERNEL_STACK)
 endif()
 
 if(CONFIG_ARCH_ADDRENV)
-  if(CONFIG_ARCH_USE_MMU)
+  # A protected build has a single address space carved up by a fixed set of
+  # regions, so there is nothing for the address environment interfaces to do;
+  # the stubs satisfy them.  That is true whether the regions are MPU or MMU
+  # ones, which is why this comes before the MMU/MPU choice below.
+
+  if(CONFIG_BUILD_PROTECTED)
+    list(APPEND SRCS arm64_addrenv_stub.c)
+  elseif(CONFIG_ARCH_USE_MMU)
     list(APPEND SRCS arm64_addrenv_mmu.c arm64_pgalloc.c arm64_addrenv_perms.c)
     list(APPEND SRCS arm64_addrenv_utils.c arm64_addrenv_shm.c)
     list(APPEND SRCS arm64_addrenv_pgmap.c)
   elseif(CONFIG_ARCH_USE_MPU)
-    list(APPEND SRCS arm64_addrenv_mpu.c)
+    list(APPEND SRCS arm64_addrenv_stub.c)
   endif()
 
   if(CONFIG_ARCH_STACK_DYNAMIC)
