@@ -61,15 +61,22 @@ void up_allocate_pgheap(void **heap_start, size_t *heap_size)
 {
   DEBUGASSERT(heap_start && heap_size);
 
+  /* mm_pginitialize() wants the *physical* base of the pool:  the pages
+   * mm_pgalloc() hands out are physical addresses, which is what every
+   * consumer here assumes -- they all pass them through x86_64_pgvaddr()
+   * before touching them.  Give it a virtual base and that translation
+   * silently returns 0, and the first x86_64_pgwipe() memsets NULL.
+   */
+
 #ifndef CONFIG_ARCH_PGPOOL_MAPPING
   /* pgheap at the end of RAM */
 
-  *heap_start = (void *)(X86_64_PGPOOL_BASE + X86_64_LOAD_OFFSET);
+  *heap_start = (void *)X86_64_PGPOOL_BASE;
   *heap_size  = (size_t)X86_64_PGPOOL_SIZE;
 #else
   /* pgheap defined with Kconfig options */
 
-  *heap_start = (void *)CONFIG_ARCH_PGPOOL_VBASE;
+  *heap_start = (void *)CONFIG_ARCH_PGPOOL_PBASE;
   *heap_size  = (size_t)CONFIG_ARCH_PGPOOL_SIZE;
 #endif
 }
