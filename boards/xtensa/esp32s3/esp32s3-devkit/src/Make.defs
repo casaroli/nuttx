@@ -36,6 +36,16 @@ CSRCS += romfs_stub.c
 ifneq ($(wildcard $(BOARD_DIR)$(DELIM)src$(DELIM)romfs_boot.c),)
 CSRCS += romfs_boot.c
 CFLAGS += -DHAVE_ROMFS_BOOT
+
+# Defining the placeholder away is a change in CFLAGS, and make cannot see
+# one:  an object compiled before the image was generated is newer than its
+# source and is not rebuilt.  It still defines romfs_img, and being the
+# earlier member of libboard.a it is the one that satisfies the link -- so
+# the kernel boots with a one-byte ROMFS and cannot start init, in a build
+# where nothing failed.  Tie the placeholder to the generated image so that
+# it is recompiled whenever the image is regenerated.
+
+romfs_stub$(OBJEXT): $(BOARD_DIR)$(DELIM)src$(DELIM)romfs_boot.c
 endif
 endif
 
