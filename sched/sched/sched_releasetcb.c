@@ -174,6 +174,18 @@ int nxsched_release_tcb(FAR struct tcb_s *tcb, uint8_t ttype)
       nxtask_joindestroy(tcb);
 #endif
 
+#ifdef CONFIG_ARCH_HAVE_VFORK
+      /* If this was a vfork() child, release the suspended parent.  This is
+       * the last point in the child's life:  it is off the ready-to-run
+       * list, it has stopped touching a borrowed stack, and if it got here
+       * by exec()ing then exec_swap() has already handed its pid to the
+       * program it loaded.  So the parent resumes at exec() as POSIX
+       * requires, and never while the child is still using its stack.
+       */
+
+      nxtask_vfork_resume(tcb);
+#endif
+
       /* And, finally, release the TCB itself */
 
       if (tcb->flags & TCB_FLAG_FREE_TCB)

@@ -41,7 +41,16 @@
 
 #include "sched/sched.h"
 
-#ifdef CONFIG_ARCH_HAVE_FORK
+#if defined(CONFIG_ARCH_HAVE_TASK_FORK) || defined(CONFIG_ARCH_HAVE_VFORK) || \
+    defined(CONFIG_ARCH_HAVE_FORK)
+
+/* This architecture gives the child a relocated copy of the parent's stack;
+ * a borrowed stack would need the relocation below to be skipped.
+ */
+
+#ifdef CONFIG_ARCH_VFORK_STACK_BORROW
+#  error "RISC-V relocates the vfork() child stack; borrowing is not supported"
+#endif
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -102,7 +111,7 @@
 
 #ifdef CONFIG_LIB_SYSCALL
 
-pid_t riscv_fork(const struct fork_s *context)
+pid_t riscv_fork(const struct fork_s *context, int type)
 {
   struct tcb_s *parent = this_task();
   struct tcb_s *child;
@@ -117,7 +126,8 @@ pid_t riscv_fork(const struct fork_s *context)
 
   /* Allocate and initialize a TCB for the child task. */
 
-  child = nxtask_setup_fork((start_t)parent->xcp.sregs[REG_RA]);
+  child = nxtask_setup_fork((start_t)parent->xcp.sregs[REG_RA], type,
+                            parent->xcp.sregs[REG_SP]);
   if (!child)
     {
       sinfo("nxtask_setup_fork failed\n");
@@ -184,12 +194,12 @@ pid_t riscv_fork(const struct fork_s *context)
    * will discard the TCB by calling nxtask_abort_fork().
    */
 
-  return nxtask_start_fork(child);
+  return nxtask_start_fork(child, type);
 }
 
 #else
 
-pid_t riscv_fork(const struct fork_s *context)
+pid_t riscv_fork(const struct fork_s *context, int type)
 {
   struct tcb_s *parent = this_task();
   struct tcb_s *child;
@@ -215,7 +225,7 @@ pid_t riscv_fork(const struct fork_s *context)
         context->fp, context->sp, context->ra, context->gp);
 #else
   sinfo("fp:%" PRIxREG " sp:%" PRIxREG " ra:%" PRIxREG "\n",
-        context->fp context->sp, context->ra);
+        context->fp, context->sp, context->ra);
 #endif
 #else
   sinfo("s5:%" PRIxREG " s6:%" PRIxREG " s7:%" PRIxREG " s8:%" PRIxREG "\n",
@@ -231,7 +241,8 @@ pid_t riscv_fork(const struct fork_s *context)
 
   /* Allocate and initialize a TCB for the child task. */
 
-  child = nxtask_setup_fork((start_t)(uintptr_t)context->ra);
+  child = nxtask_setup_fork((start_t)(uintptr_t)context->ra, type,
+                            (uintptr_t)context->sp);
   if (!child)
     {
       sinfo("nxtask_setup_fork failed\n");
@@ -346,8 +357,9 @@ pid_t riscv_fork(const struct fork_s *context)
    * will discard the TCB by calling nxtask_abort_fork().
    */
 
-  return nxtask_start_fork(child);
+  return nxtask_start_fork(child, type);
 }
 
 #endif /* CONFIG_LIB_SYSCALL */
-#endif /* CONFIG_ARCH_HAVE_FORK */
+#endif /* CONFIG_ARCH_HAVE_TASK_FORK || CONFIG_ARCH_HAVE_VFORK ||
+        * CONFIG_ARCH_HAVE_FORK */

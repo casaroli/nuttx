@@ -347,8 +347,21 @@ extern "C"
 
 /* Task Control Interfaces */
 
+/* fork() is declared only where it can be honoured.  Where the
+ * configuration cannot provide POSIX fork() semantics -- the child getting
+ * its own copy of the parent's memory -- fork() does not exist, and calling
+ * it is a build error naming the function rather than a silent change of
+ * meaning at run time.  See CONFIG_FORK_IS_TASK_FORK for the legacy alias,
+ * and task_fork() in sched.h for the honest spelling of the historical
+ * behaviour.
+ */
+
+#if defined(CONFIG_ARCH_HAVE_FORK) || defined(CONFIG_FORK_IS_TASK_FORK)
 pid_t   fork(void);
+#endif
+#ifdef CONFIG_ARCH_HAVE_VFORK
 pid_t   vfork(void);
+#endif
 pid_t   getpid(void);
 pid_t   getpgid(pid_t pid);
 pid_t   getpgrp(void);

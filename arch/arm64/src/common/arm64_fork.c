@@ -52,6 +52,14 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
+/* This architecture gives the child a relocated copy of the parent's stack;
+ * a borrowed stack would need that relocation to be skipped.
+ */
+
+#ifdef CONFIG_ARCH_VFORK_STACK_BORROW
+#  error "ARM64 relocates the vfork() child stack; borrowing is not supported"
+#endif
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -113,7 +121,7 @@ void arm64_fork_fpureg_save(struct fork_s *context)
  *
  ****************************************************************************/
 
-pid_t arm64_fork(const struct fork_s *context)
+pid_t arm64_fork(const struct fork_s *context, int type)
 {
   struct tcb_s *parent = this_task();
   struct tcb_s *child;
@@ -125,7 +133,8 @@ pid_t arm64_fork(const struct fork_s *context)
 
   /* Allocate and initialize a TCB for the child task. */
 
-  child = nxtask_setup_fork((start_t)context->lr);
+  child = nxtask_setup_fork((start_t)context->lr, type,
+                            (uintptr_t)context->sp);
   if (!child)
     {
       serr("ERROR: nxtask_setup_fork failed\n");
@@ -235,5 +244,5 @@ pid_t arm64_fork(const struct fork_s *context)
    * will discard the TCB by calling nxtask_abort_fork().
    */
 
-  return nxtask_start_fork(child);
+  return nxtask_start_fork(child, type);
 }

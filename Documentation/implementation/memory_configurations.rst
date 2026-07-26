@@ -632,10 +632,13 @@ the contemplate in any real detail:
   and swap the state into physical memory as needed?(not implemented).
 * ``mmap()``. True shared memory and true file mapping could be supported.
   I am repeating myself (not implemented).
-* ``fork()``. The ``fork()`` interface could be supported. NuttX currently
-  supports the "crippled" version, ``vfork()`` but with these process address
-  environments, the real ``fork()`` interface could be supported.
-  (not implemented).
+* On-demand ``fork()``. The real ``fork()`` interface *is* supported on
+  configurations with a duplicable process address environment: see
+  ``CONFIG_ARCH_HAVE_FORK``, which is derived from
+  ``CONFIG_ARCH_HAVE_ADDRENV_FORK``. What is not implemented is
+  copy-on-write:  ``up_addrenv_fork()`` copies the parent's pages eagerly,
+  which needs as much free memory as the parent occupies. Demand paging
+  would fix that.
 * Dynamic Stack Allocation. Completely eliminate the need for constant tuning
   of static stack sizes.(not implemented).
 * Shared Libraries. Am I repeating myself again?(not implemented).
@@ -688,8 +691,8 @@ There are two problems here:
 So how do you create new tasks/processes in such a context.
 There is only one way possible; by using an interface that takes a file name
 as an argument (rather than absolute address).
-New processes started with ``vfork()`` and ``exec()`` or with
-``posix_spawn()`` should not have any of these issues.
+New processes started with ``fork()`` or ``vfork()`` and ``exec()``, or with
+``posix_spawn()``, should not have any of these issues.
 
 
 ARM Memory Management

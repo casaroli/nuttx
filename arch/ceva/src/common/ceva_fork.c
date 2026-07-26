@@ -40,7 +40,7 @@
  ****************************************************************************/
 
 /****************************************************************************
- * Name: ceva_fork
+ * Name: ceva_task_fork
  *
  * Description:
  *   The fork() function has the same effect as posix fork(), except that the
@@ -83,7 +83,7 @@
  *
  ****************************************************************************/
 
-pid_t ceva_fork(const uint32_t *regs)
+pid_t ceva_task_fork(const uint32_t *regs)
 {
 #ifdef CONFIG_SCHED_WAITPID
   struct tcb_s *parent = this_task();
@@ -97,9 +97,14 @@ pid_t ceva_fork(const uint32_t *regs)
   void *argv;
   int ret;
 
+  /* How large is the parent's stack argument area? */
+
+  argsize = (uintptr_t)parent->stack_base_ptr -
+            (uintptr_t)parent->stack_alloc_ptr;
+
   /* Allocate and initialize a TCB for the child task. */
 
-  child = nxtask_setup_fork(parent->start, &argsize);
+  child = nxtask_setup_fork(parent->start, FORK_TYPE_TASK, (uintptr_t)sp);
   if (!child)
     {
       serr("ERROR: nxtask_setup_fork failed\n");
@@ -204,7 +209,7 @@ pid_t ceva_fork(const uint32_t *regs)
    * will discard the TCB by calling nxtask_abort_fork().
    */
 
-  return nxtask_start_fork(child);
+  return nxtask_start_fork(child, FORK_TYPE_TASK);
 #else /* CONFIG_SCHED_WAITPID */
   return (pid_t)ERROR;
 #endif
