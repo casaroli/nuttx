@@ -730,23 +730,67 @@ large, untestable diff and it is not this port's job.
 
 ### 7.5 What is next
 
-Nothing in the port is known broken.  Candidates, roughly in order:
+The port meets its goals and nothing in it is known broken.  What it is not,
+is upstream: 35 code commits that work on silicon and that nobody else can
+use.  Landing them is the main line of work; everything below is ordered
+around that.
 
-- **Broader on-target validation and failure injection.**  `fork()` from a
-  pthread, `fork()` under page-pool pressure (the pool is 64 pages; a fork
-  of a 20-page process needs 20 more), repeated fork/exit cycles against the
-  `free` baseline.
-- **The DMA route for page copy and wipe** (end of §7.2).  It would remove
-  the CPU-visible scratch mapping entirely, and with it the `sched_lock()`,
-  and it is what a full-image `fork()` copy would want.
-- **Upstreaming.**  Several commits stand alone as bug fixes — the `ARCHLIB`
-  IRAM placement, `up_allocate_kheap()` missing its `BUILD_KERNEL` branch,
-  the missing `sig_trampoline` in Xtensa's `crt0`, `addrenv_switch()` never
-  being called on a voluntary context switch.  `binfmt/elf`'s `nx_priority`
-  fix is already out as apache/nuttx#19537.
-- **A flat-build `vfork()` for Xtensa**, if wanted: it needs an assembly
-  entry that spills the windows *and* captures `WINDOWBASE`/`WINDOWSTART`,
-  which `up_saveusercontext()` does not do.  Not required by anything here.
+**Step 1 — failure injection on `fork()`, before any of it goes out.**
+`fork()` has been exercised by one happy-path test.  Reviewers will ask what
+happens when it fails, and the answer is currently unknown.  The specific
+worry: `up_addrenv_fork()` on allocation failure calls
+`up_addrenv_destroy(child)` **while `addrenv_select()` has made the child's
+environment current**, after which `nxtask_setup_fork()`'s `errout_with_tcb`
+runs `addrenv_restore()` and `nxsched_release_tcb()`.  That ordering has
+never executed, and teardown under a swapped address environment is the exact
+shape that produced three of §7.3's bugs.
+
+Worth running on the board, mostly as extensions to `examples/forktest`:
+
+- **Page-pool exhaustion.**  The pool is 64 pages; NSH holds 19 and
+  `forktest` 20, so a fork needing 20 more sits at 59 of 64.  A slightly
+  larger process makes `alloc_region()` fail part-way and takes the path
+  above.  Does the parent survive with a sane `errno`, and does `free` return
+  to its 1245184 baseline?
+- **`fork()` from a pthread** — `nxtask_setup_fork()` has a separate branch
+  for it (`parent = nxsched_get_tcb(ptcb->group->tg_pid)`), never run against
+  the copy path.
+- **`fork()` then `exec()` in the child** — the common idiom, and `exec()`
+  under a freshly copied address environment is new ground.
+- **Nested fork**, and **repeated fork/exit** against the `free` baseline as
+  a leak check.
+
+**Step 2 — upstream, as a series.**  Roughly in dependency order; each is a
+separate PR with its own story and on-target evidence.
+
+| # | what | commits |
+|---|---|---|
+| 1 | **standalone bug fixes**, no dependency on this port | `2956eaf7f0` mm/pgalloc 32/64 KB pages · `9a2b408540` octal-flash init in IRAM (repairs an existing *protected* build) · `cc3a6fc032` ARCHLIB IRAM placement · `3c8f7da049` `up_allocate_kheap()` BUILD_KERNEL branch · `2895ec8c27` `sig_trampoline` in crt0 · `eb3c2d9957` `addrenv_switch()` on voluntary context switch |
+| 2 | **Unit A**, expose MMU/WCL/PMS primitives — pure refactor, byte-identical | `4a658951e1` |
+| 3 | **recoverable faults + per-task abort** — useful without BUILD_KERNEL | `0cd5b40375` `cc93605a62` `1618108ab5` + `apps` `examples/pffault` |
+| 4 | **the address-environment port** — Units C/D/E and BUILD_KERNEL enablement | `a5514a8e01` `8b70856f04` `678b0a8bd6` `7628274dba` `6c8383e5e1` `87af44e289` `0267135a00` `44a7e2d6a4` `c8ae883a95` `c24550f1c8` `95ec66b509` `00cecc30b4` `133798d75a` `514b26a956` `6df87015da` `bca936d2bf` |
+| 5 | **isolation** — world split, WORLD1 vector table, PMS permissions | `e15f277b94` `3a47869397` `790a2120ca` `b859e49c3d` |
+| 6 | **process isolation and `fork()`** | `7677557cd5` `c63c939817` `21fc83d861` `4c260f497f` + `apps` `examples/forktest` |
+
+Group 1 is nearly free and could go out immediately: each commit is a defect
+a reviewer can judge without caring about this port at all.  `eb3c2d9957` in
+particular fixes a real bug for *any* Xtensa address-environment build.
+`binfmt/elf`'s `nx_priority` fix is already out as
+[apache/nuttx#19537](https://github.com/apache/nuttx/pull/19537) — 33 checks
+green, awaiting review; its one CI failure is `apps/audioutils/lame` failing
+to link SSE2 symbols on the sim builder and is unrelated.
+
+Group 4 carries the one piece of this work that no CI here can check: seven
+architectures gained a one-line change when `nxtask_setup_fork()` took its
+`share`/`usp` parameters, and they pass `(true, 0)` to reach the unchanged
+path.  Upstream CI is the first thing that will actually compile them.
+
+**Deliberately not next:** the DMA route for page copy and wipe (end of
+§7.2), and building something on top of the port to demonstrate it.  Both are
+more attractive once it has landed, and neither improves the odds of it
+landing.  A flat-build `vfork()` for Xtensa is also not needed by anything —
+it would want an assembly entry that spills the windows *and* captures
+`WINDOWBASE`/`WINDOWSTART`, which `up_saveusercontext()` does not do.
 
 ---
 
