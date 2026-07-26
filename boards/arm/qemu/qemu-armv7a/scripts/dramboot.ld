@@ -20,16 +20,28 @@
  *
  ****************************************************************************/
 
-#include <nuttx/config.h>
+#include "memory.ld"
+
+/* Publish the kernel/user split so that the C code that has to know it -- the
+ * heap allocation in qemu_allocateheap.c and the MMU regions in
+ * qemu_userspace.c -- can read it from one place.  In a flat build the user
+ * regions are empty and nothing looks at them.
+ */
+
+__kflash_start = ORIGIN(kflash);
+__kflash_size  = LENGTH(kflash);
+__ksram_start  = ORIGIN(ksram);
+__ksram_size   = LENGTH(ksram);
+__ksram_end    = ORIGIN(ksram) + LENGTH(ksram);
+
+__uflash_start = ORIGIN(uflash);
+__uflash_size  = LENGTH(uflash);
+__usram_start  = ORIGIN(usram);
+__usram_size   = LENGTH(usram);
+__usram_end    = ORIGIN(usram) + LENGTH(usram);
 
 OUTPUT_ARCH(arm)
 ENTRY(__start)
-
-MEMORY
-{
-  ROM (rx) : ORIGIN = CONFIG_FLASH_START, LENGTH = CONFIG_FLASH_SIZE
-  RAM (rwx): ORIGIN = CONFIG_RAM_START,   LENGTH = CONFIG_RAM_SIZE
-}
 
 SECTIONS
 {
@@ -41,7 +53,7 @@ SECTIONS
       *(.text*)
       *(.fixup)
       *(.gnu.warning)
-  } > ROM
+  } > kflash
 
   . = ALIGN(4096);
 
@@ -53,12 +65,12 @@ SECTIONS
       . = ALIGN(4096);
       _etext = .; /* End_1 of .text */
       _sztext = _etext - _stext;
-  } > ROM
+  } > kflash
 
   .ARM.extab :
   {
       *(.ARM.extab*)
-  } > ROM
+  } > kflash
 
   /* .ARM.exidx is sorted, so has to go in its own output section.  */
 
@@ -66,7 +78,7 @@ SECTIONS
   .ARM.exidx :
   {
       *(.ARM.exidx* .gnu.linkonce.armexidx.*)
-  } > ROM
+  } > kflash
   PROVIDE_HIDDEN (__exidx_end = .);
 
   .rodata : {
@@ -76,19 +88,19 @@ SECTIONS
       KEEP(*(SORT(.scattered_array*)));
       . = ALIGN(4096);
       _erodata = .;
-  } > ROM
+  } > kflash
 
 #ifdef CONFIG_MM_KASAN_GLOBAL
   .kasan.shadows : {
       KEEP(*(.kasan.shadows))
-  } > ROM
+  } > kflash
   .kasan.unused : {
     *(.data..LASANLOC*)
-  } > RAM
+  } > ksram
   .kasan.global : {
     KEEP (*(.data..LASAN0))
     KEEP (*(.data.rel.local..LASAN0))
-  } > RAM
+  } > ksram
 #endif
 
   _eronly = LOADADDR(.data);
@@ -102,20 +114,20 @@ SECTIONS
       . = ALIGN(4);
       __stop_impls = .;
       _edata = .;
-  } > RAM AT > ROM
+  } > ksram AT > kflash
 
   .noinit : {
       _snoinit = ABSOLUTE(.);
       *(.noinit*)
       _enoinit = ABSOLUTE(.);
-  } > RAM
+  } > ksram
 
   .bss : {                     /* BSS */
        _sbss = .;
        *(.bss*)
        . = ALIGN(4096);
        _ebss = .;
-  } > RAM
+  } > ksram
 
   /* Sections to be discarded */
   /DISCARD/ : {

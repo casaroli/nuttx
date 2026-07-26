@@ -34,8 +34,70 @@
 
 #include <arch/board/board_memorymap.h>
 
-#include "mpu.h"
+#ifdef CONFIG_ARCH_ARMV7A
+#  include "mmu.h"
+#else
+#  include "mpu.h"
+#endif
+
 #include "qemu_userspace.h"
+
+/****************************************************************************
+ * Private Functions
+ ****************************************************************************/
+
+/****************************************************************************
+ * Name: qemu_user_regions
+ *
+ * Description:
+ *   Hand user space the two regions it is entitled to:  its own text and
+ *   rodata read-only and executable, and its own data, bss, heap and stacks
+ *   read/write and execute-never.  Everything else -- the kernel blob, the
+ *   kernel heap and the page tables -- is left privileged-only by the
+ *   mappings made at boot, and that is the whole of the protection in this
+ *   build.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_ARCH_ARMV7A
+
+static void qemu_map_sections(uintptr_t start, size_t size,
+                              uint32_t mmuflags)
+{
+  uintptr_t addr;
+
+  /* An L1 section is the smallest thing these flags can describe, so the
+   * region has to be section aligned.  boards/.../scripts/memory.ld is where
+   * that is arranged; see the note there.
+   */
+
+  DEBUGASSERT((start & SECTION_MASK) == 0 && (size & SECTION_MASK) == 0);
+
+  for (addr = start; addr < start + size; addr += SECTION_SIZE)
+    {
+      /* Identity mapped, as everything on this board is */
+
+      mmu_l1_setentry(addr, addr, mmuflags);
+    }
+}
+
+static void qemu_user_regions(void)
+{
+  qemu_map_sections(UFLASH_START, UFLASH_SIZE, MMU_UTEXTSECTFLAGS);
+  qemu_map_sections(USRAM_START, USRAM_SIZE, MMU_UDATASECTFLAGS);
+}
+
+#else
+
+static void qemu_user_regions(void)
+{
+  mpu_showtype();
+  mpu_user_flash(UFLASH_START, UFLASH_SIZE);
+  mpu_user_intsram(USRAM_START, USRAM_SIZE);
+  mpu_control(true);
+}
+
+#endif
 
 /****************************************************************************
  * Public Functions
@@ -102,8 +164,5 @@ void qemu_userspace(void)
 
   /* Configure user FLASH and SRAM spaces */
 
-  mpu_showtype();
-  mpu_user_flash(UFLASH_START, UFLASH_SIZE);
-  mpu_user_intsram(USRAM_START, USRAM_SIZE);
-  mpu_control(true);
+  qemu_user_regions();
 }
