@@ -7,18 +7,27 @@ this first; the design note `mmu-isolation.md` is the background.
 
 Branch: `esp32s3/build-kernel`, in both `nuttx/` and `apps/`.
 
-**It is no longer based on Apache master.** Both repos sit on
-`casaroli/fork-vfork-semantics`, which gives `fork()`, `vfork()` and
-`task_fork()` separate meanings and separate syscalls. That branch supersedes
-the generic half of what this port used to carry, so Xtensa is wired onto it
-rather than duplicating it (§7.3, §7.4). The apache-master-based line is
-preserved at the `pre-semantics-rebase` / `apps-pre-semantics` tags.
+**It is no longer based on Apache master, and it is no longer developed in a
+workspace of its own.** The branch now lives in `/Users/marco/ia/nuttx-fork/`
+— the fork/vfork semantics workspace — on top of that work, which gives
+`fork()`, `vfork()` and `task_fork()` separate meanings and separate
+syscalls. It supersedes the generic half of what this port used to carry, so
+Xtensa is wired onto it rather than duplicating it (§7.3, §7.4). In
+particular the port's own `CONFIG_ARCH_FORK_STACK_INHERIT` is gone: stack
+inheritance is unconditional there now. The apache-master-based line is
+preserved at the `pre-semantics-rebase` / `apps-pre-semantics` tags, and the
+older standalone workspace is `/Users/marco/ia/nuttx-distro/`.
 
-The other side of that work lives in `/Users/marco/ia/nuttx-fork/`, and its
-`apps` provides `testing/ostest/{fork,vfork,task_fork}.c`. Two documents at
-the workspace root belong to that conversation, not to this port:
-`fork-vfork-semantics-issue.md` (the original proposal) and
-`fork-stack-semantics-followup.md` (our feedback, awaiting their reply).
+Build and run it with `run/xtensa.sh` at that workspace's top level; it
+carries the traps that have cost sessions here, and `run/README.md` lists
+them alongside the other architectures'. The toolchain is still the one in
+`/Users/marco/ia/nuttx-distro/.tools`, reached through a `.tools` symlink.
+
+The other half of the conversation is `fork-vfork-semantics-issue.md` (the
+original proposal) and `fork-stack-semantics-followup.md` (our feedback),
+both at the `nuttx-distro` workspace root.  Their §2 — a `fork()` child must
+keep the parent's stack address — is what the semantics branch implemented,
+and this port is the architecture that cannot fake it.
 
 The dated experiment log this port was originally developed alongside lived in
 `Documentation/gsoc/2026-dynamic-elf-progress-log.md` on the older
@@ -31,8 +40,9 @@ go/no-go results, the on-target bug list — is reproduced in §7 and §8 here.
 ## 1. Where this stands
 
 **`CONFIG_BUILD_KERNEL` boots to an interactive NSH on the ESP32-S3, user
-programs run from the shell, and the kernel is protected from them.** As of
-2026-07-25, on the WROOM-2 board:
+programs run from the shell, the kernel is protected from them, and `ostest`
+runs to `Exiting with status 0` including its `fork()` and `vfork()` tests**
+(§7.5). As of 2026-07-27, on the WROOM-2 board:
 
 ```
 load_absmodule: Successfully loaded module /system/bin/init
@@ -92,8 +102,9 @@ erased PSRAM to an invalid entry. See §7.2.
 1. A violation by the kernel itself is still a whole-system panic, by
    design: only a WORLD1 violation is survivable, and it is the interrupted
    task's saved PS that tells the two apart.
-2. Nothing else known.  §7.5 lists the candidates for what to do next; none
-   of them is a repair.
+2. Nothing else known.  The two failures this section used to list --
+   `vfork()` hanging and `fork_test` returning `ENOMEM` -- are fixed; §7.5
+   has both diagnoses.  What is left there is coverage, not repair.
 
 ### Scope reminder: what the silicon already ruled out
 
@@ -740,28 +751,62 @@ literally its old `vfork()`, renamed in `c33d1c9c97`), is written up in
 change to other architectures** — that was tried and reverted; it is a
 large, untestable diff and it is not this port's job.
 
-### 7.5 What is next
+### 7.5 Both open failures are closed; `ostest` passes
 
-Two open failures, both on the semantics branch's new code rather than on
-this port's, and both waiting on the conversation in
-`fork-stack-semantics-followup.md`.
+This port now lives in `/Users/marco/ia/nuttx-fork/`, rebased onto the
+semantics branch's *unconditional* stack inheritance — the port's own
+`CONFIG_ARCH_FORK_STACK_INHERIT` and its `sched/task/task_fork.c` changes are
+gone, superseded by "sched/arch: give the fork() child the parent's stack
+address". `up_initial_state()` putting the register frame on the kernel stack
+stays: it is Xtensa's half of that same fix, and armv7-a needed the identical
+one.
 
-**`vfork()` hangs** at `vfork_test: Started`. We are the first user of
-`CONFIG_ARCH_VFORK_STACK_BORROW` anywhere -- nothing on their branch selects
-it, and its help text names Xtensa's windowed ABI as the reason it exists --
-so this is most likely a defect in code that has never executed, not
-something Xtensa-specific. Since `vfork_test` runs *before* `fork_test` in
-`ostest_main`, it blocks the rest; to get past it temporarily, drop the
-`select ARCH_HAVE_VFORK` from `ARCH_XTENSA` in `arch/Kconfig`.
+On an ESP32-S3-WROOM-2, `esp32s3-devkit:kernel_oct`:
 
-**`ostest`'s `fork_test` returns `ENOMEM`** from a path not yet found. Ruled
-out: page-pool exhaustion. The pool was widened from 64 to 72 pages with
-roughly 40 in use, and `alloc_region()`'s failure path -- which now carries a
-`berr()` for exactly this reason -- never triggers. Our own `forktest`
-exercised the same code path and passed, so it is likely something ostest
-does that a small program does not.
+```
+vfork_test: Child 6 ran and exited before the parent resumed
+fork_test: Child running independently (child)
+fork_test: Parent and child had independent memory
+ostest_main: Exiting with status 0
+```
 
-Then, unchanged from before:
+The page pool returns to its 720896-byte baseline after the run.
+
+**`vfork()` hung** because `xtensa_fork()` relocated the child's stack.  Both
+primitives put the child on the parent's stack at the parent's addresses, but
+the borrowing child's *top* is the parent's stack pointer less the reserve,
+so `newsp = newtop - stackutil` came out below `usp` and the copy ran. It was
+also short at exactly the wrong end: `SPILL_ALL_WINDOWS` puts a frame's own
+`a0`-`a3` in the 16 bytes *below* its stack pointer, so `[usp, top)` does not
+contain the base save area the child's first `retw` reads. The child resumed
+into uninitialised memory. `newsp` is now simply `usp`, which is what
+`arm_fork.c` has always done for a borrowing child, and the relocating branch
+is gone — the assertion in its place says what this architecture can support.
+It was our defect, not the semantics branch's.
+
+**`fork_test`'s `ENOMEM` was page-pool exhaustion after all.** It had been
+ruled out on the strength of `alloc_region()`'s `berr()` never appearing, and
+that `berr()` was compiled out: `CONFIG_DEBUG_BINFMT` was set,
+`CONFIG_DEBUG_BINFMT_ERROR` was not. With it on:
+
+```
+alloc_region: ERROR: page pool exhausted at page 4 of 16
+```
+
+An eager `fork()` costs a full copy of the parent's image, `ostest` runs as
+*two* processes (`ostest_main` and the `user_main` it spawns), and at
+`CONFIG_ARCH_HEAP_NPAGES=16` a process is 19 of the pool's 64 pages. With
+`init` resident that is 57 before `fork_test` starts. The heap is now 8 pages
+— 512 KB against a 9 KB high-water mark — which puts a process at 11 and
+leaves the child room. The pool cannot usefully grow instead: it is carved
+from the same 8 MB of PSRAM the kernel's own window maps, and the most it
+could gain is 11 pages, one short of a 1 MB-heap child.
+
+Read the second one as a warning about the first kind of evidence: **the
+absence of an error message is not evidence, unless the message was compiled
+in.**
+
+Still open:
 
 - **Failure injection on `fork()`.** `up_addrenv_fork()` failing part-way
   calls `up_addrenv_destroy()` while the child's environment is current; that
@@ -796,6 +841,19 @@ carried on the semantics branch.
   `sdkconfig.h`. Any flash/PSRAM/boot-format config change needs `make clean`
   or the build silently keeps the old settings. Symptom: an image byte-identical
   to the previous one.
+- **An error path that is compiled out cannot report.** `CONFIG_DEBUG_BINFMT`
+  being set does not turn on `berr()` — `CONFIG_DEBUG_BINFMT_ERROR` is a
+  separate symbol and was off, so `alloc_region()`'s pool-exhaustion message
+  was never emitted and pool exhaustion was wrongly ruled out for a day.
+  `kernel_oct` now enables the error output for binfmt and sched. Before
+  concluding "that path never ran", check that its message exists in the
+  binary.
+- **A stale `romfs_stub.o` outranks the real ROMFS.** Both define
+  `romfs_img`, and the placeholder is the earlier member of `libboard.a`, so
+  a kernel built once before the image was generated links the placeholder
+  and boots to "Boot ROMFS image is empty". Fixed by making the placeholder
+  depend on the image; verify by the linked symbol's *size*, never its
+  presence.
 - **`zsh` does not word-split unquoted variables.** A `for` loop over
   `kconfig-tweak` argument strings applies nothing and reports success.
 - **`CONFIG_ARCH_KERNEL_STACK` defaults to `CONFIG_LIBC_EXECFUNCS`**, so it
