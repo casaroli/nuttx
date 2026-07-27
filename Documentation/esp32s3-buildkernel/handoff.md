@@ -861,11 +861,23 @@ Still open:
   path has still never executed. Also `fork()` from a pthread, `fork()` then
   `exec()` in the child, nested fork, and repeated fork/exit against the
   `free` baseline.
-- **`esp32s3-devkit:knsh` builds `up_vfork()`/`up_task_fork()` and has never
-  run them.** A protected build has a privilege transition the flat build
-  does not, and it is the one mode of the four that no hardware run covers.
-  It needs its own flashing recipe (separate user blob), which is the only
-  reason it has not been done.
+- **`esp32s3-devkit:knsh_oct` needs its own bootloader, and that is now
+  built.** `BUILD_PROTECTED` here requires the legacy IDF image format --
+  `ESP32S3_KERNEL_IMAGE_SIZE`/`_RAM_SIZE`/`_OFFSET` all depend on it -- so it
+  boots through a second-stage bootloader rather than the simple-boot path
+  the other three configurations use, and that bootloader has to match the
+  module's octal flash. Upstream could not build one: `Bootloader.mk`
+  translated only `FLASH_MODE_{DIO,DOUT,QIO,QOUT}`. A quad bootloader loads
+  the app and leaves the MSPI in quad mode, and NuttX's octal bring-up then
+  spins in ROM inside `esp_rom_opiflash_cache_mode_config()` -- no output, no
+  crash, found over JTAG. `elf_oct` hangs the same way when rebuilt in the
+  legacy format, so it is the bootloader and not `BUILD_PROTECTED`.
+
+  The octal case is now in `Bootloader.mk`, the built binaries and the recipe
+  are in `<forkws>/run/bootloader/`, and `run/xtensa.sh flash` writes all four
+  images. The Python pinning that recipe needs is the fiddly part and is
+  written down there.
+
 - **Upstreaming**, in the six series set out below. Group 1 is unaffected by
   any of the above and could go out at any time. The Xtensa fork/vfork/
   task_fork work is a seventh series, and the `ARCH_VFORK_STACK_BORROW`
