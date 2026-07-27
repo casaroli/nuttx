@@ -20,10 +20,15 @@ It supports creations of virtual machines in Linux systems.
 It is usually coupled with Qemu as its I/O supporting layer.
 
 The qemu can be build from source or downloaded from distro repositories.
-However, a modern CPU and KVM support are mandatory because the X2APIC is not
-available in pure emulator mode.
-This mean using this build with qemu in windows or old x86 machine can be
-frustrating. In such case, looks the next section and use bochs emulator instead.
+
+KVM is strongly preferred, because full-system emulation of x86_64 costs
+roughly an order of magnitude in speed.  It is **not** required, however:
+QEMU's own emulation backend (TCG) can run these configurations, provided
+``-cpu max`` is used and the configuration is adjusted for the features TCG
+does not implement.  See `Running QEMU without KVM (TCG)`_ below.  That is the
+route to take on a Windows host, on a CI runner with no ``/dev/kvm``, or on a
+non-x86 host such as an Apple Silicon Mac, where no hypervisor for x86 guests
+exists at all.
 
 Running QEMU
 ------------
@@ -54,6 +59,138 @@ functions.  Additionally it will show detailed information about the enumeration
 
 If you want to boot using UEFI and TianoCore you will need to add a flag like this to
 point at OVMF ``--bios /usr/share/edk2/ovmf/OVMF_CODE.fd``
+
+Running QEMU without KVM (TCG)
+------------------------------
+
+Without ``-enable-kvm``, QEMU falls back to TCG, its portable emulation
+backend.  The stock configurations do not boot that way, and the failure is
+silent, so the two adjustments below are worth making before concluding
+anything is broken.
+
+Use ``-cpu max``
+^^^^^^^^^^^^^^^^
+
+``-cpu host`` requires KVM or HVF and is rejected outright without one.  The
+replacement is ``-cpu max``, which advertises everything the TCG backend can
+emulate — including **X2APIC**, which ``x86_64_check_and_enable_capability()``
+requires unconditionally.
+
+Do not fall back to the default ``qemu64`` model.  It does not advertise
+X2APIC, and these configurations additionally set
+``CONFIG_ARCH_X86_64_HAVE_XSAVE`` and ``CONFIG_ARCH_INTEL64_HAVE_RDRAND``;
+adding those three by hand (``-cpu qemu64,+x2apic,+xsave,+rdrand``) is still
+not sufficient, because an XSAVE state-area size check and
+``__enable_sse_avx()`` follow.  ``-cpu max`` is the supported choice.
+
+Turn off PCID and the TSC deadline timer
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+TCG implements neither, even under ``-cpu max``, and both are on by default in
+the ``qemu-intel64`` configurations.  Each one independently prevents the
+board from booting.  Move the system clock onto the HPET instead, which QEMU
+does emulate at the usual ``0xfed00000`` (NuttX reads the period from the
+capability register rather than assuming one)::
+
+    kconfig-tweak --file .config --disable CONFIG_ARCH_INTEL64_HAVE_PCID
+    kconfig-tweak --file .config --disable CONFIG_ARCH_INTEL64_TSC_DEADLINE
+    kconfig-tweak --file .config --enable  CONFIG_ARCH_INTEL64_HPET_ALARM
+    make olddefconfig
+
+The machine must then be started with ``hpet=on``, which is not the default on
+all machine types::
+
+    qemu-system-x86_64 -machine pc,hpet=on -cpu max -m 2G \
+      -kernel nuttx -nographic -no-reboot -net none
+
+How this fails when you get it wrong
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``x86_64_check_and_enable_capability()`` requires every feature the
+configuration asks for, and otherwise takes a ``cli; hlt`` error path.  There
+is no message.  The console stops dead after SeaBIOS's ``Booting from ROM..``
+and stays empty, which is indistinguishable from a kernel hang.
+
+A missing capability is by far the most likely cause, but note that the same
+empty console results from any ``PANIC()`` raised before
+``x86_64_cpu_priv_set(0)``, near the end of ``__nxstart()``: ``_assert()``
+reads ``up_interrupt_context()``, which is ``movb %gs:6``, and the GS base is
+still zero, so the fault double- and triple-faults the CPU.  If the capability
+changes above do not help, attach a debugger and read ``RIP`` rather than
+reading the console — see `Debugging with gdb`_.
+
+Speed
+^^^^^
+
+Full-system emulation is roughly 12x native on the same host, and there is no
+way around that: TCG has to emulate the MMU in software.  What is worth
+knowing is which knobs actually move, measured on an Apple M4 Pro with QEMU
+11.0.3:
+
+* **The CPU model is the only QEMU flag that matters much.** ``-cpu max`` is
+  required here anyway, and it is also the fastest choice, because it
+  advertises ``erms``/``fsrm`` and QEMU implements ``rep movsb`` as a single
+  bulk helper rather than instruction by instruction.
+* **Boot the kernel directly.** ``-kernel`` skips firmware and bootloader.
+  Boot to the NSH prompt takes about 0.1 s that way; booting a disk image is
+  tens of seconds.
+* **Do not pass a named Intel model** (``Nehalem``, ``Haswell``,
+  ``Skylake-Client``, ``core2duo``) to a *Linux* guest on the same host: Linux
+  then sees a Meltdown-affected CPU and enables KPTI, which costs 6.7x under
+  TCG's software MMU.  NuttX does not use KPTI and is unaffected, but the trap
+  is easy to hit while preparing a comparison.
+* **Measured to be noise for execution speed, and not worth setting:**
+  ``tb-size``, ``split-wx``, ``thread=multi``, and RAM size.  The machine type
+  changes only device bring-up, which is a fraction of a second either way;
+  ``microvm`` is cheaper still but has no HPET, so it is not usable here.
+
+For reference, a full ``ostest`` under TCG takes about 73 s for
+``knsh_romfs`` and about 156 s for the flat ``nsh`` configuration.  If a run
+appears to take an hour, suspect the harness rather than the emulator — see
+the next section.
+
+Driving the console from a script
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Two things catch out automated runs:
+
+* **QEMU does not exit when the test finishes.**  NSH simply returns to its
+  prompt.  A harness built from fixed ``sleep`` calls therefore costs whatever
+  the longest sleep is, on every run, no matter how quickly the guest
+  finished.  Wait for a marker in the output (``ostest`` ends with
+  ``Exiting with status``) and stop the machine then.
+
+* **Console input cannot be written in one burst.**  The 16550 receive FIFO is
+  16 bytes and under TCG the guest cannot drain it fast enough, so a command
+  written all at once is silently truncated after 15 characters and NSH never
+  sees the newline.  Send the line a character at a time.  Pacing on the
+  guest's echo is both exact and quick — NSH redraws the whole input line on
+  every keypress, so the echoed line prefix is the acknowledgement to wait
+  for.  A fixed delay per character works too but is far slower for no gain.
+
+Debugging with gdb
+^^^^^^^^^^^^^^^^^^
+
+QEMU's gdbstub works the same under TCG as under KVM, and is the only way to
+diagnose the silent-hang cases above.  Start with ``-s -S`` (listen on
+``:1234``, halt at reset) and attach.  On an x86_64 host the system ``gdb``
+will do; on any other host you need a cross debugger, such as Homebrew's
+``x86_64-elf-gdb``::
+
+    qemu-system-x86_64 -machine pc,hpet=on -cpu max -m 2G \
+      -kernel nuttx -nographic -no-reboot -net none -s -S
+
+    x86_64-elf-gdb -ex 'target remote :1234' nuttx
+
+Two things to avoid:
+
+* **Do not** ``set architecture`` **before connecting.**  Forcing one makes
+  gdb reject the stub's target description, and the session fails with the
+  misleading ``Remote 'g' packet reply is too long``.  Connect first and let
+  gdb take the architecture the stub advertises.
+* **Use** ``hbreak``\ **, not** ``break``\ **, for early-boot addresses.**  A
+  software breakpoint writes ``0xCC`` into memory that early boot may still
+  overwrite, and it then silently never fires.
 
 Bochs
 =====
@@ -101,8 +238,9 @@ This port can work on real x86-64 machine with a proper CPU.
 The mandatory CPU features are:
 
 * TSC DEADLINE or APIC timer or HPET
-* PCID
-* X2APIC
+* PCID, if ``CONFIG_ARCH_INTEL64_HAVE_PCID`` is set — it is on by default in
+  the ``qemu-intel64`` configurations, but the port runs without it
+* X2APIC — this one is required unconditionally
 * legacy serial port support or PCI serial card (AX99100 only supported now)
 
 WARNING: IF you use TSC DEADLINE, make sure that your CPU's TSC DEADLINE timer
