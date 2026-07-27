@@ -78,4 +78,23 @@ void picocalc_pin_park(void);
 int rp23xx_dev_gpio_init(void);
 #endif
 
+#ifdef CONFIG_PICOCALC_KBD
+/****************************************************************************
+ * Name: picocalc_kbd_initialize
+ *
+ * Description:
+ *   Register the STM32F103 keyboard co-processor as /dev/kbdN and start
+ *   polling it.  See src/picocalc_kbd.c.
+ *
+ * Input Parameters:
+ *   devno - The device number, used to build the device path.
+ *
+ * Returned Value:
+ *   Zero on success; a negated errno value on failure.
+ *
+ ****************************************************************************/
+
+int picocalc_kbd_initialize(int devno);
+#endif
+
 #endif /* __BOARDS_ARM_RP23XX_CLOCKWORKPI_PICOCALC_SRC_RP23XX_PICO_H */

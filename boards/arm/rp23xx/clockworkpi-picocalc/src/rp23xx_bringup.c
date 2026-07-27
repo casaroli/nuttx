@@ -151,6 +151,19 @@ int rp23xx_bringup(void)
     }
 #endif
 
+#ifdef CONFIG_PICOCALC_KBD
+  /* Register the keyboard co-processor as /dev/kbd0.  This is deliberately
+   * after the panel: the co-processor also owns the LCD backlight, so a
+   * failure here is worth seeing on a display that is already alive.
+   */
+
+  ret = picocalc_kbd_initialize(0);
+  if (ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: picocalc_kbd_initialize() failed: %d\n", ret);
+    }
+#endif
+
 #ifdef CONFIG_VIDEO_FB
   /* Wrap the panel in the framebuffer layer as well, so that the stock
    * framebuffer applications can drive it.  With CONFIG_LCD_FRAMEBUFFER this

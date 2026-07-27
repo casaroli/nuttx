@@ -20,6 +20,37 @@ menuconfig RP23XX_INFINEON_CYW43439
 	depends on IEEE80211_INFINEON_CYW43439
 	default y
 
+menuconfig PICOCALC_KBD
+	bool "PicoCalc keyboard co-processor"
+	depends on RP23XX_I2C1
+	select INPUT
+	select INPUT_KEYBOARD
+	select SCHED_LPWORK
+	default n
+	---help---
+		Register the mainboard's STM32F103 keyboard co-processor as
+		/dev/kbd0, using the legacy 0x1F register protocol.
+
+		The co-processor has no interrupt line to the Pico, so the driver
+		polls it.  That is not merely a convenience: the co-processor
+		reinitialises its own I2C slave if neither of its callbacks has run
+		for 2500ms, so something has to talk to it regularly regardless.
+
+		Printable ASCII passes through unchanged and the arrow keys are
+		reported as 0x80-0x83, which is the convention
+		apps/examples/lvglterm expects.
+
+if PICOCALC_KBD
+
+config PICOCALC_KBD_BUFFER_SIZE
+	int "Keyboard buffer size (events)"
+	default 8
+	---help---
+		Number of events the keyboard upper half buffers per open file.
+		The co-processor's own FIFO is 31 deep.
+
+endif
+
 endif
 
 if RP23XX_INFINEON_CYW43439

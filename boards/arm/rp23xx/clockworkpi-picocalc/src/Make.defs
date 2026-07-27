@@ -28,6 +28,10 @@ ifeq ($(CONFIG_LCD_ST7365P),y)
 CSRCS += picocalc_lcd.c
 endif
 
+ifeq ($(CONFIG_PICOCALC_KBD),y)
+CSRCS += picocalc_kbd.c
+endif
+
 ifeq ($(CONFIG_DEV_GPIO),y)
 CSRCS += rp23xx_gpio.c
 endif
