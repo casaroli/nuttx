@@ -806,6 +806,54 @@ Read the second one as a warning about the first kind of evidence: **the
 absence of an error message is not evidence, unless the message was compiled
 in.**
 
+### 7.6 All three primitives, in every build
+
+Two things this port had asserted about Xtensa were false, and both were
+load-bearing — they are why `vfork()` was gated on `CONFIG_LIB_SYSCALL` and
+why `task_fork()` was not offered at all.
+
+**"A flat build has no way to snapshot the caller."**  It has.
+`SYS_save_context` is one of four internal system calls defined *outside*
+`CONFIG_LIB_SYSCALL` in `arch/xtensa/include/syscall.h` and dispatched
+unconditionally by `xtensa_swint()`: it runs `SPILL_ALL_WINDOWS` and copies
+the whole exception frame out. That is exactly what `arm/fork.S` exists to
+do, and it is the path every voluntary context switch here already takes.
+
+The one subtlety is *where* the syscall is issued. The snapshot records the
+stack pointer of whatever frame issues it, and the child is built to resume
+on the stack from that point up — so that frame has to outlive the fork.
+Issue it inside `up_saveusercontext()` and the recorded frame is that
+function's, which dies on return and is then reused by `nxtask_setup_fork()`
+and everything after it; the child resumes on overwritten memory. It is
+issued directly in `xtensa_fork_direct()` for that reason.
+
+**"A windowed ABI cannot relocate a stack."**  It can, if the frame chain is
+corrected with it. Each frame's base save area holds the caller's *absolute*
+`a1`, one word into `[sp - 16)`, so `xtensa_fork_rebase()` walks the chain
+and adds the relocation offset to each link — the same walk `x86_64_fork.c`
+does over the saved frame-pointer chain. What stays uncorrected is data
+rather than links (spilled `a4`-`a15` that happen to hold stack addresses),
+which is the residue `arm_fork.c` calls a "feeble effort" and which
+`task_fork()`'s contract already disclaims.
+
+So: `fork()` inherits (kernel build only, it needs an address environment to
+duplicate), `vfork()` borrows where the parent has a kernel stack to be
+suspended on and relocates otherwise, `task_fork()` always relocates.
+Measured:
+
+```
+esp32s3-devkit:kernel_oct       esp32s3-devkit:elf_oct   (BUILD_FLAT)
+  task_fork_test: PASS            task_fork_test: PASS
+  vfork_test:     PASS            vfork_test:     PASS
+  fork_test:      PASS            fork_test:      absent by design
+  ostest status 0                 ostest status 0
+```
+
+That also fixed a live bug in `esp32s3-devkit:knsh`: it is `BUILD_PROTECTED`
+with `ARCH_KERNEL_STACK` unset, so its `vfork()` child borrowed a stack whose
+parent was suspended on frames just below the borrow point.
+`ARCH_VFORK_STACK_BORROW` now depends on `ARCH_KERNEL_STACK`, generically.
+
 Still open:
 
 - **Failure injection on `fork()`.** `up_addrenv_fork()` failing part-way
@@ -813,8 +861,16 @@ Still open:
   path has still never executed. Also `fork()` from a pthread, `fork()` then
   `exec()` in the child, nested fork, and repeated fork/exit against the
   `free` baseline.
+- **`esp32s3-devkit:knsh` builds `up_vfork()`/`up_task_fork()` and has never
+  run them.** A protected build has a privilege transition the flat build
+  does not, and it is the one mode of the four that no hardware run covers.
+  It needs its own flashing recipe (separate user blob), which is the only
+  reason it has not been done.
 - **Upstreaming**, in the six series set out below. Group 1 is unaffected by
-  any of the above and could go out at any time.
+  any of the above and could go out at any time. The Xtensa fork/vfork/
+  task_fork work is a seventh series, and the `ARCH_VFORK_STACK_BORROW`
+  dependency inside it belongs to the semantics branch rather than to this
+  port.
 - **Deliberately not next:** the DMA route for page copy and wipe (end of
   §7.2), and building anything on top of the port.
 
