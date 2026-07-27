@@ -32,6 +32,17 @@
 #define __ARCH_ARM_SRC_ARMV7_A_ARM_H
 
 /****************************************************************************
+ * Included Files
+ ****************************************************************************/
+
+#include <nuttx/config.h>
+
+#ifndef __ASSEMBLY__
+#  include <stdbool.h>
+#  include <stdint.h>
+#endif
+
+/****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
 
@@ -110,6 +121,26 @@ extern "C"
  ****************************************************************************/
 
 void arm_data_initialize(void);
+
+/****************************************************************************
+ * Name: arm_userfault_recover
+ *
+ * Description:
+ *   Handle a fault taken from user mode by terminating just the offending
+ *   task.  Called by the abort and undefined instruction handlers before
+ *   they give up and panic.  See arm_userfault.c.
+ *
+ * Input Parameters:
+ *   regs - The register save area built by the exception vector, rewritten
+ *     in place when the fault is recoverable.
+ *
+ * Returned Value:
+ *   true if the task was killed and the caller should return normally,
+ *   false if the caller must panic.
+ *
+ ****************************************************************************/
+
+bool arm_userfault_recover(uint32_t *regs);
 
 #undef EXTERN
 #ifdef __cplusplus

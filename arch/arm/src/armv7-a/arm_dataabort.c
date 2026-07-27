@@ -32,13 +32,13 @@
 #include <nuttx/debug.h>
 #include <nuttx/irq.h>
 
+#include "arm.h"
 #include "mmu.h"
 #include "sched/sched.h"
 #include "arm_internal.h"
 
 #ifdef CONFIG_LEGACY_PAGING
 #  include <nuttx/page.h>
-#  include "arm.h"
 #endif
 
 /****************************************************************************
@@ -147,8 +147,24 @@ uint32_t *arm_dataabort(uint32_t *regs, uint32_t dfar, uint32_t dfsr)
 segfault:
   _alert("Data abort. PC: %08" PRIx32 " DFAR: %08" PRIx32 " DFSR: %08"
          PRIx32 "\n", regs[REG_PC], dfar, dfsr);
-  PANIC_WITH_REGS("panic", regs);
-  return regs; /* To keep the compiler happy */
+
+  /* If user code faulted, kill only that task and let the rest of the
+   * system run on.  Otherwise there is nothing safe to kill.
+   */
+
+  if (!arm_userfault_recover(regs))
+    {
+      PANIC_WITH_REGS("panic", regs);
+    }
+
+  /* Restore the previous value of saveregs.  For the recovered task that is
+   * also what marks its register save area invalid again:  it is about to
+   * be running, in _exit().
+   */
+
+  up_set_interrupt_context(savestate);
+  tcb->xcp.regs = saveregs;
+  return regs;
 }
 
 #else /* CONFIG_LEGACY_PAGING */
@@ -169,13 +185,22 @@ uint32_t *arm_dataabort(uint32_t *regs, uint32_t dfar, uint32_t dfsr)
     {
       arm_dbgmonitor(0, (void *)dfar, regs);
     }
+  else if (arm_userfault_recover(regs))
+    {
+      /* User code faulted and only that task was killed.  It is about to be
+       * running again, in _exit(), so its register save area is no longer
+       * valid -- mark it as the interrupt and system call paths do.
+       */
+
+      tcb->xcp.regs = NULL;
+    }
   else
     {
       PANIC_WITH_REGS("panic", regs);
     }
 
   up_set_interrupt_context(false);
-  return regs; /* To keep the compiler happy */
+  return regs;
 }
 
 #endif /* CONFIG_LEGACY_PAGING */
