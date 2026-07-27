@@ -509,16 +509,28 @@ config ARCH_HAVE_VFORK
 config ARCH_VFORK_STACK_BORROW
 	bool
 	default n
-	depends on ARCH_HAVE_VFORK
+	depends on ARCH_HAVE_VFORK && ARCH_KERNEL_STACK
 	---help---
 		The vfork() child borrows the parent's stack outright rather than
-		running on a relocated copy of it.  This is required on architectures
-		whose stack frames contain absolute stack addresses -- the windowed
-		ABI of Xtensa, whose register-window save areas hold the spilled
-		stack pointer of each frame -- and is a pure economy elsewhere.
+		running on a relocated copy of it.  This is the natural thing to do
+		on architectures whose stack frames contain absolute stack addresses
+		-- the windowed ABI of Xtensa, whose register-window save areas hold
+		the spilled stack pointer of each frame -- since it is the case that
+		needs no relocation at all, and it is a pure economy elsewhere.
 
-		It is safe because a vfork() parent is suspended for the whole
-		lifetime of the child.
+		It depends on ARCH_KERNEL_STACK, and that is a correctness
+		requirement rather than a convenience.  The child resumes at the
+		parent's own stack pointer and grows down from there, over whatever
+		lies below it.  What lies below it is the parent's continuation --
+		the rest of nxtask_setup_fork(), nxtask_start_vfork() and the block
+		it comes to rest in -- unless that continuation is on a stack of its
+		own.  ARCH_KERNEL_STACK is what puts it there:  without it "kernel
+		system calls will simply use the caller's user stack", and a child
+		that calls anything at all walks straight through the frames its
+		parent is suspended on.
+
+		ARCH_VFORK_STACK_RESERVE bounds the parent's frames; it cannot bound
+		the child's, so it is not an answer to this.
 
 config ARCH_VFORK_STACK_RESERVE
 	int "vfork() parent stack reserve"
