@@ -134,6 +134,22 @@ int arm_memfault(int irq, void *context, void *arg)
       return OK;
     }
 
+  /* If user code faulted, kill only that task and let the rest of the system
+   * run on.  Otherwise there is nothing safe to kill.
+   *
+   * Not when the MPU refused the stacking or unstacking of an exception
+   * frame, though:  that says the frame the recovery would have to rewrite
+   * is the very thing that could not be written, so none of it can be
+   * trusted.  MLSPERR is the same case for the lazy FP part of it.
+   */
+
+  if ((cfsr & (NVIC_CFAULTS_MSTKERR | NVIC_CFAULTS_MUNSTKERR |
+               NVIC_CFAULTS_MLSPERR)) == 0 &&
+      arm_userfault_recover(context))
+    {
+      return OK;
+    }
+
   up_irq_save();
   PANIC_WITH_REGS("panic", context);
   return OK; /* Won't get here */

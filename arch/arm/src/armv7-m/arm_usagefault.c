@@ -112,6 +112,23 @@ int arm_usagefault(int irq, void *context, void *arg)
       ufalert("\tDivide by zero\n");
     }
 
+  /* If user code faulted, kill only that task and let the rest of the system
+   * run on.  Otherwise there is nothing safe to kill.
+   *
+   * An undefined instruction, a bad execution state, a missing coprocessor,
+   * an unaligned access and a division by zero are all attributable to the
+   * instruction the frame points at, so they are recoverable.  The other two
+   * are not:  STKOF means the stack limit stopped the exception frame from
+   * being written, and INVPC comes from a malformed EXC_RETURN, which is a
+   * fault in an exception return rather than in thread mode.
+   */
+
+  if ((cfsr & (NVIC_CFAULTS_STKOF | NVIC_CFAULTS_INVPC)) == 0 &&
+      arm_userfault_recover(context))
+    {
+      return OK;
+    }
+
   up_irq_save();
   PANIC_WITH_REGS("panic", context);
   return OK;

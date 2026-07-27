@@ -104,6 +104,23 @@ int arm_busfault(int irq, void *context, void *arg)
       bfalert("\tFloating-point lazy state preservation error\n");
     }
 
+  /* If user code faulted, kill only that task and let the rest of the system
+   * run on.  Otherwise there is nothing safe to kill.
+   *
+   * Not for a fault taken while stacking or unstacking an exception frame:
+   * the frame the recovery would rewrite is the thing that could not be
+   * accessed, so none of it can be trusted.  Nor for an imprecise error,
+   * where the write that failed may have been issued by kernel code that has
+   * already retired and the running task is not necessarily to blame.
+   */
+
+  if ((cfsr & (NVIC_CFAULTS_STKERR | NVIC_CFAULTS_UNSTKERR |
+               NVIC_CFAULTS_LSPERR | NVIC_CFAULTS_IMPRECISERR)) == 0 &&
+      arm_userfault_recover(context))
+    {
+      return OK;
+    }
+
   up_irq_save();
   PANIC_WITH_REGS("panic", context);
   return OK;

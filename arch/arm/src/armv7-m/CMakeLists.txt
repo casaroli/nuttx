@@ -39,6 +39,7 @@ set(SRCS
     arm_tcbinfo.c
     arm_trigger_irq.c
     arm_usagefault.c
+    arm_userfault.c
     arm_dbgmonitor.c)
 
 if(CONFIG_ENABLE_ALL_SIGNALS)
