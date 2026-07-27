@@ -26,10 +26,6 @@ if(CONFIG_LCD_ST7365P)
   list(APPEND SRCS picocalc_lcd.c)
 endif()
 
-if(CONFIG_PICOCALC_KBD)
-  list(APPEND SRCS picocalc_kbd.c)
-endif()
-
 if(CONFIG_DEV_GPIO)
   list(APPEND SRCS rp23xx_gpio.c)
 endif()
