@@ -143,6 +143,22 @@ int arm_hardfault(int irq, void *context, void *arg)
     }
 #endif
 
+  /* If user code faulted, kill only that task and let the rest of the system
+   * run on.  Otherwise there is nothing safe to kill.  This is the path an
+   * MPU violation takes on a board that leaves the configurable fault
+   * handlers disabled, so that it escalates to here.
+   *
+   * A vector table read error is excluded:  it is a property of the vector
+   * table, not of whatever happened to be running.  So is a debug event,
+   * which belongs to the debugger.
+   */
+
+  if ((hfsr & (NVIC_HFAULTS_VECTTBL | NVIC_HFAULTS_DEBUGEVT)) == 0 &&
+      arm_userfault_recover(context))
+    {
+      return OK;
+    }
+
   up_irq_save();
   PANIC_WITH_REGS("panic", context);
   return OK;

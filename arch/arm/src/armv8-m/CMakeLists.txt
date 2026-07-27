@@ -40,7 +40,8 @@ set(SRCS
     arm_systemreset.c
     arm_tcbinfo.c
     arm_trigger_irq.c
-    arm_usagefault.c)
+    arm_usagefault.c
+    arm_userfault.c)
 
 if(CONFIG_ENABLE_ALL_SIGNALS)
   list(APPEND SRCS arm_schedulesigaction.c arm_sigdeliver.c)

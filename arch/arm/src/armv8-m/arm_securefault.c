@@ -124,6 +124,25 @@ int arm_securefault(int irq, void *context, void *arg)
 
   putreg32(0xff, SAU_SFSR);
 
+  /* If user code faulted, kill only that task and let the rest of the system
+   * run on.  Otherwise there is nothing safe to kill.
+   *
+   * Only the three reasons that are attributable to the instruction the
+   * frame points at:  a branch to a secure address, a call to something that
+   * is not a valid entry point, and an attribution unit violation.  The rest
+   * -- the integrity signature, exception return and lazy state errors --
+   * are all faults in the saved state itself, which is what the recovery
+   * would have to rewrite.
+   */
+
+  if ((sfsr & (SAU_SFSR_INVEP | SAU_SFSR_AUVIOL | SAU_SFSR_INVTRAN)) != 0 &&
+      (sfsr & (SAU_SFSR_INVIS | SAU_SFSR_INVER | SAU_SFSR_LSPERR |
+               SAU_SFSR_LSERR)) == 0 &&
+      arm_userfault_recover(context))
+    {
+      return OK;
+    }
+
   up_irq_save();
   PANIC_WITH_REGS("panic", context);
 

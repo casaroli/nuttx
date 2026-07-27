@@ -33,6 +33,7 @@ CMN_CSRCS += arm_securefault.c arm_secure_irq.c
 CMN_CSRCS += arm_svcall.c
 CMN_CSRCS += arm_systemreset.c arm_tcbinfo.c
 CMN_CSRCS += arm_trigger_irq.c arm_usagefault.c arm_dbgmonitor.c
+CMN_CSRCS += arm_userfault.c
 
 ifeq ($(CONFIG_ENABLE_ALL_SIGNALS),y)
 CMN_CSRCS += arm_schedulesigaction.c arm_sigdeliver.c
