@@ -827,6 +827,105 @@ config LCD_ST7789_DATA_ENDIAN_LITTLE
 
 endif # LCD_ST7789
 
+config LCD_ST7365P
+	bool "Sitronix ST7365P TFT Controller"
+	default n
+	depends on SPI && SPI_CMDDATA
+	---help---
+		Enable support for the Sitronix ST7365P, as fitted to the
+		ClockworkPi PicoCalc.
+
+		The part is close enough to an ILI9488 that ILI9488 initialisation
+		sequences drive it, but unlike a true ILI9488 it accepts a 16 bit
+		MCU pixel format over SPI, which halves the pixel traffic.
+
+if LCD_ST7365P
+
+config LCD_ST7365P_XRES
+	int "ST7365P X resolution"
+	default 320
+	---help---
+		Visible horizontal resolution of the panel, in pixels.
+
+config LCD_ST7365P_YRES
+	int "ST7365P Y resolution"
+	default 320
+	---help---
+		Visible vertical resolution of the panel, in pixels.
+
+config LCD_ST7365P_GRAM_YRES
+	int "ST7365P GRAM row count"
+	default 480
+	---help---
+		Number of rows the controller drives, which may exceed the number
+		the panel actually shows.  On the PicoCalc the controller has 480
+		rows behind a 320 row panel.
+
+		The surplus is what hardware scrolling moves through, and the
+		driver clears all of it at startup so that scrolled-in rows do not
+		show random power-on contents.
+
+choice
+	prompt "ST7365P initialisation sequence"
+	default LCD_ST7365P_INIT_ST7796
+
+config LCD_ST7365P_INIT_ST7796
+	bool "ST7796 style, with the 0xF0 command set unlock"
+	---help---
+		The sequence used by PicoMite, FUZIX and the PicoCalc NES port.
+		Structurally identical to the one in drivers/lcd/st7796.c, which
+		is the same silicon family, and the one demonstrated to work with
+		the 16 bit pixel format.  Start here.
+
+config LCD_ST7365P_INIT_ILI9488
+	bool "Classic ILI9488 vendor sequence"
+	---help---
+		The sequence used by the ClockworkPi lcdspi driver: no command set
+		unlock, different gamma and power values.  Both sequences are in
+		production use on this hardware.  Try this one if the display is
+		blank, tinted or shows banding with the default.
+
+endchoice
+
+config LCD_ST7365P_SPIMODE
+	int "ST7365P SPI mode"
+	default 0
+	---help---
+		Controls the SPI mode.  Every known implementation of this panel
+		uses mode 0.
+
+config LCD_ST7365P_FREQUENCY
+	int "ST7365P SPI frequency for writes"
+	default 25000000
+	---help---
+		SPI frequency used to write to the panel.
+
+config LCD_ST7365P_READ_FREQUENCY
+	int "ST7365P SPI frequency for reads"
+	default 6000000
+	---help---
+		SPI frequency used to read back from the panel.  The panel cannot
+		source pixel data anywhere near as fast as it accepts it, so reads
+		run much slower than writes.
+
+config LCD_ST7365P_INVCOLOR
+	bool "ST7365P invert colours"
+	default y
+	---help---
+		Send display inversion on at startup.  Required on the PicoCalc,
+		and sent by every known implementation for this panel.
+
+config LCD_ST7365P_HWSCROLL
+	bool "ST7365P hardware vertical scrolling"
+	default y
+	---help---
+		Use the controller's vertical scrolling registers, exploiting the
+		GRAM rows the panel does not show, so that scrolling costs a
+		register write rather than a full repaint.  The offset is applied
+		transparently, so callers keep addressing visible rows.
+
+endif # LCD_ST7365P
+
 config LCD_ST7796
 	bool "ST7796 LCD Display"
 	default n
