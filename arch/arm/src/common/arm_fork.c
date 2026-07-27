@@ -219,6 +219,21 @@ static pid_t arm_fork_direct(struct tcb_s *parent,
 
           child->xcp.syscall[index].excreturn =
             parent->xcp.syscall[index].excreturn;
+
+          /* CONTROL has to be carried over as well, and forgetting it does
+           * not fail loudly.  SYS_syscall_return restores CONTROL from
+           * ctrlreturn; the child's TCB came from kmm_zalloc(), so leaving
+           * it unset returns the child to user code with CONTROL == 0 --
+           * that is nPRIV clear, i.e. *privileged*.  The child then runs out
+           * its life with the MPU restrictions the parent is under silently
+           * lifted.  Nothing faults, because privileged code can do
+           * everything unprivileged code can, which is exactly why ostest
+           * cannot see it:  measured on an RP2350 in BUILD_PROTECTED, the
+           * parent's ctrlreturn was 0x1 and the child's 0x0.
+           */
+
+          child->xcp.syscall[index].ctrlreturn =
+            parent->xcp.syscall[index].ctrlreturn;
 #else
 #  error Missing logic
 #endif
