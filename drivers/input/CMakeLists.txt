@@ -130,6 +130,10 @@ if(CONFIG_INPUT)
     list(APPEND SRCS nunchuck.c)
   endif()
 
+  if(CONFIG_INPUT_PICOCALC_KBD)
+    list(APPEND SRCS picocalc_kbd.c)
+  endif()
+
   if(CONFIG_INPUT_SPQ10KBD)
     list(APPEND SRCS spq10kbd.c)
   endif()

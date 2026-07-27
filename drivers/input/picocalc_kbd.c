@@ -1,5 +1,5 @@
 /****************************************************************************
- * boards/arm/rp23xx/clockworkpi-picocalc/src/picocalc_kbd.c
+ * drivers/input/picocalc_kbd.c
  *
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements.  See the NOTICE file distributed with
@@ -37,11 +37,7 @@
 #include <nuttx/kmalloc.h>
 #include <nuttx/i2c/i2c_master.h>
 #include <nuttx/input/keyboard.h>
-
-#include <arch/board/board.h>
-
-#include "rp23xx_i2c.h"
-#include "rp23xx_pico.h"
+#include <nuttx/input/picocalc_kbd.h>
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -66,13 +62,6 @@
  */
 
 #define PICOCALC_KBD_MAX_DRAIN    8
-
-/* The stock BIOS v1.6 driver clocks this bus at 10kHz, but that is a
- * workaround for the Arduino firmware's slave implementation.  The Rust
- * co-processor firmware has been verified at 400kHz.
- */
-
-#define PICOCALC_KBD_FREQUENCY    400000
 
 /* Legacy (0x1F) register ids.  Only these two are ever touched: REG_ID_RST
  * and REG_ID_OFF reboot and shut down the co-processor respectively, so this
@@ -123,14 +112,10 @@ struct picocalc_kbd_dev_s
   struct keyboard_lowerhalf_s lower;
   FAR struct i2c_master_s *i2c;
   struct work_s work;
+  uint32_t frequency;
+  uint8_t addr;
   bool ctrl;
 };
-
-/****************************************************************************
- * Private Data
- ****************************************************************************/
-
-static struct picocalc_kbd_dev_s g_picocalc_kbd;
 
 /****************************************************************************
  * Private Functions
@@ -156,8 +141,8 @@ static int picocalc_kbd_read(FAR struct picocalc_kbd_dev_s *priv,
   struct i2c_msg_s msg;
   int ret;
 
-  msg.frequency = PICOCALC_KBD_FREQUENCY;
-  msg.addr      = PICOCALC_KBD_I2C_ADDR;
+  msg.frequency = priv->frequency;
+  msg.addr      = priv->addr;
   msg.flags     = 0;
   msg.buffer    = &reg;
   msg.length    = 1;
@@ -168,8 +153,8 @@ static int picocalc_kbd_read(FAR struct picocalc_kbd_dev_s *priv,
       return ret;
     }
 
-  msg.frequency = PICOCALC_KBD_FREQUENCY;
-  msg.addr      = PICOCALC_KBD_I2C_ADDR;
+  msg.frequency = priv->frequency;
+  msg.addr      = priv->addr;
   msg.flags     = I2C_M_READ;
   msg.buffer    = reply;
   msg.length    = 2;
@@ -334,41 +319,40 @@ static void picocalc_kbd_worker(FAR void *arg)
  ****************************************************************************/
 
 /****************************************************************************
- * Name: picocalc_kbd_initialize
+ * Name: picocalc_kbd_register
  *
  * Description:
- *   Register the keyboard co-processor as /dev/kbdN and start polling it.
- *
- * Input Parameters:
- *   devno - The device number, used to build the device path.
- *
- * Returned Value:
- *   Zero on success; a negated errno value on failure.
+ *   Register the keyboard co-processor and start polling it.  See
+ *   include/nuttx/input/picocalc_kbd.h.
  *
  ****************************************************************************/
 
-int picocalc_kbd_initialize(int devno)
+int picocalc_kbd_register(FAR const char *devpath,
+                          FAR struct i2c_master_s *i2c,
+                          uint8_t addr, uint32_t frequency)
 {
-  FAR struct picocalc_kbd_dev_s *priv = &g_picocalc_kbd;
-  char devpath[16];
+  FAR struct picocalc_kbd_dev_s *priv;
   int ret;
 
-  memset(priv, 0, sizeof(*priv));
+  DEBUGASSERT(devpath != NULL && i2c != NULL);
 
-  priv->i2c = rp23xx_i2cbus_initialize(1);
-  if (priv->i2c == NULL)
+  priv = kmm_zalloc(sizeof(struct picocalc_kbd_dev_s));
+  if (priv == NULL)
     {
-      ierr("ERROR: Failed to initialize I2C1 for the keyboard\n");
-      return -ENODEV;
+      ierr("ERROR: Failed to allocate the keyboard state\n");
+      return -ENOMEM;
     }
 
-  snprintf(devpath, sizeof(devpath), "/dev/kbd%d", devno);
+  priv->i2c       = i2c;
+  priv->addr      = addr;
+  priv->frequency = frequency;
 
   ret = keyboard_register(&priv->lower, devpath,
-                          CONFIG_PICOCALC_KBD_BUFFER_SIZE);
+                          CONFIG_INPUT_PICOCALC_KBD_BUFFER_SIZE);
   if (ret < 0)
     {
       ierr("ERROR: keyboard_register(%s) failed: %d\n", devpath, ret);
+      kmm_free(priv);
       return ret;
     }
 
@@ -378,6 +362,7 @@ int picocalc_kbd_initialize(int devno)
     {
       ierr("ERROR: Failed to start the keyboard poll: %d\n", ret);
       keyboard_unregister(&priv->lower, devpath);
+      kmm_free(priv);
       return ret;
     }
 

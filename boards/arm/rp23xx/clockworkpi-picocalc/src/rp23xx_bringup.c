@@ -55,6 +55,11 @@
 #  include "rp23xx_cyw43439.h"
 #endif
 
+#ifdef CONFIG_INPUT_PICOCALC_KBD
+#  include <nuttx/input/picocalc_kbd.h>
+#  include "rp23xx_i2c.h"
+#endif
+
 /****************************************************************************
  * Public Data
  ****************************************************************************/
@@ -151,16 +156,33 @@ int rp23xx_bringup(void)
     }
 #endif
 
-#ifdef CONFIG_PICOCALC_KBD
+#ifdef CONFIG_INPUT_PICOCALC_KBD
   /* Register the keyboard co-processor as /dev/kbd0.  This is deliberately
    * after the panel: the co-processor also owns the LCD backlight, so a
    * failure here is worth seeing on a display that is already alive.
+   *
+   * The stock BIOS v1.6 driver clocks this bus at 10kHz, but that is a
+   * workaround for the Arduino firmware's slave implementation.  The Rust
+   * co-processor firmware has been verified at 400kHz.
    */
 
-  ret = picocalc_kbd_initialize(0);
-  if (ret < 0)
     {
-      syslog(LOG_ERR, "ERROR: picocalc_kbd_initialize() failed: %d\n", ret);
+      FAR struct i2c_master_s *i2c = rp23xx_i2cbus_initialize(1);
+
+      if (i2c == NULL)
+        {
+          syslog(LOG_ERR, "ERROR: Failed to initialize I2C1\n");
+        }
+      else
+        {
+          ret = picocalc_kbd_register("/dev/kbd0", i2c,
+                                      PICOCALC_KBD_I2C_ADDR, 400000);
+          if (ret < 0)
+            {
+              syslog(LOG_ERR,
+                     "ERROR: picocalc_kbd_register() failed: %d\n", ret);
+            }
+        }
     }
 #endif
 

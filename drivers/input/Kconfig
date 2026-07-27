@@ -717,6 +717,38 @@ config NUNCHUCK_NPOLLWAITERS
 
 endif # INPUT_NUNCHUCK
 
+config INPUT_PICOCALC_KBD
+	bool "ClockworkPi PicoCalc keyboard co-processor"
+	default n
+	select I2C
+	select INPUT_KEYBOARD
+	select SCHED_LPWORK
+	---help---
+		Enable support for the ClockworkPi PicoCalc's STM32F103 keyboard
+		co-processor, using the legacy register protocol that the stock
+		BIOS v1.6 speaks.  It is exposed through the INPUT_KEYBOARD upper
+		half, normally as /dev/kbd0.
+
+		The co-processor has no interrupt line, so the driver polls it.
+		That is not merely a convenience: it re-initialises its own I2C
+		slave if neither of its callbacks has run for 2500ms, so a host
+		that goes quiet gets a link that resets underneath it.
+
+		Printable ASCII passes through unchanged and the arrow keys are
+		reported as 0x80-0x83, which is the convention
+		apps/examples/lvglterm expects.
+
+if INPUT_PICOCALC_KBD
+
+config INPUT_PICOCALC_KBD_BUFFER_SIZE
+	int "Keyboard buffer size (events)"
+	default 8
+	---help---
+		Number of events the keyboard upper half buffers per open file.
+		The co-processor's own FIFO is 31 deep.
+
+endif # INPUT_PICOCALC_KBD
+
 config INPUT_SPQ10KBD
 	bool "Solder Party Q10 BlackBerry Keyboard"
 	default n
