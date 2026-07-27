@@ -82,7 +82,9 @@ if(CONFIG_SCHED_BACKTRACE)
   list(APPEND SRCS sim_backtrace.c)
 endif()
 
-if(CONFIG_ARCH_HAVE_FORK)
+if(CONFIG_ARCH_HAVE_TASK_FORK
+   OR CONFIG_ARCH_HAVE_VFORK
+   OR CONFIG_ARCH_HAVE_FORK)
   list(APPEND SRCS sim_fork.c)
 endif()
 

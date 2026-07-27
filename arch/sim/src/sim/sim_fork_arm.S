@@ -43,7 +43,19 @@
  ************************************************************************************/
 
 /************************************************************************************
- * Name: up_fork
+ * Name: up_task_fork, up_vfork, up_fork
+ *
+ * Description:
+ *   These are the architecture-specific entry points of NuttX's three
+ *   cloning primitives; see include/nuttx/fork.h for what the three mean.
+ *   They are identical apart from the C worker each calls, which is how the
+ *   primitives are distinguished.
+ *
+ *   On the simulator the caller's context is captured with setjmp() rather
+ *   than by hand, and the child re-enters through longjmp() -- which is why
+ *   each entry point tests setjmp()'s return value to tell which of the two
+ *   returns it is on.
+ *
  *
  * Description:
  *   The up_fork() function is the base of fork() function that provided in
@@ -86,6 +98,42 @@
  ************************************************************************************/
 
 	.text
+
+#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+	.globl	up_task_fork
+	.type	up_task_fork, @function
+up_task_fork:
+	sub	sp, sp, #XCPTCONTEXT_SIZE
+	mov	r0, sp
+	bl	setjmp
+
+	subs	r0, #1
+	beq	1f
+	bl	sim_task_fork
+1:
+	add	sp, sp, #XCPTCONTEXT_SIZE
+	bx	lr
+	.size	up_task_fork, . - up_task_fork
+#endif /* CONFIG_ARCH_HAVE_TASK_FORK */
+
+#ifdef CONFIG_ARCH_HAVE_VFORK
+	.globl	up_vfork
+	.type	up_vfork, @function
+up_vfork:
+	sub	sp, sp, #XCPTCONTEXT_SIZE
+	mov	r0, sp
+	bl	setjmp
+
+	subs	r0, #1
+	beq	1f
+	bl	sim_vfork
+1:
+	add	sp, sp, #XCPTCONTEXT_SIZE
+	bx	lr
+	.size	up_vfork, . - up_vfork
+#endif /* CONFIG_ARCH_HAVE_VFORK */
+
+#ifdef CONFIG_ARCH_HAVE_FORK
 	.globl	up_fork
 	.type	up_fork, @function
 up_fork:
@@ -94,10 +142,11 @@ up_fork:
 	bl	setjmp
 
 	subs	r0, #1
-	jz	child
+	beq	1f
 	bl	sim_fork
-child:
+1:
 	add	sp, sp, #XCPTCONTEXT_SIZE
-	ret
+	bx	lr
 	.size	up_fork, . - up_fork
+#endif /* CONFIG_ARCH_HAVE_FORK */
 	.end

@@ -36,7 +36,7 @@
  ****************************************************************************/
 
 /****************************************************************************
- * Name: up_fork
+ * Name: up_task_fork, up_vfork, up_fork
  *
  * Description:
  *   The up_fork() function is the base of fork() function that provided in
@@ -95,10 +95,43 @@
  * | ......... |
  */
 
+#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+    .globl  up_task_fork
+    .type   up_task_fork, @function
+
+up_task_fork:
+    movq    $FORK_TYPE_TASK, %rsi
+    jmp     x86_64_fork_common
+#endif
+
+#ifdef CONFIG_ARCH_HAVE_VFORK
+    .globl  up_vfork
+    .type   up_vfork, @function
+
+up_vfork:
+    movq    $FORK_TYPE_VFORK, %rsi
+    jmp     x86_64_fork_common
+#endif
+
+#ifdef CONFIG_ARCH_HAVE_FORK
     .globl  up_fork
     .type   up_fork, @function
 
 up_fork:
+    movq    $FORK_TYPE_FORK, %rsi
+    jmp     x86_64_fork_common
+#endif
+
+/* The shared snapshot.  %rsi holds the FORK_TYPE_* selector on entry and is
+ * carried through to x86_64_fork() as its second argument.  Note that the
+ * return address the entry points pushed is still on the stack -- they
+ * jumped here rather than calling -- so the %rsp recovered below is the
+ * original caller's.
+ */
+
+    .type   x86_64_fork_common, @function
+
+x86_64_fork_common:
     movq    %rsp, %rax
     addq    $8, %rax
     movq    %ss, %rdi

@@ -1,5 +1,5 @@
 /****************************************************************************
- * arch/x86_64/src/common/x86_64_fork.h
+ * include/nuttx/fork.h
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -20,42 +20,34 @@
  *
  ****************************************************************************/
 
-#ifndef __ARCH_X86_64_SRC_COMMON_X86_64_FORK_H
-#define __ARCH_X86_64_SRC_COMMON_X86_64_FORK_H
+#ifndef __INCLUDE_NUTTX_FORK_H
+#define __INCLUDE_NUTTX_FORK_H
 
 /****************************************************************************
  * Included Files
  ****************************************************************************/
 
 #include <nuttx/config.h>
-#include <nuttx/fork.h>
 
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
-#define FORK_SIZEOF (sizeof(struct fork_s))
 
-/****************************************************************************
- * Public Types
- ****************************************************************************/
+/* Which primitive a clone of the calling task implements.  Passed to
+ * nxtask_setup_fork(), which is where the memory semantics are decided.
+ * Macros rather than an enumeration:  the architecture entry points are
+ * assembly and load them into a register.
+ *
+ *   FORK_TYPE_TASK   task_fork():  shares memory, private stack copy, both
+ *                    run.  Not POSIX.
+ *   FORK_TYPE_VFORK  vfork():  shares memory, parent suspended until the
+ *                    child _exit()s or exec()s.
+ *   FORK_TYPE_FORK   fork():  child gets its own copy of the parent's memory
+ *                    at the same virtual addresses, both run.
+ */
 
-#ifndef __ASSEMBLY__
-struct fork_s
-{
-  uint64_t r12;    /* 0 */
-  uint64_t r13;    /* 8 */
-  uint64_t r14;    /* 16 */
-  uint64_t r15;    /* 24 */
-  uint64_t rbx;    /* 32 */
-  uint64_t rbp;    /* 40 */
-  uint64_t rsp;    /* 48 */
-  uint64_t cs;     /* 56 */
-  uint64_t rflags; /* 64 */
-  uint64_t ss;     /* 72 */
-  uint64_t rip;    /* 80 */
+#define FORK_TYPE_TASK   0
+#define FORK_TYPE_VFORK  1
+#define FORK_TYPE_FORK   2
 
-  /* Assuming fork do not use any float or vector registers */
-};
-#endif
-
-#endif /* __ARCH_X86_64_SRC_COMMON_X86_64_FORK_H */
+#endif /* __INCLUDE_NUTTX_FORK_H */

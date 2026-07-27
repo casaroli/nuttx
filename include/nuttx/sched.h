@@ -420,6 +420,23 @@ struct task_join_s
   pthread_addr_t exit_value;             /* Returned data                   */
 };
 
+/* struct vfork_s ***********************************************************/
+
+/* The rendezvous between a suspended vfork() parent and its child.  This
+ * lives in the frame of nxtask_start_vfork() on the parent's stack:  the
+ * parent is blocked in that frame for the whole lifetime of the child, so
+ * the storage is alive exactly as long as it is needed, and no allocation
+ * is required on a path that must not fail.
+ */
+
+#ifdef CONFIG_ARCH_HAVE_VFORK
+struct vfork_s
+{
+  sem_t sem;                             /* Posted when the child is done   */
+  bool  released;                        /* Guards against a second post    */
+};
+#endif
+
 /* struct task_group_s ******************************************************/
 
 /* All threads created by pthread_create belong in the same task group (along
@@ -649,6 +666,14 @@ struct tcb_s
   FAR void *stack_base_ptr;              /* Adjusted initial stack pointer  */
                                          /* after the frame has been        */
                                          /* removed from the stack.         */
+
+  /* vfork() Support ********************************************************/
+
+#ifdef CONFIG_ARCH_HAVE_VFORK
+  FAR struct vfork_s *vfork_rel;         /* Non-NULL in a vfork() child:    */
+                                         /* the suspended parent to release */
+                                         /* when this task is torn down.    */
+#endif
 
   /* External Module Support ************************************************/
 
@@ -1134,33 +1159,53 @@ void nxtask_startup(main_t entrypt, int argc, FAR char *argv[]);
 #endif
 
 /****************************************************************************
- * Internal fork support.  The overall sequence is:
+ * Internal support for the three cloning primitives -- task_fork(), vfork()
+ * and fork().  See include/nuttx/fork.h for what distinguishes them; the
+ * sequence below is common to all three, and `type' is one of the
+ * FORK_TYPE_* constants defined there.
  *
- * 1) User code calls fork().  fork() is provided in architecture-specific
- *    code.
- * 2) fork()and calls nxtask_setup_fork().
+ * 1) User code calls task_fork(), vfork() or fork().  Each is a libc wrapper
+ *    around up_task_fork(), up_vfork() or up_fork() respectively, which are
+ *    provided in architecture-specific code.
+ * 2) The architecture-specific code snapshots the caller's registers and
+ *    calls nxtask_setup_fork().
  * 3) nxtask_setup_fork() allocates and configures the child task's TCB.
  *    This consists of:
  *    - Allocation of the child task's TCB.
  *    - Initialization of file descriptors and streams
  *    - Configuration of environment variables
- *    - Allocate and initialize the stack
+ *    - Establishing the child's address environment:  joined to the parent's
+ *      for task_fork() and vfork(), duplicated from it for fork()
+ *    - Allocating the stack, or inheriting the parent's for fork()
  *    - Setup the input parameters for the task.
  *    - Initialization of the TCB (including call to up_initial_state())
- * 4) fork() provides any additional operating context. fork must:
+ * 4) The architecture-specific code provides any additional operating
+ *    context:
  *    - Initialize special values in any CPU registers that were not
  *      already configured by up_initial_state()
- * 5) fork() then calls nxtask_start_fork()
+ *    - Relocate the copied stack, unless the child shares the parent's
+ * 5) It then calls nxtask_start_fork(), or nxtask_start_vfork() which
+ *    additionally suspends the caller.
  * 6) nxtask_start_fork() then executes the child thread.
  *
  * nxtask_abort_fork() may be called if an error occurs between
  * steps 3 and 6.
  *
+ * nxtask_vfork_resume() releases a suspended vfork() parent.  It is called
+ * from nxsched_release_tcb(), the last point in the child's life -- by which
+ * time the child is off the ready-to-run list and an exec()ing child has
+ * already handed its pid to the program it loaded.
+ *
  ****************************************************************************/
 
-FAR struct tcb_s *nxtask_setup_fork(start_t retaddr);
-pid_t nxtask_start_fork(FAR struct tcb_s *child);
+FAR struct tcb_s *nxtask_setup_fork(start_t retaddr, int type);
+pid_t nxtask_start_fork(FAR struct tcb_s *child, int type);
 void nxtask_abort_fork(FAR struct tcb_s *child, int errcode);
+
+#ifdef CONFIG_ARCH_HAVE_VFORK
+pid_t nxtask_start_vfork(FAR struct tcb_s *child);
+void nxtask_vfork_resume(FAR struct tcb_s *child);
+#endif
 
 /****************************************************************************
  * Name: nxtask_argvstr

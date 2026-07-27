@@ -39,59 +39,95 @@
 
   .file  "fork.S"
   .globl riscv_fork
+#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+  .globl up_task_fork
+#endif
+#ifdef CONFIG_ARCH_HAVE_VFORK
+  .globl up_vfork
+#endif
+#ifdef CONFIG_ARCH_HAVE_FORK
   .globl up_fork
+#endif
 
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
 
 /****************************************************************************
- * Name: fork
+ * Name: up_task_fork, up_vfork, up_fork
  *
  * Description:
- *   The up_fork() function is the base of fork() function that provided in
- *   libc, and fork() is implemented as a wrapper of up_fork() function.
- *   The fork() function has the same effect as posix fork(), except that the
- *   behavior is undefined if the process created by fork() either modifies
- *   any data other than a variable of type pid_t used to store the return
- *   value from fork(), or returns from the function in which fork() was
- *   called, or calls any other function before successfully calling _exit()
- *   or one of the exec family of functions.
+ *   These are the architecture-specific entry points of NuttX's three
+ *   cloning primitives.  All three need exactly the same thing from
+ *   assembly -- a snapshot of the caller's callee-saved registers, stack
+ *   pointer and return address -- and differ only in what the C code then
+ *   does with it, so they share one snapshot sequence and are distinguished
+ *   by a FORK_TYPE_* constant passed to riscv_fork() in a1.
  *
- *   This thin layer implements fork by simply calling up_fork() with the
- *   fork() context as an argument.  The overall sequence is:
+ *   See include/nuttx/fork.h for what the three primitives mean.
  *
- *   1) User code calls fork().  fork() collects context information and
- *      transfers control up up_fork().
- *   2) riscv_fork() and calls nxtask_setup_fork().
- *   3) nxtask_setup_fork() allocates and configures the child task's TCB.
- *      This consists of:
- *      - Allocation of the child task's TCB.
- *      - Initialization of file descriptors and streams
- *      - Configuration of environment variables
- *      - Allocate and initialize the stack
- *      - Setup the input parameters for the task.
- *      - Initialization of the TCB (including call to up_initial_state())
- *   4) riscv_fork() provides any additional operating context. riscv_fork must:
- *      - Initialize special values in any CPU registers that were not
- *        already configured by up_initial_state()
- *   5) riscv_fork() then calls nxtask_start_fork()
- *   6) nxtask_start_fork() then executes the child thread.
+ *   The overall sequence is:
+ *
+ *   1) User code calls task_fork(), vfork() or fork().  Each is a libc
+ *      wrapper around the matching entry point here.
+ *   2) The entry point collects the context and calls riscv_fork().
+ *   3) riscv_fork() calls nxtask_setup_fork(), which allocates and
+ *      configures the child task's TCB.
+ *   4) riscv_fork() provides any additional operating context and relocates
+ *      the copied stack.
+ *   5) riscv_fork() then calls nxtask_start_fork(), or nxtask_start_vfork()
+ *      which additionally suspends the caller.
+ *   6) which executes the child thread.
  *
  * Input Parameters:
  *   None
  *
  * Returned Value:
- *   Upon successful completion, fork() returns 0 to the child process and
- *   returns the process ID of the child process to the parent process.
- *   Otherwise, -1 is returned to the parent, no child process is created,
- *   and errno is set to indicate the error.
+ *   Upon successful completion, 0 is returned to the child and the process
+ *   ID of the child is returned to the parent.  Otherwise, -1 is returned to
+ *   the parent, no child is created, and errno is set to indicate the error.
  *
  ****************************************************************************/
 
+#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+.type up_task_fork, function
+
+up_task_fork:
+  li          a1, FORK_TYPE_TASK
+  j           riscv_fork_common
+
+  .size  up_task_fork, .-up_task_fork
+#endif
+
+#ifdef CONFIG_ARCH_HAVE_VFORK
+.type up_vfork, function
+
+up_vfork:
+  li          a1, FORK_TYPE_VFORK
+  j           riscv_fork_common
+
+  .size  up_vfork, .-up_vfork
+#endif
+
+#ifdef CONFIG_ARCH_HAVE_FORK
 .type up_fork, function
 
 up_fork:
+  li          a1, FORK_TYPE_FORK
+  j           riscv_fork_common
+
+  .size  up_fork, .-up_fork
+#endif
+
+/* The shared snapshot.  a1 holds the FORK_TYPE_* selector on entry and is
+ * carried through to riscv_fork(); it is not part of the snapshot, and ra
+ * still holds the original caller's return address because the entry points
+ * above jumped here rather than calling.
+ */
+
+.type riscv_fork_common, function
+
+riscv_fork_common:
 
 #ifdef CONFIG_LIB_SYSCALL
   /* When coming via system call, everything is in place already */
@@ -150,7 +186,9 @@ up_fork:
   FSTORE      fs11, FORK_FS11_OFFSET(sp)
 #endif
 
-  /* Then, call riscv_fork(), passing it a pointer to the stack frame */
+  /* Then, call riscv_fork(), passing it a pointer to the stack frame.  a1
+   * already holds the FORK_TYPE_* selector.
+   */
 
   mv          a0, sp
   call        riscv_fork
@@ -162,5 +200,5 @@ up_fork:
   ret
 #endif
 
-  .size  up_fork, .-up_fork
+  .size  riscv_fork_common, .-riscv_fork_common
   .end

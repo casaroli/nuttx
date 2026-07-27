@@ -250,11 +250,52 @@ extern initializer_t _einit[];
  ****************************************************************************/
 
 /****************************************************************************
+ * Name: up_task_fork
+ *
+ * Description:
+ *   Architecture-specific base of task_fork():  the child shares the
+ *   parent's memory, runs on a private copy of the parent's stack, and runs
+ *   concurrently.  Neither fork() nor vfork(); see up_fork(), up_vfork().
+ *
+ * Returned Value:
+ *   Upon successful completion, up_task_fork() returns 0 to the child and
+ *   returns the process ID of the child to the parent.  Otherwise, -1 is
+ *   returned to the parent, no child is created, and errno is set to
+ *   indicate the error.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+pid_t up_task_fork(void);
+#endif
+
+/****************************************************************************
+ * Name: up_vfork
+ *
+ * Description:
+ *   Architecture-specific base of vfork():  the child shares the parent's
+ *   memory and the parent is suspended until the child _exit()s or exec()s.
+ *   The child runs on a relocated copy of the parent's stack.
+ *
+ * Returned Value:
+ *   Upon successful completion, up_vfork() returns 0 to the child and
+ *   returns the process ID of the child to the parent.  Otherwise, -1 is
+ *   returned to the parent, no child is created, and errno is set to
+ *   indicate the error.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_ARCH_HAVE_VFORK
+pid_t up_vfork(void);
+#endif
+
+/****************************************************************************
  * Name: up_fork
  *
  * Description:
- *   The up_fork() function is the base of fork() function that provided in
- *   libc, and fork() is implemented as a wrapper of up_fork() function.
+ *   Architecture-specific base of POSIX fork():  the child receives its own
+ *   copy of the parent's memory at the same virtual addresses and runs
+ *   concurrently.  Available only where CONFIG_ARCH_HAVE_FORK is selected.
  *
  * Returned Value:
  *   Upon successful completion, up_fork() returns 0 to the child process
@@ -264,7 +305,9 @@ extern initializer_t _einit[];
  *
  ****************************************************************************/
 
+#ifdef CONFIG_ARCH_HAVE_FORK
 pid_t up_fork(void);
+#endif
 
 /****************************************************************************
  * Name: up_initialize
@@ -1325,6 +1368,35 @@ int up_addrenv_coherent(FAR const arch_addrenv_t *addrenv);
 #ifdef CONFIG_ARCH_ADDRENV
 int up_addrenv_clone(FAR const arch_addrenv_t *src,
                      FAR arch_addrenv_t *dest);
+#endif
+
+/****************************************************************************
+ * Name: up_addrenv_fork
+ *
+ * Description:
+ *   Duplicate an address environment for POSIX fork():  allocate fresh
+ *   pages for the destination, copy the source's contents into them, and map
+ *   them at the same virtual addresses.  Unlike up_addrenv_clone(), which
+ *   copies only the representation and leaves both pointing at the same page
+ *   tables, the result is independent of the source.
+ *
+ *   Implemented only where CONFIG_ARCH_HAVE_ADDRENV_FORK is selected.
+ *
+ * Input Parameters:
+ *   src  - The address environment to be duplicated.
+ *   dest - The location to receive the duplicate.  It is wiped by this
+ *          function before anything is allocated into it.
+ *
+ * Returned Value:
+ *   Zero (OK) on success; a negated errno value on failure.  -ENOMEM is
+ *   returned if there are not enough free pages to hold the copy, in which
+ *   case nothing is left allocated.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_ARCH_HAVE_ADDRENV_FORK
+int up_addrenv_fork(FAR const arch_addrenv_t *src,
+                    FAR arch_addrenv_t *dest);
 #endif
 
 /****************************************************************************

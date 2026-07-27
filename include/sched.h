@@ -233,6 +233,16 @@ int    task_create_with_stack(FAR const char *name, int priority,
 int    task_delete(pid_t pid);
 int    task_restart(pid_t pid);
 
+/* Clone the calling task:  the child shares the parent's memory, runs on a
+ * private copy of the parent's stack, and runs concurrently.  Returns twice,
+ * like fork().  Not POSIX; new code should prefer pthread_create() or
+ * posix_spawn().
+ */
+
+#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+pid_t  task_fork(void);
+#endif
+
 int    task_setcancelstate(int state, FAR int *oldstate);
 int    task_setcanceltype(int type, FAR int *oldtype);
 void   task_testcancel(void);

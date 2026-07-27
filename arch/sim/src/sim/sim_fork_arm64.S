@@ -52,7 +52,19 @@
  ***************************************************************************/
 
 /****************************************************************************
- * Name: up_fork
+ * Name: up_task_fork, up_vfork, up_fork
+ *
+ * Description:
+ *   These are the architecture-specific entry points of NuttX's three
+ *   cloning primitives; see include/nuttx/fork.h for what the three mean.
+ *   They are identical apart from the C worker each calls, which is how the
+ *   primitives are distinguished.
+ *
+ *   On the simulator the caller's context is captured with setjmp() rather
+ *   than by hand, and the child re-enters through longjmp() -- which is why
+ *   each entry point tests setjmp()'s return value to tell which of the two
+ *   returns it is on.
+ *
  *
  * Description:
  *   The up_fork() function is the base of fork() function that provided in
@@ -96,8 +108,58 @@
  ***************************************************************************/
 
 	.text
-	.globl	SYMBOL(up_fork)
 	.align	4
+
+#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+	.globl	SYMBOL(up_task_fork)
+
+SYMBOL(up_task_fork):
+
+	stp		x29, x30, [sp]				/* save FP/LR register */
+	sub		sp, sp, #XCPTCONTEXT_SIZE	/* area from stack for setjmp() */
+
+	mov		x0, sp						/* pass stack area to setjmp() */
+	bl		SYMBOL(setjmp)				/* save register for longjmp() */
+
+	subs	x0, x0, #1					/* 0: parent / 1: child */
+	cbz		x0, 1f						/* child --> return */
+
+	mov		x0, sp						/* pass stack area to the worker */
+	bl		SYMBOL(sim_task_fork)			/* further process task creation */
+
+1:
+	add		sp, sp, #XCPTCONTEXT_SIZE	/* release area from stack */
+	ldp		x29, x30, [sp]				/* restore FP/LR register */
+
+	ret
+#endif /* CONFIG_ARCH_HAVE_TASK_FORK */
+
+#ifdef CONFIG_ARCH_HAVE_VFORK
+	.globl	SYMBOL(up_vfork)
+
+SYMBOL(up_vfork):
+
+	stp		x29, x30, [sp]				/* save FP/LR register */
+	sub		sp, sp, #XCPTCONTEXT_SIZE	/* area from stack for setjmp() */
+
+	mov		x0, sp						/* pass stack area to setjmp() */
+	bl		SYMBOL(setjmp)				/* save register for longjmp() */
+
+	subs	x0, x0, #1					/* 0: parent / 1: child */
+	cbz		x0, 1f						/* child --> return */
+
+	mov		x0, sp						/* pass stack area to the worker */
+	bl		SYMBOL(sim_vfork)			/* further process task creation */
+
+1:
+	add		sp, sp, #XCPTCONTEXT_SIZE	/* release area from stack */
+	ldp		x29, x30, [sp]				/* restore FP/LR register */
+
+	ret
+#endif /* CONFIG_ARCH_HAVE_VFORK */
+
+#ifdef CONFIG_ARCH_HAVE_FORK
+	.globl	SYMBOL(up_fork)
 
 SYMBOL(up_fork):
 
@@ -110,7 +172,7 @@ SYMBOL(up_fork):
 	subs	x0, x0, #1					/* 0: parent / 1: child */
 	cbz		x0, 1f						/* child --> return */
 
-	mov		x0, sp						/* pass stack area to sim_fork() */
+	mov		x0, sp						/* pass stack area to the worker */
 	bl		SYMBOL(sim_fork)			/* further process task creation */
 
 1:
@@ -118,5 +180,5 @@ SYMBOL(up_fork):
 	ldp		x29, x30, [sp]				/* restore FP/LR register */
 
 	ret
-
+#endif /* CONFIG_ARCH_HAVE_FORK */
 	.end

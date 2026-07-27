@@ -56,7 +56,8 @@ endchoice
 config ARCH_MIPS32
 	bool
 	default n
-	select ARCH_HAVE_FORK
+	select ARCH_HAVE_TASK_FORK
+	select ARCH_HAVE_VFORK
 
 config ARCH_MIPS_M4K
 	bool

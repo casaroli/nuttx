@@ -34,6 +34,7 @@
 #include <nuttx/debug.h>
 
 #include <nuttx/compiler.h>
+#include <nuttx/fork.h>
 #include <nuttx/sched.h>
 #include <nuttx/arch.h>
 #include <arch/irq.h>
@@ -45,7 +46,7 @@
  ****************************************************************************/
 
 /****************************************************************************
- * Name: sim_fork
+ * Name: sim_fork_internal
  *
  * Description:
  *   The fork() function has the same effect as posix fork(), except that the
@@ -88,7 +89,7 @@
 #ifdef CONFIG_SIM_ASAN
 nosanitize_address
 #endif
-pid_t sim_fork(const xcpt_reg_t *context)
+static pid_t sim_fork_internal(const xcpt_reg_t *context, int type)
 {
   struct tcb_s *parent = this_task();
   struct tcb_s *child;
@@ -106,7 +107,7 @@ pid_t sim_fork(const xcpt_reg_t *context)
 
   /* Allocate and initialize a TCB for the child task. */
 
-  child = nxtask_setup_fork((start_t)context[JB_PC]);
+  child = nxtask_setup_fork((start_t)context[JB_PC], type);
   if (!child)
     {
       serr("ERROR: nxtask_setup_fork failed\n");
@@ -175,5 +176,37 @@ pid_t sim_fork(const xcpt_reg_t *context)
    * will discard the TCB by calling nxtask_abort_fork().
    */
 
-  return nxtask_start_fork(child);
+  return nxtask_start_fork(child, type);
 }
+
+/****************************************************************************
+ * Name: sim_task_fork, sim_vfork, sim_fork
+ *
+ * Description:
+ *   The three primitives, each a name for one FORK_TYPE_* value.  The
+ *   simulator's assembly entry points call these directly rather than
+ *   carrying a selector through setjmp(), which would have to survive a call
+ *   that is allowed to clobber every argument register.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+pid_t sim_task_fork(const xcpt_reg_t *context)
+{
+  return sim_fork_internal(context, FORK_TYPE_TASK);
+}
+#endif
+
+#ifdef CONFIG_ARCH_HAVE_VFORK
+pid_t sim_vfork(const xcpt_reg_t *context)
+{
+  return sim_fork_internal(context, FORK_TYPE_VFORK);
+}
+#endif
+
+#ifdef CONFIG_ARCH_HAVE_FORK
+pid_t sim_fork(const xcpt_reg_t *context)
+{
+  return sim_fork_internal(context, FORK_TYPE_FORK);
+}
+#endif

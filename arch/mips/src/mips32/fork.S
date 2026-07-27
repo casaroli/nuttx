@@ -44,7 +44,7 @@
  ************************************************************************************/
 
 /************************************************************************************
- * Name: up_fork
+ * Name: up_task_fork, up_vfork, up_fork
  *
  * Description:
  *   The up_fork() function is the base of fork() function that provided in
@@ -88,15 +88,57 @@
 
 	.text
 	.align  2
-	.globl	up_fork
-	.type	up_fork, function
 	.set	nomips16
 #ifdef CONFIG_MIPS_MICROMIPS
 	.set	micromips
 #endif
-	.ent	up_fork
 
+#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+	.globl	up_task_fork
+	.type	up_task_fork, function
+	.ent	up_task_fork
+up_task_fork:
+	li		$a1, FORK_TYPE_TASK
+	b		mips_fork_common
+	nop
+	.end	up_task_fork
+	.size	up_task_fork, .-up_task_fork
+#endif
+
+#ifdef CONFIG_ARCH_HAVE_VFORK
+	.globl	up_vfork
+	.type	up_vfork, function
+	.ent	up_vfork
+up_vfork:
+	li		$a1, FORK_TYPE_VFORK
+	b		mips_fork_common
+	nop
+	.end	up_vfork
+	.size	up_vfork, .-up_vfork
+#endif
+
+#ifdef CONFIG_ARCH_HAVE_FORK
+	.globl	up_fork
+	.type	up_fork, function
+	.ent	up_fork
 up_fork:
+	li		$a1, FORK_TYPE_FORK
+	b		mips_fork_common
+	nop
+	.end	up_fork
+	.size	up_fork, .-up_fork
+#endif
+
+	/* The shared snapshot.  $a1 holds the FORK_TYPE_* selector on entry and
+	 * is carried through to mips_fork(); it is not part of the snapshot, and
+	 * $ra still holds the original caller's return address because the entry
+	 * points above branched here rather than calling.
+	 */
+
+	.type	mips_fork_common, function
+	.ent	mips_fork_common
+
+mips_fork_common:
 	/* Create a stack frame */
 
 	move	$t0, $sp					/* Save the value of the stack on entry */
@@ -130,7 +172,9 @@ up_fork:
 
 	/* Floating point registers (not yet) */
 
-	/* Then, call mips_fork(), passing it a pointer to the stack structure */
+	/* Then, call mips_fork(), passing it a pointer to the stack structure.
+	 * $a1 already holds the FORK_TYPE_* selector.
+	 */
 
 	move	$a0, $sp
 	jal		mips_fork
@@ -142,5 +186,5 @@ up_fork:
 	addiu	$sp, $sp, FORK_SIZEOF
 	j		$ra
 
-	.end	up_fork
-	.size	up_fork, .-up_fork
+	.end	mips_fork_common
+	.size	mips_fork_common, .-mips_fork_common

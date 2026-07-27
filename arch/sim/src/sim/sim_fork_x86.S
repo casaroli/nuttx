@@ -51,7 +51,19 @@
  ************************************************************************************/
 
 /************************************************************************************
- * Name: up_fork
+ * Name: up_task_fork, up_vfork, up_fork
+ *
+ * Description:
+ *   These are the architecture-specific entry points of NuttX's three
+ *   cloning primitives; see include/nuttx/fork.h for what the three mean.
+ *   They are identical apart from the C worker each calls, which is how the
+ *   primitives are distinguished.
+ *
+ *   On the simulator the caller's context is captured with setjmp() rather
+ *   than by hand, and the child re-enters through longjmp() -- which is why
+ *   each entry point tests setjmp()'s return value to tell which of the two
+ *   returns it is on.
+ *
  *
  * Description:
  *   The up_fork() function is the base of fork() function that provided in
@@ -94,6 +106,52 @@
  ************************************************************************************/
 
 	.text
+
+#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+	.globl	SYMBOL(up_task_fork)
+#ifdef __ELF__
+	.type	SYMBOL(up_task_fork), @function
+#endif
+
+SYMBOL(up_task_fork):
+	sub	$XCPTCONTEXT_SIZE, %esp
+	push	%esp
+	call	SYMBOL(setjmp)
+
+	sub	$1, %eax
+	jz	1f
+	call	SYMBOL(sim_task_fork)
+1:
+	add	$XCPTCONTEXT_SIZE+4, %esp
+	ret
+#ifdef __ELF__
+	.size	SYMBOL(up_task_fork), . - SYMBOL(up_task_fork)
+#endif
+#endif /* CONFIG_ARCH_HAVE_TASK_FORK */
+
+#ifdef CONFIG_ARCH_HAVE_VFORK
+	.globl	SYMBOL(up_vfork)
+#ifdef __ELF__
+	.type	SYMBOL(up_vfork), @function
+#endif
+
+SYMBOL(up_vfork):
+	sub	$XCPTCONTEXT_SIZE, %esp
+	push	%esp
+	call	SYMBOL(setjmp)
+
+	sub	$1, %eax
+	jz	1f
+	call	SYMBOL(sim_vfork)
+1:
+	add	$XCPTCONTEXT_SIZE+4, %esp
+	ret
+#ifdef __ELF__
+	.size	SYMBOL(up_vfork), . - SYMBOL(up_vfork)
+#endif
+#endif /* CONFIG_ARCH_HAVE_VFORK */
+
+#ifdef CONFIG_ARCH_HAVE_FORK
 	.globl	SYMBOL(up_fork)
 #ifdef __ELF__
 	.type	SYMBOL(up_fork), @function
@@ -105,11 +163,12 @@ SYMBOL(up_fork):
 	call	SYMBOL(setjmp)
 
 	sub	$1, %eax
-	jz	child
+	jz	1f
 	call	SYMBOL(sim_fork)
-child:
+1:
 	add	$XCPTCONTEXT_SIZE+4, %esp
 	ret
 #ifdef __ELF__
 	.size	SYMBOL(up_fork), . - SYMBOL(up_fork)
 #endif
+#endif /* CONFIG_ARCH_HAVE_FORK */
