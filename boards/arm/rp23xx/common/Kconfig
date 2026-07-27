@@ -175,6 +175,21 @@ config RP23XX_SPI0_TX_GPIO
 		This line is also known as MOSI when we are configured in
 		SPI master mode.
 
+config RP23XX_SPI0_DC_GPIO
+	int "GPIO pin for the SPI0 display Data/Command line"
+	default RP23XX_SPI0_RX_GPIO
+	range 0 47
+	depends on SPI_CMDDATA
+	---help---
+		The pin driven by rp23xx_spi0cmddata() to tell a display whether
+		the bytes being sent are a command or data.
+
+		This defaults to the SPI0 RX pin, which is what the code always
+		used to assume.  That only holds on a board whose display is
+		write-only, leaving MISO free to be reused.  If the display's SDO
+		line is actually wired, or the Data/Command line is simply on some
+		other pin, set it here.
+
 endif # RP23XX_SPI0
 
 #####################################################################
@@ -210,6 +225,21 @@ config RP23XX_SPI1_TX_GPIO
 	range 11 27
 	---help---
 		Refer to board documentation to see which pins are available.
+
+config RP23XX_SPI1_DC_GPIO
+	int "GPIO pin for the SPI1 display Data/Command line"
+	default RP23XX_SPI1_RX_GPIO
+	range 0 47
+	depends on SPI_CMDDATA
+	---help---
+		The pin driven by rp23xx_spi1cmddata() to tell a display whether
+		the bytes being sent are a command or data.
+
+		This defaults to the SPI1 RX pin, which is what the code always
+		used to assume.  That only holds on a board whose display is
+		write-only, leaving MISO free to be reused.  If the display's SDO
+		line is actually wired, or the Data/Command line is simply on some
+		other pin, set it here.
 		This line is also known as MOSI when we are configured in
 		SPI master mode, or MISO when slave mode is configured.
 
