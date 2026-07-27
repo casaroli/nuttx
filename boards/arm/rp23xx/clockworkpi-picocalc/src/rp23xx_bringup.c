@@ -30,6 +30,11 @@
 
 #include <nuttx/fs/fs.h>
 
+#include <nuttx/board.h>
+#include <nuttx/lcd/lcd.h>
+#include <nuttx/lcd/lcd_dev.h>
+#include <nuttx/video/fb.h>
+
 #include <arch/board/board.h>
 
 #include "rp23xx_pico.h"
@@ -125,6 +130,38 @@ int rp23xx_bringup(void)
   if (ret < 0)
     {
       syslog(LOG_ERR, "ERROR: btn_lower_initialize() failed: %d\n", ret);
+    }
+#endif
+
+#ifdef CONFIG_LCD_DEV
+  /* Bring up the ST7365P panel and expose it as /dev/lcd0 */
+
+  ret = board_lcd_initialize();
+  if (ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: board_lcd_initialize() failed: %d\n", ret);
+    }
+  else
+    {
+      ret = lcddev_register(0);
+      if (ret < 0)
+        {
+          syslog(LOG_ERR, "ERROR: lcddev_register() failed: %d\n", ret);
+        }
+    }
+#endif
+
+#ifdef CONFIG_VIDEO_FB
+  /* Wrap the panel in the framebuffer layer as well, so that the stock
+   * framebuffer applications can drive it.  With CONFIG_LCD_FRAMEBUFFER this
+   * costs a full 320x320x2 shadow buffer in SRAM, so it is not enabled in
+   * the configurations that only want /dev/lcd0.
+   */
+
+  ret = fb_register(0, 0);
+  if (ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: fb_register() failed: %d\n", ret);
     }
 #endif
 
