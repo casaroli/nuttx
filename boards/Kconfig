@@ -2292,6 +2292,27 @@ config ARCH_BOARD_PIMORONI_PICO_PLUS_2_W
 		CONFIG_ARCH_LEDS, which is called from interrupt context, so
 		CONFIG_ARCH_LEDS is rejected at build time on this board.
 
+config ARCH_BOARD_CLOCKWORKPI_PICOCALC
+	bool "ClockworkPi PicoCalc"
+	depends on ARCH_CHIP_RP23XX
+	select ARCH_HAVE_LEDS
+	select ARCH_HAVE_BUTTONS
+	select ARCH_HAVE_IRQBUTTONS
+	select RP23XX_RP2350B
+	---help---
+		This is a port to the ClockworkPi PicoCalc, a handheld with a 320x320
+		SPI LCD, a QWERTY keyboard and a microSD slot, carrying a Raspberry Pi
+		Pico form-factor module.  This configuration assumes a Pimoroni Pico
+		Plus 2 W (RP2350B, 8MB QSPI PSRAM on GP47).
+
+		The keyboard, backlights and battery are owned by an STM32F103
+		co-processor reached over I2C1 at address 0x1F; the RP2350 has no
+		direct access to any of them.
+
+		As on the Pimoroni module, the only LED hangs off a GPIO of the
+		CYW43439, so CONFIG_ARCH_LEDS is rejected at build time and only the
+		CONFIG_USERLED interface is supported.
+
 config ARCH_BOARD_WAVESHARE_RP2040_LCD_1_28
 	bool "Waveshare RP2040 LCD 1.28 board"
 	depends on ARCH_CHIP_RP2040
@@ -3971,6 +3992,7 @@ config ARCH_BOARD
 	default "xiao-rp2350"                  if ARCH_BOARD_XIAO_RP2350
 	default "pimoroni-pico-2-plus"         if ARCH_BOARD_PIMORONI_PICO_2_PLUS
 	default "pimoroni-pico-plus-2-w"       if ARCH_BOARD_PIMORONI_PICO_PLUS_2_W
+	default "clockworkpi-picocalc"         if ARCH_BOARD_CLOCKWORKPI_PICOCALC
 	default "w5500-evb-pico"               if ARCH_BOARD_W5500_EVB_PICO
 	default "waveshare-rp2040-zero"        if ARCH_BOARD_WAVESHARE_RP2040_ZERO
 	default "rx65n"                        if ARCH_BOARD_RX65N
@@ -4515,6 +4537,9 @@ source "boards/arm/rp23xx/pimoroni-pico-2-plus/Kconfig"
 endif
 if ARCH_BOARD_PIMORONI_PICO_PLUS_2_W
 source "boards/arm/rp23xx/pimoroni-pico-plus-2-w/Kconfig"
+endif
+if ARCH_BOARD_CLOCKWORKPI_PICOCALC
+source "boards/arm/rp23xx/clockworkpi-picocalc/Kconfig"
 endif
 if ARCH_BOARD_ARDUINO_DUE
 source "boards/arm/sam34/arduino-due/Kconfig"
