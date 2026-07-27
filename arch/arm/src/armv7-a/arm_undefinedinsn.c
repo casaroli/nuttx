@@ -33,6 +33,7 @@
 #include <nuttx/arch.h>
 #include <sched/sched.h>
 
+#include "arm.h"
 #include "arm_internal.h"
 
 /****************************************************************************
@@ -60,6 +61,24 @@ uint32_t *arm_undefinedinsn(uint32_t *regs)
       _alert("Undefined instruction at 0x%" PRIx32 "\n", regs[REG_PC]);
     }
 
-  PANIC_WITH_REGS("panic", regs);
-  return regs; /* To keep the compiler happy */
+  /* If user code executed it, kill only that task and let the rest of the
+   * system run on.  Otherwise there is nothing safe to kill.
+   */
+
+  if (arm_userfault_recover(regs))
+    {
+      /* The task is about to be running again, in _exit(), so its register
+       * save area is no longer valid -- mark it as the interrupt and system
+       * call paths do.
+       */
+
+      tcb->xcp.regs = NULL;
+    }
+  else
+    {
+      PANIC_WITH_REGS("panic", regs);
+    }
+
+  up_set_interrupt_context(false);
+  return regs;
 }
