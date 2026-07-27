@@ -337,6 +337,17 @@ int  arm_securefault(int irq, void *context, void *arg);
 
 #  endif /* CONFIG_ARCH_CORTEXM3,4,7 */
 
+#  ifdef CONFIG_ARCH_ARMV8M
+
+/* Kill just the task that faulted, when the fault came from user code, so
+ * that the handlers above panic only when there is nothing safe to kill.
+ * See armv8-m/arm_userfault.c.
+ */
+
+bool arm_userfault_recover(uint32_t *regs);
+
+#  endif
+
 /* Exception handling logic unique to the Cortex-A and Cortex-R families
 * (but should be back-ported to the ARM7 and ARM9 families).
  */
