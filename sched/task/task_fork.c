@@ -372,6 +372,7 @@ FAR struct tcb_s *nxtask_setup_fork(start_t retaddr, int type,
 
           ret = addrenv_join(parent, child);
         }
+#ifdef CONFIG_ARCH_HAVE_FORK
       else
         {
           /* POSIX fork():  duplicate the parent's address environment now,
@@ -411,6 +412,15 @@ FAR struct tcb_s *nxtask_setup_fork(start_t retaddr, int type,
               ret = addrenv_select(child->addrenv_own, &oldenv);
             }
         }
+#else
+      /* An address environment without ARCH_HAVE_FORK -- a protected build
+       * over an MMU, for instance.  There is an address environment to join,
+       * but no POSIX fork() to duplicate it for, so the branch above is not
+       * compiled and `type' can never be FORK_TYPE_FORK here.
+       */
+
+      DEBUGASSERT(type != FORK_TYPE_FORK);
+#endif
 
       if (ret < 0)
         {
