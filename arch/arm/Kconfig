@@ -396,6 +396,8 @@ config ARCH_CHIP_RP23XX
 	select ARCH_HAVE_CUSTOM_TESTSET
 	select ARCH_HAVE_TICKLESS
 	select ARCH_BOARD_COMMON
+	select ARCH_HAVE_MPU
+	select ARM_HAVE_MPU_UNIFIED
 	---help---
 		Raspberry Pi RP23XX architectures (ARM dual Cortex-M33 or RISC-V).
 

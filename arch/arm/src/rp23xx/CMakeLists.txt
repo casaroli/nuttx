@@ -117,4 +117,8 @@ if(CONFIG_RP23XX_OTP)
   list(APPEND SRCS rp23xx_otp.c)
 endif()
 
+if(CONFIG_BUILD_PROTECTED)
+  list(APPEND SRCS rp23xx_userspace.c rp23xx_allocateheap.c)
+endif()
+
 target_sources(arch PRIVATE ${SRCS})

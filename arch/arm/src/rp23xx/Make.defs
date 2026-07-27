@@ -121,3 +121,17 @@ endif
 ifeq ($(CONFIG_RP23XX_OTP),y)
 CHIP_CSRCS += rp23xx_otp.c
 endif
+
+ifeq ($(CONFIG_BUILD_PROTECTED),y)
+CHIP_CSRCS += rp23xx_userspace.c
+
+# rp23xx_allocateheap.c replaces the common one outright rather than relying on
+# the common definitions being weak.  A weak definition in an archive still
+# satisfies the first reference the linker resolves, so whichever object is
+# pulled in first wins:  with both present the generic version was the one
+# linked, and the only symptom was a hardfault on the first unprivileged
+# instruction much later.  Filtering it out makes the choice explicit.
+
+CMN_CSRCS  := $(filter-out arm_allocateheap.c,$(CMN_CSRCS))
+CHIP_CSRCS += rp23xx_allocateheap.c
+endif
