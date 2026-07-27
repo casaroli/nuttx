@@ -24,6 +24,10 @@ CSRCS = rp23xx_boardinitialize.c
 CSRCS += rp23xx_bringup.c
 CSRCS += rp23xx_pinpark.c
 
+ifeq ($(CONFIG_LCD_ST7365P),y)
+CSRCS += picocalc_lcd.c
+endif
+
 ifeq ($(CONFIG_DEV_GPIO),y)
 CSRCS += rp23xx_gpio.c
 endif
