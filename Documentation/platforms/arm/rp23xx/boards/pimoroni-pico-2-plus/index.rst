@@ -140,6 +140,33 @@ nsh
 Basic NuttShell configuration (console enabled on UART0, at 115200 bps) with
 the external PSRAM added to the main heap.
 
+pnsh
+----
+
+The same NuttShell configuration as ``nsh``, but built as a **protected**
+build (``CONFIG_BUILD_PROTECTED``) rather than a flat one:  the kernel and the
+application are linked as two separate blobs and the Cortex-M33's MPU keeps
+unprivileged code out of the kernel's flash, RAM and heap.  Applications reach
+the kernel through system calls.
+
+Two images are produced and **both** must be flashed -- ``nuttx`` at
+0x10000000 and ``nuttx_user.elf`` at 0x10100000.  Only the kernel image
+carries the IMAGE_DEF block the bootrom looks for; the user blob is ordinary
+flash data that the kernel copies into place and enters once the MPU is
+programmed.  With a Raspberry Pi Debug Probe::
+
+    probe-rs download --chip RP235x --protocol swd nuttx
+    probe-rs download --chip RP235x --protocol swd nuttx_user.elf
+    probe-rs reset --chip RP235x --protocol swd
+
+The memory split lives in ``scripts/memory.ld``:  1 MB of flash and 256 KB of
+SRAM for the kernel, the remainder for user space.  The Cortex-M33 implements
+PMSAv8, whose MPU regions are an arbitrary base/limit pair with 32-byte
+granularity, so those boundaries are sized to the images rather than having to
+be powers of two at a natural alignment as they would on a Cortex-M4 or M7.
+
+PSRAM is left disabled in this configuration.
+
 usbnsh
 ------
 

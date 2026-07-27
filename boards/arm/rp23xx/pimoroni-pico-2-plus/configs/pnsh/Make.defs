@@ -1,0 +1,49 @@
+############################################################################
+# boards/arm/rp23xx/pimoroni-pico-2-plus/configs/pnsh/Make.defs
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.  The
+# ASF licenses this file to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance with the
+# License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
+# License for the specific language governing permissions and limitations
+# under the License.
+#
+############################################################################
+
+# A per-configuration Make.defs overrides the board's scripts/Make.defs
+# entirely.  This is how every other BUILD_PROTECTED board in the tree selects
+# its split linker scripts -- the board-level file is written for the flat
+# build and hard-codes one memmap_*.ld, so a protected configuration cannot
+# express itself there.  See boards/arm/lpc17xx_40xx/lpc4088-devkit/configs/
+# knsh/Make.defs for the same pattern.
+
+include $(TOPDIR)/.config
+include $(TOPDIR)/tools/Config.mk
+include $(TOPDIR)/tools/rp23xx/Config.mk
+include $(TOPDIR)/arch/arm/src/armv8-m/Toolchain.defs
+
+# memory.ld defines kflash/uflash/ksram/usram and the two scratch banks;
+# kernel-space.ld places the kernel blob into the k* halves.  The user blob is
+# linked separately by kernel/Makefile against memory.ld + user-space.ld.
+
+ARCHSCRIPT += $(BOARD_DIR)$(DELIM)scripts$(DELIM)memory.ld
+ARCHSCRIPT += $(BOARD_DIR)$(DELIM)scripts$(DELIM)kernel-space.ld
+
+CFLAGS := $(ARCHCFLAGS) $(ARCHOPTIMIZATION) $(ARCHCPUFLAGS) $(ARCHINCLUDES) $(ARCHDEFINES) $(EXTRAFLAGS) -pipe
+CXXFLAGS := $(ARCHCXXFLAGS) $(ARCHOPTIMIZATION) $(ARCHCPUFLAGS) $(ARCHXXINCLUDES) $(ARCHDEFINES) $(EXTRAFLAGS) -pipe
+CPPFLAGS := $(ARCHINCLUDES) $(ARCHDEFINES) $(EXTRAFLAGS)
+AFLAGS := $(CFLAGS) -D__ASSEMBLY__
+
+NXFLATLDFLAGS1 = -r -d -warn-common
+NXFLATLDFLAGS2 = $(NXFLATLDFLAGS1) -T$(TOPDIR)$(DELIM)binfmt$(DELIM)libnxflat$(DELIM)gnu-nxflat-pcrel.ld -no-check-sections
+LDNXFLATFLAGS = -e main -s 2048
