@@ -833,6 +833,9 @@ FAR struct lcd_dev_s *st7365p_lcdinitialize(FAR struct spi_dev_s *spi)
   priv->dev.setpower     = st7365p_setpower;
   priv->dev.getcontrast  = st7365p_getcontrast;
   priv->dev.setcontrast  = st7365p_setcontrast;
+#ifdef CONFIG_LCD_ST7365P_HWSCROLL
+  priv->dev.vscroll      = st7365p_scroll;
+#endif
   priv->spi              = spi;
   priv->power            = 0;
   priv->voffset          = 0;

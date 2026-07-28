@@ -919,11 +919,15 @@ config LCD_ST7365P_INVCOLOR
 config LCD_ST7365P_HWSCROLL
 	bool "ST7365P hardware vertical scrolling"
 	default y
+	select NX_HWSCROLL if NX_LCDDRIVER
 	---help---
 		Use the controller's vertical scrolling registers, exploiting the
 		GRAM rows the panel does not show, so that scrolling costs a
 		register write rather than a full repaint.  The offset is applied
 		transparently, so callers keep addressing visible rows.
+
+		This is offered to NX as the display's vscroll() method, which lets
+		NX satisfy a scroll of the whole display without reading it back.
 
 endif # LCD_ST7365P
 
