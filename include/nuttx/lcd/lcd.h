@@ -231,6 +231,28 @@ struct lcd_dev_s
                         FAR struct fb_setcursor_s *settings);
 #endif
 
+  /* Accelerated Operations *************************************************/
+
+  /* This method scrolls the entire display vertically, using whatever
+   * support the controller itself has for it.  Many controllers can do this
+   * by moving the origin they scan display memory from, which costs one
+   * register write where moving the pixels costs a full redraw.
+   *
+   *  dev   - LCD interface to scroll
+   *  lines - How far to scroll, in rows.  A positive value moves the
+   *          content up, so the row at that offset becomes the top row.
+   *
+   * The rows vacated at the far end are left showing whatever display
+   * memory holds outside the previously visible area, which is undefined;
+   * the caller must paint them.  The whole display scrolls, so a caller
+   * that does not own all of it must not use this.
+   *
+   * NOTE: this operation may not be supported by the device, in which case
+   * the callback pointer will be NULL.
+   */
+
+  CODE int (*vscroll)(FAR struct lcd_dev_s *dev, int lines);
+
   /* LCD Specific Controls **************************************************/
 
   /* Get the LCD panel power status (0: full off - CONFIG_LCD_MAXPOWER: full
