@@ -123,9 +123,9 @@ static void st7365p_deselect(FAR struct spi_dev_s *spi);
 static void st7365p_sendcmd(FAR struct st7365p_dev_s *dev, uint8_t cmd);
 static void st7365p_senddata(FAR struct st7365p_dev_s *dev,
                              FAR const uint8_t *data, size_t len);
-static void st7365p_setarea(FAR struct st7365p_dev_s *dev,
-                            uint16_t x0, uint16_t y0,
-                            uint16_t x1, uint16_t y1);
+static uint16_t st7365p_setarea(FAR struct st7365p_dev_s *dev,
+                                uint16_t x0, uint16_t y0,
+                                uint16_t x1, uint16_t y1);
 static void st7365p_wrram(FAR struct st7365p_dev_s *dev,
                           FAR const uint8_t *buff, size_t size,
                           size_t skip, size_t count);
@@ -513,31 +513,42 @@ static void st7365p_sendtable(FAR struct st7365p_dev_s *dev,
  * Name: st7365p_setarea
  *
  * Description:
- *   Set the active drawing window.
+ *   Set the active drawing window, and return the number of rows it covers.
  *
  *   The current hardware scroll offset is folded in here, so every caller
  *   keeps addressing rows 0..yres-1 and stays correct whether or not the
- *   display has been scrolled.  A window that would wrap past the end of
- *   GRAM is clamped rather than split; callers that scroll should redraw a
- *   line at a time, which is what a text console does anyway.
+ *   display has been scrolled.
+ *
+ *   Once the display has scrolled, a window can run off the end of GRAM,
+ *   and that cannot be expressed in one pair of address registers: RAMWR
+ *   wraps back to the top of the window, not to the top of GRAM, so the
+ *   rows past the end would overwrite the ones already written.  Such a
+ *   window is therefore truncated at the wrap and the number of rows
+ *   actually programmed is returned, which is always at least one.  A
+ *   caller with rows left over issues them as a second transfer starting
+ *   where this one stopped, by which point the offset has wrapped to the
+ *   top of GRAM.
  *
  ****************************************************************************/
 
-static void st7365p_setarea(FAR struct st7365p_dev_s *dev,
-                            uint16_t x0, uint16_t y0,
-                            uint16_t x1, uint16_t y1)
+static uint16_t st7365p_setarea(FAR struct st7365p_dev_s *dev,
+                                uint16_t x0, uint16_t y0,
+                                uint16_t x1, uint16_t y1)
 {
   uint8_t buf[4];
   uint16_t g0;
   uint16_t g1;
+  uint16_t nrows;
 
-  g0 = (y0 + dev->voffset) % ST7365P_GRAM_YRES;
-  g1 = g0 + (y1 - y0);
+  g0    = (y0 + dev->voffset) % ST7365P_GRAM_YRES;
+  nrows = y1 - y0 + 1;
 
-  if (g1 >= ST7365P_GRAM_YRES)
+  if (g0 + nrows > ST7365P_GRAM_YRES)
     {
-      g1 = ST7365P_GRAM_YRES - 1;
+      nrows = ST7365P_GRAM_YRES - g0;
     }
+
+  g1 = g0 + nrows - 1;
 
   /* Column address */
 
@@ -556,6 +567,8 @@ static void st7365p_setarea(FAR struct st7365p_dev_s *dev,
   buf[3] = g1 & 0xff;
   st7365p_sendcmd(dev, ST7365P_RASET);
   st7365p_senddata(dev, buf, 4);
+
+  return nrows;
 }
 
 /****************************************************************************
@@ -660,27 +673,41 @@ static int st7365p_putarea(FAR struct lcd_dev_s *dev,
 {
   FAR struct st7365p_dev_s *priv = (FAR struct st7365p_dev_s *)dev;
   size_t cols = col_end - col_start + 1;
-  size_t rows = row_end - row_start + 1;
   size_t row_size = cols * ST7365P_BYTESPP;
+  fb_coord_t row;
+  uint16_t nrows;
 
   ginfo("row_start: %d row_end: %d col_start: %d col_end: %d\n",
         row_start, row_end, col_start, col_end);
 
   DEBUGASSERT(buffer && ((uintptr_t)buffer & 1) == 0);
 
-  st7365p_setarea(priv, col_start, row_start, col_end, row_end);
-
-  /* When the stride matches the row, the whole area is contiguous and can go
-   * out as one transfer.  Otherwise fall back to row by row.
+  /* Once the display has been scrolled the area can straddle the end of
+   * GRAM, which takes two transfers.  setarea() reports how many rows the
+   * window it programmed actually covers, so this loop runs once in the
+   * common case and twice across the wrap.
    */
 
-  if (stride == row_size)
+  row = row_start;
+  while (row <= row_end)
     {
-      st7365p_wrram(priv, buffer, rows * row_size, 0, 1);
-    }
-  else
-    {
-      st7365p_wrram(priv, buffer, row_size, stride - row_size, rows);
+      nrows = st7365p_setarea(priv, col_start, row, col_end, row_end);
+
+      /* When the stride matches the row, this chunk is contiguous and can go
+       * out as one transfer.  Otherwise fall back to row by row.
+       */
+
+      if (stride == row_size)
+        {
+          st7365p_wrram(priv, buffer, nrows * row_size, 0, 1);
+        }
+      else
+        {
+          st7365p_wrram(priv, buffer, row_size, stride - row_size, nrows);
+        }
+
+      buffer += nrows * stride;
+      row    += nrows;
     }
 
   return OK;
