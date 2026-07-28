@@ -27,11 +27,13 @@
 #include <nuttx/config.h>
 
 #include <inttypes.h>
+#include <ctype.h>
 #include <fcntl.h>
 #include <sched.h>
 #include <assert.h>
 #include <poll.h>
 #include <errno.h>
+#include <nuttx/ascii.h>
 #include <nuttx/debug.h>
 
 #include <nuttx/spinlock.h>
@@ -61,6 +63,89 @@ static void nxterm_pollnotify(FAR struct nxterm_state_s *priv,
 }
 
 /****************************************************************************
+ * Name: nxterm_echo
+ *
+ * Description:
+ *   Render one character of keyboard input back to the window, the way a
+ *   serial driver echoes what it receives.  Without this the terminal
+ *   shows nothing at all until the line is submitted:  readline() draws
+ *   only the *corrections* it makes to a line (erase-to-end-of-line after
+ *   an insertion, a full redraw after an edit) and relies on the driver
+ *   to have echoed the character itself, which is why it looks fine on a
+ *   serial console and dead here.
+ *
+ *   Escape sequences typed by the user are swallowed rather than drawn:
+ *   they are commands to the line editor, not text, and rendering them
+ *   literally would leave "[A" style droppings on the screen.
+ *
+ *   The caller must hold priv->lock, and must have hidden the cursor.
+ *
+ ****************************************************************************/
+
+static void nxterm_echo(FAR struct nxterm_state_s *priv, char ch)
+{
+  if (ch == ASCII_ESC)
+    {
+      /* Start (or restart) tracking a possible escape sequence */
+
+      priv->escape = NXTERM_ESCAPE_START;
+      return;
+    }
+  else if (priv->escape == NXTERM_ESCAPE_START)
+    {
+      /* The first byte after ESC selects the sequence type */
+
+      if (ch == ASCII_LBRACKET)
+        {
+          priv->escape = NXTERM_ESCAPE_CSI;
+          return;
+        }
+      else if (ch == ASCII_O)
+        {
+          priv->escape = NXTERM_ESCAPE_SS3;
+          return;
+        }
+
+      /* Neither CSI nor SS3 -- an unrecognized two-byte "ESC x" sequence.
+       * Fall through and echo 'x' normally.
+       */
+
+      priv->escape = NXTERM_ESCAPE_NONE;
+    }
+  else if (priv->escape == NXTERM_ESCAPE_CSI)
+    {
+      /* Consuming CSI parameter/intermediate bytes (0x20-0x3f); the
+       * sequence ends with exactly one final byte in 0x40-0x7e.
+       */
+
+      if (ch >= 0x40 && ch <= 0x7e)
+        {
+          priv->escape = NXTERM_ESCAPE_NONE;
+        }
+
+      return;
+    }
+  else if (priv->escape == NXTERM_ESCAPE_SS3)
+    {
+      /* The byte following "ESC O" is always the final (and only) byte */
+
+      priv->escape = NXTERM_ESCAPE_NONE;
+      return;
+    }
+
+  /* Echo printable characters, plus the newline that ends a line.  Every
+   * other control character belongs to the line editor:  backspace, for
+   * one, is echoed by readline() itself as BS + erase-to-end-of-line, and
+   * echoing it here as well would erase one character too many.
+   */
+
+  if (!iscntrl(ch & 0xff) || ch == '\n')
+    {
+      nxterm_putc(priv, (uint8_t)ch);
+    }
+}
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -75,6 +160,7 @@ static void nxterm_pollnotify(FAR struct nxterm_state_s *priv,
 ssize_t nxterm_read(FAR struct file *filep, FAR char *buffer, size_t len)
 {
   FAR struct nxterm_state_s *priv;
+  irqstate_t flags;
   ssize_t nread;
   char ch;
   int ret;
@@ -84,19 +170,22 @@ ssize_t nxterm_read(FAR struct file *filep, FAR char *buffer, size_t len)
   DEBUGASSERT(filep->f_priv);
   priv = (FAR struct nxterm_state_s *)filep->f_priv;
 
-  /* Get exclusive access to the driver structure */
-
-  ret = nxmutex_lock(&priv->lock);
-  if (ret < 0)
-    {
-      gerr("ERROR: nxmutex_lock failed\n");
-      return ret;
-    }
-
-  /* Loop until something is read */
+  /* Loop until something is read.
+   *
+   * The keyboard ring is guarded by the spinlock, not by priv->lock:
+   * priv->lock guards the *display*, and rendering a single glyph to a
+   * panel is slow.  If delivering a keystroke had to wait for it, then
+   * nxterm_kbdin() -- which runs on the client's NX listener thread --
+   * would stall for the whole of a redraw, and with it every other event
+   * that thread is responsible for.  Typing then appears to freeze until
+   * the drawing catches up.  Keeping the two locks apart lets input be
+   * queued at any time, whatever the display is doing.
+   */
 
   for (nread = 0; nread < len; )
     {
+      flags = spin_lock_irqsave_nopreempt(&priv->spinlock);
+
       /* Get the next byte from the buffer */
 
       if (priv->head == priv->tail)
@@ -107,6 +196,7 @@ ssize_t nxterm_read(FAR struct file *filep, FAR char *buffer, size_t len)
             {
               /* Yes.. break out to return what we have.  */
 
+              spin_unlock_irqrestore_nopreempt(&priv->spinlock, flags);
               break;
             }
 
@@ -116,47 +206,29 @@ ssize_t nxterm_read(FAR struct file *filep, FAR char *buffer, size_t len)
 
           if (filep->f_oflags & O_NONBLOCK)
             {
+              spin_unlock_irqrestore_nopreempt(&priv->spinlock, flags);
               nread = -EAGAIN;
               break;
             }
 
           /* Otherwise, wait for something to be written to the circular
-           * buffer. Increment the number of waiters so that the
-           * nxterm_write() will not that it needs to post the semaphore
-           * to wake us up.
+           * buffer.  The number of waiters is incremented first, while
+           * the ring is still locked, so that nxterm_kbdin() cannot
+           * decide there is nobody to wake between our test of the ring
+           * and our wait on the semaphore.
            */
 
           priv->nwaiters++;
-          nxmutex_unlock(&priv->lock);
-
-          /* We may now be preempted!  But that should be okay because we
-           * have already incremented nwaiters.  Pre-emption is disabled
-           * but will be re-enabled while we are waiting.
-           */
+          spin_unlock_irqrestore_nopreempt(&priv->spinlock, flags);
 
           ret = nxsem_wait(&priv->waitsem);
 
-          /* Did we successfully get the waitsem? */
-
-          if (ret >= 0)
-            {
-              /* Yes... then retake the mutual exclusion mutex */
-
-              ret = nxmutex_lock(&priv->lock);
-            }
-
+          flags = spin_lock_irqsave_nopreempt(&priv->spinlock);
           priv->nwaiters--;
-
-          /* Was the mutex wait successful? Did we successful re-take the
-           * mutual exclusion mutex?
-           */
+          spin_unlock_irqrestore_nopreempt(&priv->spinlock, flags);
 
           if (ret < 0)
             {
-              /* No.. One of the two nxmutex_lock's failed. */
-
-              gerr("ERROR: nxmutex_lock failed\n");
-
               /* Were we awakened by a signal?  Did we read anything before
                * we received the signal?
                */
@@ -168,12 +240,7 @@ ssize_t nxterm_read(FAR struct file *filep, FAR char *buffer, size_t len)
                   nread = ret;
                 }
 
-              /* Break out to return what we have.  Note, we can't exactly
-               * "break" out because whichever error occurred, we do not hold
-               * the exclusion mutex.
-               */
-
-              goto errout_without_lock;
+              break;
             }
         }
       else
@@ -184,12 +251,12 @@ ssize_t nxterm_read(FAR struct file *filep, FAR char *buffer, size_t len)
 
           ch = priv->rxbuffer[priv->tail];
 
-          /* Increment the tail index and re-enable interrupts */
-
           if (++priv->tail >= CONFIG_NXTERM_KBDBUFSIZE)
             {
               priv->tail = 0;
             }
+
+          spin_unlock_irqrestore_nopreempt(&priv->spinlock, flags);
 
           /* Add the character to the user buffer */
 
@@ -198,13 +265,39 @@ ssize_t nxterm_read(FAR struct file *filep, FAR char *buffer, size_t len)
         }
     }
 
-  /* Relinquish the mutual exclusion mutex */
+  /* Echo what was read.  This is done here, after the ring has been
+   * drained and released, rather than character by character inside the
+   * loop above:  it needs the display lock, and holding that while the
+   * ring is being served is exactly the stall described above.  The
+   * cursor is hidden once for the whole run rather than once per
+   * character, since showing it again in between would draw and erase it
+   * at every intermediate position for nothing.
+   */
 
-  nxmutex_unlock(&priv->lock);
+  if (nread > 0 && (priv->tc_lflag & ECHO) != 0)
+    {
+      ret = nxmutex_lock(&priv->lock);
+      if (ret < 0)
+        {
+          gerr("ERROR: nxmutex_lock failed\n");
+        }
+      else
+        {
+          ssize_t i;
+
+          nxterm_hidecursor(priv);
+          for (i = 0; i < nread; i++)
+            {
+              nxterm_echo(priv, buffer[i]);
+            }
+
+          nxterm_showcursor(priv);
+          nxmutex_unlock(&priv->lock);
+        }
+    }
 
   /* Notify all poll/select waiters that they can write to the FIFO */
 
-errout_without_lock:
   if (nread > 0)
     {
       nxterm_pollnotify(priv, POLLOUT);
@@ -339,10 +432,11 @@ errout:
 void nxterm_kbdin(NXTERM handle, FAR const uint8_t *buffer, uint8_t buflen)
 {
   FAR struct nxterm_state_s *priv;
+  irqstate_t flags;
   ssize_t nwritten;
   int nexthead;
+  uint8_t nwaiters;
   char ch;
-  int ret;
 
   ginfo("buflen=%" PRId8 "\n", buflen);
   DEBUGASSERT(handle);
@@ -351,23 +445,18 @@ void nxterm_kbdin(NXTERM handle, FAR const uint8_t *buffer, uint8_t buflen)
 
   priv = (FAR struct nxterm_state_s *)handle;
 
-  /* Get exclusive access to the driver structure */
-
-  ret = nxmutex_lock(&priv->lock);
-  if (ret < 0)
-    {
-      gerr("ERROR: nxmutex_lock failed\n");
-      return;
-    }
-
-  /* Loop until all of the bytes have been written.  This function may be
-   * called from an interrupt handler!  Semaphores cannot be used!
+  /* Get exclusive access to the keyboard ring.
    *
-   * The write logic only needs to modify the head index.  Therefore,
-   * there is a difference in the way that head and tail are protected:
-   * tail is protected with a semaphore; tail is protected by disabling
-   * interrupts.
+   * This is the spinlock and not priv->lock, both because this function
+   * is documented to be callable from an interrupt handler -- where a
+   * mutex cannot be taken at all -- and because priv->lock belongs to the
+   * display.  Waiting for a redraw to finish before a keystroke could
+   * even be queued is what made typing appear to freeze.
    */
+
+  flags = spin_lock_irqsave_nopreempt(&priv->spinlock);
+
+  /* Loop until all of the bytes have been written */
 
   for (nwritten = 0; nwritten < buflen; nwritten++)
     {
@@ -403,7 +492,13 @@ void nxterm_kbdin(NXTERM handle, FAR const uint8_t *buffer, uint8_t buflen)
       priv->head = nexthead;
     }
 
-  /* Was anything written? */
+  nwaiters = priv->nwaiters;
+  spin_unlock_irqrestore_nopreempt(&priv->spinlock, flags);
+
+  /* Was anything written?  The notifications are issued with the ring
+   * released:  nxterm_pollnotify() takes the same spinlock, and posting a
+   * semaphore can reschedule, neither of which belongs inside it.
+   */
 
   if (nwritten > 0)
     {
@@ -413,17 +508,15 @@ void nxterm_kbdin(NXTERM handle, FAR const uint8_t *buffer, uint8_t buflen)
 
       nxterm_pollnotify(priv, POLLIN);
 
-      for (i = 0; i < priv->nwaiters; i++)
+      for (i = 0; i < nwaiters; i++)
         {
-          /* Yes.. Notify all of the waiting readers that more data is
+          /* Notify all of the waiting readers that more data is
            * available
            */
 
           nxsem_post(&priv->waitsem);
         }
     }
-
-  nxmutex_unlock(&priv->lock);
 }
 
 #endif /* CONFIG_NXTERM_NXKBDIN */

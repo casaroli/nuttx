@@ -30,6 +30,7 @@
 #include <nuttx/config.h>
 
 #include <stdint.h>
+#include <termios.h>
 
 #include <nuttx/mutex.h>
 #include <nuttx/spinlock.h>
@@ -62,6 +63,17 @@
 /* VT100 escape sequence processing */
 
 #define VT100_MAX_SEQUENCE 3
+
+/* States of the escape sequence detector used to suppress the local echo
+ * of escape sequences typed by the user.  Only the input side uses this;
+ * escape sequences written by the application are handled by the separate
+ * VT100 emulation above.
+ */
+
+#define NXTERM_ESCAPE_NONE  0 /* Not in an escape sequence */
+#define NXTERM_ESCAPE_START 1 /* Saw ESC, waiting for '[', 'O', or other */
+#define NXTERM_ESCAPE_CSI   2 /* Saw "ESC [", consuming CSI bytes */
+#define NXTERM_ESCAPE_SS3   3 /* Saw "ESC O", waiting for the final byte */
 
 /****************************************************************************
  * Public Types
@@ -152,6 +164,9 @@ struct nxterm_state_s
   uint8_t nwaiters;                          /* Number of threads waiting for data */
   uint8_t head;                              /* rxbuffer head/input index */
   uint8_t tail;                              /* rxbuffer tail/output index */
+
+  tcflag_t tc_lflag;                         /* Local modes; only ECHO is used */
+  uint8_t escape;                            /* See NXTERM_ESCAPE_* */
 
   uint8_t rxbuffer[CONFIG_NXTERM_KBDBUFSIZE];
 

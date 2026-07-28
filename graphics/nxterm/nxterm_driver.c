@@ -35,6 +35,7 @@
 #include <nuttx/debug.h>
 
 #include <nuttx/fs/fs.h>
+#include <nuttx/serial/tioctl.h>
 
 #include "nxterm.h"
 
@@ -310,6 +311,60 @@ static ssize_t nxterm_write(FAR struct file *filep, FAR const char *buffer,
 
 static int nxterm_ioctl(FAR struct file *filep, int cmd, unsigned long arg)
 {
+#ifdef CONFIG_NXTERM_NXKBDIN
+  FAR struct nxterm_state_s *priv;
+  FAR struct termios *termiosp;
+
+  /* Handle the terminal attribute commands here rather than in
+   * nxterm_ioctl_tap():  unlike the NXTERM commands, these apply to one
+   * particular terminal and so need the driver context that only the
+   * file structure carries.
+   *
+   * Answering TCGETS at all is what makes isatty() true for this driver.
+   * That matters beyond the attributes themselves -- readline() consults
+   * isatty() before it will do any of its terminal handling.
+   */
+
+  switch (cmd)
+    {
+      case TCGETS:
+        {
+          priv     = (FAR struct nxterm_state_s *)filep->f_priv;
+          termiosp = (FAR struct termios *)((uintptr_t)arg);
+          if (termiosp == NULL)
+            {
+              return -EINVAL;
+            }
+
+          memset(termiosp, 0, sizeof(struct termios));
+          termiosp->c_lflag = priv->tc_lflag;
+          return OK;
+        }
+
+      case TCSETS:
+        {
+          priv     = (FAR struct nxterm_state_s *)filep->f_priv;
+          termiosp = (FAR struct termios *)((uintptr_t)arg);
+          if (termiosp == NULL)
+            {
+              return -EINVAL;
+            }
+
+          /* Only ECHO is honoured.  The remaining local modes describe
+           * line editing and signal generation that this driver does not
+           * implement, and the input, output and control modes describe a
+           * serial line that does not exist here.
+           */
+
+          priv->tc_lflag = termiosp->c_lflag;
+          return OK;
+        }
+
+      default:
+        break;
+    }
+#endif
+
   /* NOTE:  We don't need driver context here because the NXTERM handle
    * provided within each of the NXTERM IOCTL command data.  Mutual
    * exclusion is similar managed by the IOCTL command handler.
