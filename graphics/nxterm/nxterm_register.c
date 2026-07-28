@@ -84,6 +84,15 @@ FAR struct nxterm_state_s *
 
 #ifdef CONFIG_NXTERM_NXKBDIN
   nxsem_init(&priv->waitsem, 0, 0);
+
+  /* Echo keyboard input by default, as the serial driver does.  ICANON is
+   * deliberately left clear:  reads from this driver are always
+   * character-at-a-time and there is no line-editing logic behind them,
+   * so claiming canonical mode would be a lie that readline() acts on.
+   */
+
+  priv->tc_lflag = ECHO;
+  priv->escape   = NXTERM_ESCAPE_NONE;
 #endif
 
   spin_lock_init(&priv->spinlock);
