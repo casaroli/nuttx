@@ -356,6 +356,17 @@ static void set_pte_block_desc(uint64_t *pte, uint64_t addr_pa,
     {
       desc |= PTE_BLOCK_DESC_AP_USER | PTE_BLOCK_DESC_PXN;
     }
+  else
+    {
+      /* Conversely, a mapping unprivileged code cannot reach as data must
+       * not be reachable as instructions either.  The AP bits above do not
+       * say that on their own, so say it here:  kernel RAM is mapped
+       * MT_NORMAL | MT_RW, which is MT_EXECUTE, and without UXN an EL0 task
+       * can branch into the kernel image and run it.
+       */
+
+      desc |= PTE_BLOCK_DESC_UXN;
+    }
 
   /* the access flag */
 
