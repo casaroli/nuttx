@@ -38,7 +38,7 @@
 static int nxterm_fill(FAR struct nxterm_state_s *priv,
                        FAR const struct nxgl_rect_s *rect,
                        nxgl_mxpixel_t wcolor[CONFIG_NX_NPLANES]);
-#ifndef CONFIG_NX_WRITEONLY
+#ifdef NXTERM_HAVE_MOVE
 static int nxterm_move(FAR struct nxterm_state_s *priv,
                        FAR const struct nxgl_rect_s *rect,
                        FAR const struct nxgl_point_s *offset);
@@ -56,7 +56,7 @@ static int nxterm_bitmap(FAR struct nxterm_state_s *priv,
 static const struct nxterm_operations_s g_nxops =
 {
   nxterm_fill,
-#ifndef CONFIG_NX_WRITEONLY
+#ifdef NXTERM_HAVE_MOVE
   nxterm_move,
 #endif
   nxterm_bitmap
@@ -106,7 +106,7 @@ static int nxterm_fill(FAR struct nxterm_state_s *priv,
  *
  ****************************************************************************/
 
-#ifndef CONFIG_NX_WRITEONLY
+#ifdef NXTERM_HAVE_MOVE
 static int nxterm_move(FAR struct nxterm_state_s *priv,
                        FAR const struct nxgl_rect_s *rect,
                        FAR const struct nxgl_point_s *offset)

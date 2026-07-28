@@ -140,6 +140,17 @@ config NX_WRITEONLY
 		Automatically defined if NX_LCDDRIVER and LCD_NOGETRUN are
 		defined.
 
+config NX_HWSCROLL
+	bool
+	default n
+	---help---
+		Selected by a display driver that implements the vscroll() method,
+		which scrolls the whole display in the controller rather than by
+		moving pixels.  Being unable to read a display (NX_WRITEONLY) is not
+		the same as being unable to move its contents, and this is what tells
+		the difference: a write-only display that can scroll itself can still
+		satisfy a move of the whole display.
+
 config NX_UPDATE
 	bool "Display update hooks"
 	default FB_UPDATE && !NX_LCDDRIVER
