@@ -78,6 +78,10 @@ FAR struct lcd_dev_s *st7365p_lcdinitialize(FAR struct spi_dev_s *spi);
  *   This is what makes a text console usable: scrolling one line costs a
  *   register write plus one repainted line, instead of a full-screen redraw.
  *
+ *   When CONFIG_LCD_ST7365P_HWSCROLL is enabled this is also installed as
+ *   the device's vscroll() method, which is how NX reaches it; a board only
+ *   needs to call it directly if it drives the panel without NX.
+ *
  * Input Parameters:
  *   dev   - The LCD device returned by st7365p_lcdinitialize().
  *   lines - Number of display lines to scroll by.  Positive scrolls content
