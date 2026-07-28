@@ -357,20 +357,31 @@ static int arm64_el1_bti(uint64_t *regs, uint64_t esr)
 
 static int arm64_el1_undef(uint64_t *regs, uint64_t esr)
 {
-  uint32_t insn;
   uint64_t elr = regs[REG_ELR];
+  uint32_t insn;
+  int      i;
 
-  serr("Undefined instruction at 0x%" PRIx64 ", dump:\n", elr);
-  memcpy(&insn, (void *)(elr - 8), 4);
-  serr("0x%" PRIx64 " : 0x%" PRIx32 "\n", elr - 8, insn);
-  memcpy(&insn, (void *)(elr - 4), 4);
-  serr("0x%" PRIx64 " : 0x%" PRIx32 "\n", elr - 4, insn);
-  memcpy(&insn, (void *)(elr), 4);
-  serr("0x%" PRIx64 " : 0x%" PRIx32 "\n", elr, insn);
-  memcpy(&insn, (void *)(elr + 4), 4);
-  serr("0x%" PRIx64 " : 0x%" PRIx32 "\n", elr + 4, insn);
-  memcpy(&insn, (void *)(elr + 8), 4);
-  serr("0x%" PRIx64 " : 0x%" PRIx32 "\n", elr + 8, insn);
+  serr("Undefined instruction at 0x%" PRIx64 "\n", elr);
+
+  /* Only dump the surrounding words for an exception taken at EL1, where
+   * ELR is kernel code that was just fetched and so is known mapped.  From
+   * a lower EL it is a user address that may be neither mapped nor readable
+   * from here, and faulting on it turns a recoverable user fault into a
+   * nested exception -- which trips the DEBUGASSERT in arm64_fatal_handler()
+   * before the fault the user actually took can be reported.
+   */
+
+  if ((regs[REG_SPSR] & SPSR_MODE_MASK) == SPSR_MODE_EL0T)
+    {
+      return -1;
+    }
+
+  serr("dump:\n");
+  for (i = -8; i <= 8; i += 4)
+    {
+      memcpy(&insn, (FAR void *)(elr + i), sizeof(insn));
+      serr("0x%" PRIx64 " : 0x%" PRIx32 "\n", elr + i, insn);
+    }
 
   return -1;
 }
@@ -640,6 +651,7 @@ uint64_t *arm64_fatal_handler(uint64_t *regs)
           ((tcb->flags & TCB_FLAG_SYSCALL) == 0) &&
           ((regs[REG_SPSR] & SPSR_MODE_MASK) == SPSR_MODE_EL0T))
         {
+          struct tcb_s *ptcb;
           uint64_t esr;
           const char *reason;
           const char *desc;
@@ -659,10 +671,18 @@ uint64_t *arm64_fatal_handler(uint64_t *regs)
               desc = "";
             }
 
-          _alert("PANIC: Unhandled user exception in PID %d: %s\n",
+          /* Nothing is panicking here:  the offending task is about to be
+           * terminated and the system carries on.  Say so in the same words
+           * the other architectures use, and leave the register dump to the
+           * paths that really are fatal.
+           */
+
+          ptcb = nxsched_get_tcb(tcb->group->tg_pid);
+
+          _alert("Segmentation fault in %s (PID %d: %s)\n",
+                 ptcb != NULL ? get_task_name(ptcb) : "<gone>",
                  tcb->pid, get_task_name(tcb));
           _alert("Reason: %s - %s\n", reason, desc);
-          up_dump_register(regs);
 
           tcb->flags |= TCB_FLAG_FORCED_CANCEL;
 
