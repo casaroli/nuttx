@@ -831,6 +831,7 @@ config LCD_ST7365P
 	bool "Sitronix ST7365P TFT Controller"
 	default n
 	depends on SPI && SPI_CMDDATA
+	select LCD_NOGETRUN
 	---help---
 		Enable support for the Sitronix ST7365P, as fitted to the
 		ClockworkPi PicoCalc.
