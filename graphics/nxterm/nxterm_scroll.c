@@ -47,14 +47,16 @@
  * Name: nxterm_movedisplay
  *
  * Description:
- *   This function implements the data movement for the scroll operation.  If
- *   we can read the displays framebuffer memory, then the job is pretty
- *   easy.  However, many displays (such as SPI-based LCDs) are often read-
- *   only.
+ *   This function implements the data movement for the scroll operation.
+ *   If NX can move the display for us, then the job is pretty easy.  That
+ *   is the case whenever the display can be read back, and also when it
+ *   cannot but the controller can scroll itself, which many SPI-based LCDs
+ *   can.  Failing both, every glyph has to be drawn again in its new
+ *   position.
  *
  ****************************************************************************/
 
-#ifdef CONFIG_NX_WRITEONLY
+#ifndef NXTERM_HAVE_MOVE
 static inline void nxterm_movedisplay(FAR struct nxterm_state_s *priv,
                                      int bottom, int scrollheight)
 {

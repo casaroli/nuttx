@@ -59,6 +59,19 @@
 
 #define NO_HOLDER          (INVALID_PROCESS_ID)
 
+/* Whether the console can scroll by asking NX to move the display.
+ *
+ * NX_WRITEONLY says the display cannot be read back, which is not the same
+ * as being unable to move its contents: a controller with hardware scrolling
+ * moves them without reading anything.  Where that is available the console
+ * scrolls with a move, and only falls back to repainting every glyph when
+ * the display can neither be read nor scroll itself.
+ */
+
+#if !defined(CONFIG_NX_WRITEONLY) || defined(CONFIG_NX_HWSCROLL)
+#  define NXTERM_HAVE_MOVE 1
+#endif
+
 /* VT100 escape sequence processing */
 
 #define VT100_MAX_SEQUENCE 3
@@ -85,7 +98,7 @@ struct nxterm_operations_s
   int (*fill)(FAR struct nxterm_state_s *priv,
               FAR const struct nxgl_rect_s *rect,
               nxgl_mxpixel_t wcolor[CONFIG_NX_NPLANES]);
-#ifndef CONFIG_NX_WRITEONLY
+#ifdef NXTERM_HAVE_MOVE
   int (*move)(FAR struct nxterm_state_s *priv,
               FAR const struct nxgl_rect_s *rect,
               FAR const struct nxgl_point_s *offset);
