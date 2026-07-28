@@ -109,10 +109,22 @@ bool arm_userfault_recover(uint32_t *regs)
    * dispatch_syscall().  This is the exact same redirect.
    */
 
-  regs[REG_PC]    = (uint32_t)_exit;
+  /* The instruction set state comes from the SPSR, never from bit 0 of the
+   * new PC, so it has to be set from the symbol here.  Without this a Thumb
+   * kernel resumed from a fault that was taken in ARM state -- a call to an
+   * even address, which is what the execute probe does -- decodes _exit as
+   * ARM and runs off into the literal pools.
+   */
+
+  regs[REG_PC]    = (uint32_t)_exit & ~1;
   regs[REG_R0]    = SIGSEGV;
-  regs[REG_CPSR] &= ~PSR_MODE_MASK;
+  regs[REG_CPSR] &= ~(PSR_MODE_MASK | PSR_T_BIT);
   regs[REG_CPSR] |= PSR_MODE_SYS;
+
+  if (((uint32_t)_exit & 1) != 0)
+    {
+      regs[REG_CPSR] |= PSR_T_BIT;
+    }
 
 #ifdef CONFIG_ARCH_KERNEL_STACK
   /* Continue on the kernel stack if this task has one.  It is unused:  the
