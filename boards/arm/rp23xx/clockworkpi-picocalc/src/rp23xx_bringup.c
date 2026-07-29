@@ -37,6 +37,7 @@
 
 #include <arch/board/board.h>
 
+#include "rp23xx_gpio.h"
 #include "rp23xx_pico.h"
 
 #ifdef CONFIG_ARCH_BOARD_COMMON
@@ -155,6 +156,20 @@ int rp23xx_bringup(void)
         }
     }
 #endif
+
+  /* Configure the co-processor's attention line as a pulled-up input.
+   *
+   * This is done unconditionally, and before the keyboard, because an
+   * unconfigured pad is worse than an unused one.  At reset the RP2350
+   * leaves it isolated, input-disabled and pulled *down*; since the far end
+   * is open drain and only ever pulls low, it then reads 0 whether or not
+   * the co-processor is asserting, so anything that later polls it sees a
+   * permanent request it can never clear.
+   */
+
+  rp23xx_gpio_init(GPIO_COPROC_ATTN);
+  rp23xx_gpio_setdir(GPIO_COPROC_ATTN, false);
+  rp23xx_gpio_set_pulls(GPIO_COPROC_ATTN, true, false);
 
 #ifdef CONFIG_INPUT_PICOCALC_KBD
   /* Register the keyboard co-processor as /dev/kbd0.  This is deliberately
