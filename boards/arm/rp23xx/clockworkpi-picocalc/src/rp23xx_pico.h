@@ -54,6 +54,16 @@
 
 #define GPIO_BTN_USER1     45
 
+/* The co-processor's attention line, STM32 PC10 -> GP9 (J302-12).
+ *
+ * Open drain and active low at the far end, and there is no pull-up on the
+ * board, so the RP2350's internal one is the only thing that ever pulls it
+ * high.  Without it the pad reads 0 in both states, and the line cannot be
+ * observed at all.
+ */
+
+#define GPIO_COPROC_ATTN   9
+
 /* Buttons IRQ definitions */
 
 #define MIN_IRQBUTTON     BUTTON_USER1
