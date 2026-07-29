@@ -63,6 +63,20 @@
 int rp23xx_bringup(void);
 
 /****************************************************************************
+ * Name: picocalc_autostart
+ *
+ * Description:
+ *   Start the terminal and the keyboard bridge on the panel, so the machine
+ *   comes up usable without a debug console.  Returns immediately; the work
+ *   happens on its own task.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_CLOCKWORKPI_PICOCALC_AUTOSTART
+void picocalc_autostart(void);
+#endif
+
+/****************************************************************************
  * Name: picocalc_pin_park
  *
  * Description:

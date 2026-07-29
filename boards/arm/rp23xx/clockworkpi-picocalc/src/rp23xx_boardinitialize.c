@@ -117,5 +117,9 @@ void rp23xx_boardinitialize(void)
 void board_late_initialize(void)
 {
   rp23xx_bringup();
+
+#ifdef CONFIG_CLOCKWORKPI_PICOCALC_AUTOSTART
+  picocalc_autostart();
+#endif
 }
 #endif

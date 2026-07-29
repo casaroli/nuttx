@@ -15,6 +15,23 @@ if ARCH_BOARD_CLOCKWORKPI_PICOCALC
 config ARCH_LEDS
 	default n
 
+config CLOCKWORKPI_PICOCALC_AUTOSTART
+	bool "Start the terminal on the panel at boot"
+	default n
+	depends on BUILTIN && EXAMPLES_NXTERM && SYSTEM_KBDBRIDGE
+	---help---
+		Launch nxterm, wait for /dev/nxterm0, then launch kbdbridge, all from
+		board_late_initialize().
+
+		Without this the panel stays blank after every reset until someone
+		runs two commands on the debug console -- which on a handheld is not
+		a console the user has.
+
+config CLOCKWORKPI_PICOCALC_AUTOSTART_STACKSIZE
+	int "Autostart task stack size"
+	default 1024
+	depends on CLOCKWORKPI_PICOCALC_AUTOSTART
+
 menuconfig RP23XX_INFINEON_CYW43439
 	bool "Has Infineon cyw43439 WiFi chip"
 	depends on IEEE80211_INFINEON_CYW43439
