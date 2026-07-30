@@ -192,13 +192,36 @@ child forked there resumes at a kernel address and faults.  Giving those
 architectures the same path is what stands between them and ``fork()``;
 nothing else in this change has to move.
 
-**A windowed ABI needs its stack rebased, not just copied.**  On Xtensa,
-giving a child a relocated copy of the parent's stack takes more than the copy:
-the register-window save areas embedded in the stack hold absolute stack
-pointers, so each one has to be rebased along with the copy, or the child
-reloads a pointer into the *parent's* stack on its very first window underflow.
-That rebasing is architecture-specific and belongs with the Xtensa entry points
-rather than here.
+The arm64 *protected* configurations are excluded deliberately rather than
+left unimplemented, and that holds whether the protection comes from an MPU
+(ARMv8-R) or from a static set of MMU mappings (``qemu-armv8a:pnsh``).  A
+protected build has one address space carved up once at boot; its
+``up_addrenv_*()`` are stubs, and there is no mapping to duplicate at the same
+virtual addresses, so POSIX ``fork()`` semantics cannot be provided at all.
+``vfork()`` and ``task_fork()``, which share the parent's memory, work there as
+everywhere else.  This is why ``ARCH_HAVE_ADDRENV_FORK`` carries
+``&& !BUILD_PROTECTED``:  ``ARCH_ADDRENV`` being set is not by itself evidence
+that address environments are real.
+
+**Xtensa selects none of the fork family.**  Giving a child a relocated copy
+of the parent's stack takes more than the copy there:  the register-window save
+areas embedded in the stack hold absolute stack pointers, so each one has to be
+rebased along with the copy, or the child reloads a pointer into the *parent's*
+stack on its very first window underflow.
+
+What is missing is the Xtensa ``up_vfork()`` entry point itself.  It has to:
+
+#. spill the register windows with ``xtensa_window_spill()``, so that every
+   live frame is in memory at its real address;
+#. capture the caller's context (``SYS_save_context`` is the existing
+   mechanism, as used by ``up_saveusercontext()``);
+#. arrange the child's initial window state so that its first ``retw`` unwinds
+   into the application frame that called ``vfork()``, rather than into the
+   parent's own kernel-side frames.
+
+Point 3 is the delicate one:  every spilled stack pointer in the copied window
+save areas has to be rebased with the copy, and that construction is
+Xtensa-specific.
 
 Note also on ``waitpid()`` after ``vfork()``
 ============================================

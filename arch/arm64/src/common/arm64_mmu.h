@@ -71,6 +71,7 @@
  * attrs[3] : Access Permissions
  * attrs[4] : Memory access from secure/ns state
  * attrs[5] : Execute Permissions
+ * attrs[6] : Unprivileged (EL0) access
  *
  * See Arm® Architecture Reference Manual, ARM DDI 0487E.a
  */
@@ -78,6 +79,7 @@
 #define MT_PERM_SHIFT               3U
 #define MT_SEC_SHIFT                4U
 #define MT_EXECUTE_SHIFT            5U
+#define MT_USER_SHIFT               6U
 
 #define MT_RO                       (0U << MT_PERM_SHIFT)
 #define MT_RW                       (1U << MT_PERM_SHIFT)
@@ -87,6 +89,14 @@
 
 #define MT_EXECUTE                  (0U << MT_EXECUTE_SHIFT)
 #define MT_EXECUTE_NEVER            (1U << MT_EXECUTE_SHIFT)
+
+/* Whether unprivileged (EL0) code may reach the region at all.  Regions are
+ * privileged-only unless MT_USER says otherwise, which is what makes the
+ * kernel blob of a protected build unreachable from user code.
+ */
+
+#define MT_P_ONLY                   (0U << MT_USER_SHIFT)
+#define MT_USER                     (1U << MT_USER_SHIFT)
 
 /* Some compound attributes for most common usages */
 

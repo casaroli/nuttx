@@ -347,6 +347,16 @@ static void set_pte_block_desc(uint64_t *pte, uint64_t addr_pa,
 
   desc |= (attrs & MT_RW) ? PTE_BLOCK_DESC_AP_RW : PTE_BLOCK_DESC_AP_RO;
 
+  /* Unprivileged access.  Anything EL0 can reach is also made privileged-
+   * execute-never, so that a stray branch from the kernel into user text
+   * traps instead of running.
+   */
+
+  if (attrs & MT_USER)
+    {
+      desc |= PTE_BLOCK_DESC_AP_USER | PTE_BLOCK_DESC_PXN;
+    }
+
   /* the access flag */
 
   desc |= PTE_BLOCK_DESC_AF;
@@ -385,6 +395,17 @@ static void set_pte_block_desc(uint64_t *pte, uint64_t addr_pa,
         if (attrs & MT_EXECUTE_NEVER)
           {
             desc |= PTE_BLOCK_DESC_PXN;
+
+            /* Deny it to unprivileged code as well, where unprivileged code
+             * can reach it at all.  Without this the user data and heap of a
+             * protected build would be writable and executable at once; the
+             * per-process mappings say the same thing in MMU_UDATA_FLAGS.
+             */
+
+            if (attrs & MT_USER)
+              {
+                desc |= PTE_BLOCK_DESC_UXN;
+              }
           }
 
         if (mem_type == MT_NORMAL)
