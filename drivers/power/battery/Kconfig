@@ -167,4 +167,23 @@ config BATTERY_FAKE_GAUGE
 	---help---
 		The BATTERY FAKE are battery charger for emulate gauge.
 
+config BATTERY_PICOCALC
+	bool "ClockworkPi PicoCalc co-processor battery"
+	default n
+	depends on BATTERY_GAUGE && I2C
+	---help---
+		Battery gauge served by the PicoCalc's STM32F103 keyboard
+		co-processor over I2C.
+
+		The AXP2101 PMU is not on the host's bus: it belongs to the
+		co-processor, which polls it and caches the result, so a read here is
+		one short transaction that never waits on the PMU.
+
+		Both co-processor protocols are supported and the right one is chosen
+		by probing.  The stock ClockworkPi BIOS serves a percentage with a
+		charging bit; the replacement firmware adds the cell voltage, the
+		charge state, and whether a battery is present at all -- which the
+		legacy register cannot express, so a board running from USB with no
+		cell fitted reports 0% there.
+
 endmenu
