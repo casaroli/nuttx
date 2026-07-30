@@ -24,6 +24,10 @@ include $(TOPDIR)/Make.defs
 
 CSRCS = qemu_boardinit.c qemu_bringup.c
 
+ifeq ($(CONFIG_BOARDCTL_ROMDISK),y)
+CSRCS += $(if $(wildcard romfs_boot.c), romfs_boot.c, romfs_stub.c)
+endif
+
 ifeq ($(CONFIG_BOARDCTL),y)
 CSRCS += qemu_power.c
 endif

@@ -26,12 +26,24 @@
 
 #include <nuttx/config.h>
 #include <stdint.h>
+#include <debug.h>
 #include <nuttx/board.h>
+
+#ifdef CONFIG_BOARDCTL_ROMDISK
+#  include <nuttx/drivers/ramdisk.h>
+#  include "romfs.h"
+#endif
+
 #include "qemu-armv8a.h"
 
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
+
+#ifdef CONFIG_BOARDCTL_ROMDISK
+#  define SECTORSIZE   512
+#  define NSECTORS(b)  (((b) + SECTORSIZE - 1) / SECTORSIZE)
+#endif
 
 /****************************************************************************
  * Private Functions
@@ -111,5 +123,27 @@ void board_late_initialize(void)
   /* Perform board initialization */
 
   qemu_bringup();
+
+#ifdef CONFIG_BOARDCTL_ROMDISK
+  /* Register the ROMFS image that holds the applications, so that
+   * nx_start_application() can mount it.  A kernel build needs this because
+   * its applications are separate ELF files rather than part of the blob;
+   * carrying them in the image is what lets it boot without a host
+   * filesystem behind semihosting.
+   *
+   * romfs_img is weak, and the placeholder in romfs_stub.c is one byte, so a
+   * length of one sector or less means no image was linked in.
+   */
+
+  if (NSECTORS(romfs_img_len) > 1)
+    {
+      int ret = romdisk_register(0, romfs_img, NSECTORS(romfs_img_len),
+                                 SECTORSIZE);
+      if (ret < 0)
+        {
+          ferr("ERROR: Failed to register romfs: %d\n", -ret);
+        }
+    }
+#endif
 }
 #endif /* CONFIG_BOARD_LATE_INITIALIZE */

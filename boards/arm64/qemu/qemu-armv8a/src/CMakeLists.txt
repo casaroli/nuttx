@@ -21,6 +21,14 @@
 # ##############################################################################
 set(SRCS qemu_boardinit.c qemu_bringup.c)
 
+if(CONFIG_BOARDCTL_ROMDISK)
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/romfs_boot.c)
+    list(APPEND SRCS romfs_boot.c)
+  else()
+    list(APPEND SRCS romfs_stub.c)
+  endif()
+endif()
+
 if(CONFIG_BOARDCTL)
   list(APPEND SRCS qemu_power.c)
 endif()
