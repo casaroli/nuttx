@@ -361,7 +361,7 @@ static pid_t x86_64_fork_syscall(struct tcb_s *parent, int type)
    * too.
    */
 
-  child = nxtask_setup_fork((start_t)rip, type, (uintptr_t)rsp);
+  child = nxtask_setup_fork((start_t)rip, type);
   if (!child)
     {
       serr("ERROR: nxtask_setup_fork failed\n");
