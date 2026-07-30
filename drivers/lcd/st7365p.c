@@ -110,6 +110,7 @@ struct st7365p_dev_s
 {
   struct lcd_dev_s dev;        /* Publicly visible device structure */
   FAR struct spi_dev_s *spi;   /* The SPI device the panel is wired to */
+  st7365p_backlight_t bl;      /* Board backlight hook, may be NULL */
   uint8_t power;               /* Current power setting */
   uint16_t voffset;            /* Hardware scroll offset, in GRAM rows */
 };
@@ -763,9 +764,19 @@ static int st7365p_getpower(FAR struct lcd_dev_s *dev)
  * Name: st7365p_setpower
  *
  * Description:
- *   Turn the panel on or off.  Anything non-zero is "on"; the backlight
- *   itself is not on a pin of this controller, so intermediate levels are
- *   the board's business.
+ *   Turn the panel on or off, and set its brightness.
+ *
+ *   The backlight is not on a pin of this controller, so a board that can
+ *   dim its own supplies a hook at initialization and the power setting is
+ *   passed through to it, scaled 0..CONFIG_LCD_MAXPOWER.  This is the
+ *   interpretation lcd.h describes: "on backlit LCDs, this setting may
+ *   correspond to the backlight setting".  With no hook, any non-zero value
+ *   is simply "on", and CONFIG_LCD_MAXPOWER should be 1.
+ *
+ *   The ordering matters at both ends.  Coming up, the panel is woken before
+ *   the backlight is raised, so nothing lights an undriven display; going
+ *   down, the backlight is cut before the controller sleeps, so the last
+ *   frame is not left visible fading out.
  *
  ****************************************************************************/
 
@@ -782,7 +793,23 @@ static int st7365p_setpower(FAR struct lcd_dev_s *dev, int power)
       up_mdelay(120);
       st7365p_sendcmd(priv, ST7365P_DISPON);
     }
-  else
+
+  if (priv->bl != NULL)
+    {
+      /* A backlight that cannot be set is not a reason to refuse the power
+       * change: the panel state above has already been applied, and a board
+       * whose backlight is behind an I2C co-processor can lose the bus
+       * transiently without the display being wrong.
+       */
+
+      int ret = priv->bl(power);
+      if (ret < 0)
+        {
+          lcderr("ERROR: backlight(%d) failed: %d\n", power, ret);
+        }
+    }
+
+  if (power <= 0)
     {
       st7365p_sendcmd(priv, ST7365P_DISPOFF);
       st7365p_sendcmd(priv, ST7365P_SLPIN);
@@ -821,7 +848,8 @@ static int st7365p_setcontrast(FAR struct lcd_dev_s *dev,
  * Name: st7365p_lcdinitialize
  ****************************************************************************/
 
-FAR struct lcd_dev_s *st7365p_lcdinitialize(FAR struct spi_dev_s *spi)
+FAR struct lcd_dev_s *st7365p_lcdinitialize(FAR struct spi_dev_s *spi,
+                                            st7365p_backlight_t backlight)
 {
   FAR struct st7365p_dev_s *priv = &g_lcddev;
 
@@ -837,6 +865,7 @@ FAR struct lcd_dev_s *st7365p_lcdinitialize(FAR struct spi_dev_s *spi)
   priv->dev.vscroll      = st7365p_scroll;
 #endif
   priv->spi              = spi;
+  priv->bl               = backlight;
   priv->power            = 0;
   priv->voffset          = 0;
 
