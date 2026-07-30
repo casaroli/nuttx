@@ -534,10 +534,27 @@ config ARCH_HAVE_FORK
 		Where this is not selected fork() is not provided at all, and code
 		that calls it fails to build -- see FORK_IS_TASK_FORK.
 
+config TASK_FORK
+	bool "Provide task_fork()"
+	default y
+	depends on ARCH_HAVE_TASK_FORK
+	---help---
+		Provide task_fork(), which clones the calling task:  the child shares
+		the parent's .data/.bss/heap, runs on a private copy of the parent's
+		stack, and runs concurrently with the parent.  This is the historical
+		NuttX fork() behaviour under its own name.  It is not POSIX, and it is
+		neither fork() nor vfork().
+
+		Disable this to leave it out where nothing calls it.  The saving is
+		small -- the architecture's entry point, the system call and the libc
+		stub -- but the primitive is a NuttX extension, so a configuration
+		that does not want it need not carry it.  vfork() and fork() are
+		unaffected; each is selected on its own.
+
 config FORK_IS_TASK_FORK
 	bool "Provide fork() as an alias for task_fork() (legacy)"
 	default n
-	depends on ARCH_HAVE_TASK_FORK && !ARCH_HAVE_FORK
+	depends on TASK_FORK && !ARCH_HAVE_FORK
 	---help---
 		Provide fork() on configurations that cannot implement POSIX fork()
 		semantics, by aliasing it to task_fork().

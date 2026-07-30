@@ -265,7 +265,7 @@ extern initializer_t _einit[];
  *
  ****************************************************************************/
 
-#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+#ifdef CONFIG_TASK_FORK
 pid_t up_task_fork(void);
 #endif
 

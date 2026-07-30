@@ -35,7 +35,7 @@
 #include <errno.h>
 #include <nuttx/debug.h>
 
-#if defined(CONFIG_ARCH_HAVE_TASK_FORK) || defined(CONFIG_ARCH_HAVE_VFORK) || \
+#if defined(CONFIG_TASK_FORK) || defined(CONFIG_ARCH_HAVE_VFORK) || \
     defined(CONFIG_ARCH_HAVE_FORK)
 
 /****************************************************************************
@@ -154,7 +154,7 @@ static void atfork_parent(void)
  *
  ****************************************************************************/
 
-#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+#ifdef CONFIG_TASK_FORK
 pid_t task_fork(void)
 {
   pid_t pid;
@@ -177,7 +177,7 @@ pid_t task_fork(void)
 
   return pid;
 }
-#endif /* CONFIG_ARCH_HAVE_TASK_FORK */
+#endif /* CONFIG_TASK_FORK */
 
 /****************************************************************************
  * Name: vfork
@@ -280,5 +280,5 @@ pid_t fork(void)
 }
 #endif
 
-#endif /* CONFIG_ARCH_HAVE_TASK_FORK || CONFIG_ARCH_HAVE_VFORK ||
+#endif /* CONFIG_TASK_FORK || CONFIG_ARCH_HAVE_VFORK ||
         * CONFIG_ARCH_HAVE_FORK */

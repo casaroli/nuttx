@@ -99,7 +99,7 @@
 
 	.text
 
-#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+#ifdef CONFIG_TASK_FORK
 	.globl	up_task_fork
 	.type	up_task_fork, @function
 up_task_fork:
@@ -114,7 +114,7 @@ up_task_fork:
 	add	sp, sp, #XCPTCONTEXT_SIZE
 	bx	lr
 	.size	up_task_fork, . - up_task_fork
-#endif /* CONFIG_ARCH_HAVE_TASK_FORK */
+#endif /* CONFIG_TASK_FORK */
 
 #ifdef CONFIG_ARCH_HAVE_VFORK
 	.globl	up_vfork

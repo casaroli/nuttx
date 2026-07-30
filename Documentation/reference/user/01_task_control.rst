@@ -435,10 +435,10 @@ Functions
   under the name ``fork()`` before these three interfaces were separated, and
   it is preserved here under an honest name so that nothing is lost.
 
-     NOTE: available where ``CONFIG_ARCH_HAVE_TASK_FORK`` is selected, which
-     is exactly the set of configurations that had ``fork()`` before the
-     split.  New code should prefer :c:func:`pthread_create`, which is the
-     same memory relationship spelled clearly, or :c:func:`posix_spawn`;
+     NOTE: available where ``CONFIG_TASK_FORK`` is enabled, which defaults to
+     the set of configurations that had ``fork()`` before the split, and can
+     be turned off.  New code should prefer :c:func:`pthread_create`, which
+     is the same memory relationship spelled clearly, or :c:func:`posix_spawn`;
      ``task_fork()`` exists to give the historical behaviour a truthful name,
      not to recommend it.
 

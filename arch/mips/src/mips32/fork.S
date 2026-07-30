@@ -93,7 +93,7 @@
 	.set	micromips
 #endif
 
-#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+#ifdef CONFIG_TASK_FORK
 	.globl	up_task_fork
 	.type	up_task_fork, function
 	.ent	up_task_fork

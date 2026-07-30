@@ -84,7 +84,7 @@
  *
  ****************************************************************************/
 
-#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+#ifdef CONFIG_TASK_FORK
 GTEXT(up_task_fork)
 SECTION_FUNC(text, up_task_fork)
     mov    x1, #FORK_TYPE_TASK

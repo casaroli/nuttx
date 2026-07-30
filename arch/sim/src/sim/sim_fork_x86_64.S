@@ -107,7 +107,7 @@
 
 	.text
 
-#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+#ifdef CONFIG_TASK_FORK
 	.globl	SYMBOL(up_task_fork)
 #ifdef __ELF__
 	.type	SYMBOL(up_task_fork), @function
@@ -132,7 +132,7 @@ SYMBOL(up_task_fork):
 #ifdef __ELF__
 	.size	SYMBOL(up_task_fork), . - SYMBOL(up_task_fork)
 #endif
-#endif /* CONFIG_ARCH_HAVE_TASK_FORK */
+#endif /* CONFIG_TASK_FORK */
 
 #ifdef CONFIG_ARCH_HAVE_VFORK
 	.globl	SYMBOL(up_vfork)

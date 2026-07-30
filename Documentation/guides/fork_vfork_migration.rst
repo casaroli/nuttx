@@ -42,7 +42,7 @@ There are now three distinct primitives:
    * - ``task_fork()``
      - child shares memory, private stack copy
      - runs concurrently
-     - ``CONFIG_ARCH_HAVE_TASK_FORK`` -- exactly where ``fork()`` existed
+     - ``CONFIG_TASK_FORK`` -- on by default exactly where ``fork()`` existed
        before
 
 ``task_fork()`` is the old behaviour under an honest name.  Nothing was lost.
@@ -121,6 +121,13 @@ Configuration symbols
    Hidden.  The architecture can clone the calling task with a copied stack.
    Inherits exactly the ``select`` lines that ``ARCH_HAVE_FORK`` used to have,
    so no configuration that had ``fork()`` loses the machinery.
+
+``CONFIG_TASK_FORK``
+   Provide ``task_fork()``.  Defaults to ``y`` wherever
+   ``ARCH_HAVE_TASK_FORK`` is selected, so no configuration that had ``fork()``
+   loses the primitive.  Turn it off to leave a NuttX extension out of a build
+   that does not call it; the architecture entry point, the system call and the
+   libc stub go with it.  ``vfork()`` and ``fork()`` are unaffected.
 
 ``CONFIG_ARCH_HAVE_VFORK``
    Hidden.  The architecture can implement POSIX ``vfork()``.

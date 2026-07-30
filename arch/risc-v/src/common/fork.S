@@ -39,7 +39,7 @@
 
   .file  "fork.S"
   .globl riscv_fork
-#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+#ifdef CONFIG_TASK_FORK
   .globl up_task_fork
 #endif
 #ifdef CONFIG_ARCH_HAVE_VFORK
@@ -89,7 +89,7 @@
  *
  ****************************************************************************/
 
-#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+#ifdef CONFIG_TASK_FORK
 .type up_task_fork, function
 
 up_task_fork:

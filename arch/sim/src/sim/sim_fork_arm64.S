@@ -110,7 +110,7 @@
 	.text
 	.align	4
 
-#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+#ifdef CONFIG_TASK_FORK
 	.globl	SYMBOL(up_task_fork)
 
 SYMBOL(up_task_fork):
@@ -132,7 +132,7 @@ SYMBOL(up_task_fork):
 	ldp		x29, x30, [sp]				/* restore FP/LR register */
 
 	ret
-#endif /* CONFIG_ARCH_HAVE_TASK_FORK */
+#endif /* CONFIG_TASK_FORK */
 
 #ifdef CONFIG_ARCH_HAVE_VFORK
 	.globl	SYMBOL(up_vfork)

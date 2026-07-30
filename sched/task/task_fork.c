@@ -49,7 +49,7 @@
  * built if the architecture can provide any one of them.
  */
 
-#if defined(CONFIG_ARCH_HAVE_TASK_FORK) || defined(CONFIG_ARCH_HAVE_VFORK) || \
+#if defined(CONFIG_TASK_FORK) || defined(CONFIG_ARCH_HAVE_VFORK) || \
     defined(CONFIG_ARCH_HAVE_FORK)
 
 /****************************************************************************
@@ -649,5 +649,5 @@ void nxtask_abort_fork(FAR struct tcb_s *child, int errcode)
   set_errno(errcode);
 }
 
-#endif /* CONFIG_ARCH_HAVE_TASK_FORK || CONFIG_ARCH_HAVE_VFORK ||
+#endif /* CONFIG_TASK_FORK || CONFIG_ARCH_HAVE_VFORK ||
         * CONFIG_ARCH_HAVE_FORK */

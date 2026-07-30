@@ -199,7 +199,7 @@
 "unlink","unistd.h","!defined(CONFIG_DISABLE_MOUNTPOINT)","int","FAR const char *"
 "unsetenv","stdlib.h","!defined(CONFIG_DISABLE_ENVIRON)","int","FAR const char *"
 "up_fork","nuttx/arch.h","defined(CONFIG_ARCH_HAVE_FORK)","pid_t"
-"up_task_fork","nuttx/arch.h","defined(CONFIG_ARCH_HAVE_TASK_FORK)","pid_t"
+"up_task_fork","nuttx/arch.h","defined(CONFIG_TASK_FORK)","pid_t"
 "up_vfork","nuttx/arch.h","defined(CONFIG_ARCH_HAVE_VFORK)","pid_t"
 "utimens","sys/stat.h","","int","FAR const char *","const struct timespec [2]|FAR const struct timespec *"
 "wait","sys/wait.h","defined(CONFIG_SCHED_WAITPID) && defined(CONFIG_SCHED_HAVE_PARENT)","pid_t","FAR int *"

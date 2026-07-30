@@ -41,7 +41,7 @@
 
 #include "sched/sched.h"
 
-#if defined(CONFIG_ARCH_HAVE_TASK_FORK) || defined(CONFIG_ARCH_HAVE_VFORK) || \
+#if defined(CONFIG_TASK_FORK) || defined(CONFIG_ARCH_HAVE_VFORK) || \
     defined(CONFIG_ARCH_HAVE_FORK)
 
 /****************************************************************************
@@ -351,5 +351,5 @@ pid_t riscv_fork(const struct fork_s *context, int type)
 }
 
 #endif /* CONFIG_LIB_SYSCALL */
-#endif /* CONFIG_ARCH_HAVE_TASK_FORK || CONFIG_ARCH_HAVE_VFORK ||
+#endif /* CONFIG_TASK_FORK || CONFIG_ARCH_HAVE_VFORK ||
         * CONFIG_ARCH_HAVE_FORK */

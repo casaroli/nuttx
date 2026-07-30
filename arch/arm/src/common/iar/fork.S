@@ -39,7 +39,7 @@
  * Public Symbols
  ****************************************************************************/
 
-#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+#ifdef CONFIG_TASK_FORK
 	PUBLIC	up_task_fork
 #endif
 #ifdef CONFIG_ARCH_HAVE_VFORK
@@ -100,7 +100,7 @@
 
 	THUMB
 
-#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+#ifdef CONFIG_TASK_FORK
 up_task_fork:
 	movs		r2, #FORK_TYPE_TASK
 	b		arm_fork_common

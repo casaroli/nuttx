@@ -190,7 +190,7 @@ static pid_t sim_fork_internal(const xcpt_reg_t *context, int type)
  *
  ****************************************************************************/
 
-#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+#ifdef CONFIG_TASK_FORK
 pid_t sim_task_fork(const xcpt_reg_t *context)
 {
   return sim_fork_internal(context, FORK_TYPE_TASK);

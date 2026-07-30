@@ -239,7 +239,7 @@ int    task_restart(pid_t pid);
  * posix_spawn().
  */
 
-#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+#ifdef CONFIG_TASK_FORK
 pid_t  task_fork(void);
 #endif
 
