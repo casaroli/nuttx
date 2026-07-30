@@ -156,47 +156,41 @@ and ``up_fork()`` -- which share one snapshot sequence and differ only in a
 ``addrenv_join()`` for ``task_fork()`` and ``vfork()``, ``addrenv_fork()`` for
 ``fork()``.
 
-Adding real ``fork()`` to an architecture
------------------------------------------
+To add real ``fork()`` to an architecture, two things are needed.  First,
+implement ``up_addrenv_fork()`` and add ``ARCH_HAVE_ADDRENV_FORK`` to the
+``default y if`` list in ``arch/Kconfig``.  Second -- and this is the part that
+is easy to miss -- in a kernel or protected build all three primitives arrive
+through a system call, so the return address and stack pointer the
+architecture's fork entry point can observe for itself belong to the *kernel*,
+not to the caller.  A child built from those resumes at a kernel address on a
+kernel stack.
 
-Two things are needed, and the second is the one that is easy to miss.
+The architecture must therefore record the caller's exception frame when it
+traps and build the child from that instead.  Two architectures do it, and
+they are worth copying:
 
-**Implement** ``up_addrenv_fork()``.  It duplicates an address environment:
-allocate fresh pages, copy the parent's contents into them, and map them at the
-*same* virtual addresses.  ``up_addrenv_clone()`` is not this -- it copies only
-the representation and leaves both processes pointing at one set of page
-tables.  Then give ``ARCH_HAVE_ADDRENV_FORK`` a ``default y if <arch>`` line in
-``arch/Kconfig``, and ``ARCH_HAVE_FORK`` follows.
-
-**Build the child from the caller's saved system call frame.**  In a kernel
-build ``fork()`` is reached through a system call, so the return address and
-stack pointer the architecture's fork entry point can observe for itself belong
-to the *kernel*, not to the caller; a child built from those resumes at a
-kernel address on a kernel stack.  The architecture must record the caller's
-exception frame when it traps -- ``xcp.sregs`` is the field that exists for
-this -- and build the child from that instead, while a kernel thread that calls
-the entry point directly still takes the ordinary path.
+* RISC-V: ``riscv_swint.c`` stores the frame in ``xcp.sregs``, and
+  ``riscv_fork.c`` has a ``CONFIG_LIB_SYSCALL`` variant of ``riscv_fork()``
+  that rebuilds the child from it.
+* arm64: ``arm64_vectors.S`` hands the frame to ``dispatch_syscall()``, which
+  stores it in ``xcp.sregs``; ``arm64_fork()`` then dispatches to
+  ``arm64_fork_syscall()`` or ``arm64_fork_direct()`` according to whether
+  ``TCB_FLAG_SYSCALL`` is set, so a kernel thread that calls the entry point
+  directly still works.
 
 Nothing else is required:  the ``up_fork()`` entry point and the libc wrapper
 are already there and become live automatically.
 
-Note that ``ARCH_HAVE_ADDRENV_FORK`` is about a *per-process* address
-environment.  A protected build has one address space carved up once at boot,
-whether the boundaries are drawn by an MPU or by a fixed set of MMU mappings;
-its ``up_addrenv_*()`` are stubs, and there is no mapping to duplicate at the
-same virtual addresses.  ``CONFIG_ARCH_ADDRENV`` being set is therefore not by
-itself evidence that ``fork()`` can be provided.  ``vfork()`` and
-``task_fork()``, which share the parent's memory, work there as everywhere
-else.
-
 Known gaps
 ==========
 
-``fork()`` **is gained one architecture at a time.**  The generic machinery is
-complete -- ``addrenv_fork()``, the ``up_addrenv_fork()`` hook, the syscall, the
-libc wrapper and the ``ostest`` case -- so an architecture provides ``fork()``
-by implementing ``up_addrenv_fork()`` and selecting
-``CONFIG_ARCH_HAVE_ADDRENV_FORK``, with no further generic work.
+**Only RISC-V and arm64 select** ``ARCH_HAVE_ADDRENV_FORK`` **today, so only
+their kernel builds have** ``fork()``.  ``up_addrenv_fork()`` is implemented for
+armv7-a, arm64 (MMU), RISC-V and x86_64, and the generic path is complete --
+but arm and x86_64 still lack the syscall-frame path described above, and a
+child forked there resumes at a kernel address and faults.  Giving those
+architectures the same path is what stands between them and ``fork()``;
+nothing else in this change has to move.
 
 **A windowed ABI needs its stack rebased, not just copied.**  On Xtensa,
 giving a child a relocated copy of the parent's stack takes more than the copy:
