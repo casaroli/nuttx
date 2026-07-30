@@ -335,7 +335,7 @@ static pid_t arm64_fork_syscall(struct tcb_s *parent, int type)
    * the instruction after the SVC, which is where the parent resumes too.
    */
 
-  child = nxtask_setup_fork((start_t)sregs[REG_ELR], type, (uintptr_t)sp);
+  child = nxtask_setup_fork((start_t)sregs[REG_ELR], type);
   if (!child)
     {
       serr("ERROR: nxtask_setup_fork failed\n");
