@@ -35,9 +35,11 @@
 #include <arch/board/board.h>
 
 #include "arm_internal.h"
+#include "mpu.h"
 #include "rp23xx_config.h"
 #include "rp23xx_clock.h"
 #include "rp23xx_uart.h"
+#include "rp23xx_userspace.h"
 #include "hardware/rp23xx_sio.h"
 
 /****************************************************************************
@@ -156,6 +158,16 @@ void __start(void)
       putreg32(0, RP23XX_SIO_SPINLOCK(safe_spinlocks[i]));
     }
 
+  /* If enabled reset the MPU.  This has to happen before any region is
+   * programmed below:  the bootrom leaves regions of its own configured, and
+   * a stale one overlapping the kernel image outranks anything added later.
+   */
+
+  mpu_early_reset();
+#ifdef CONFIG_ARM_MPU
+  mpu_showtype();
+#endif
+
   /* Initialize the FPU */
 
   arm_fpuconfig();
@@ -181,6 +193,17 @@ void __start(void)
 #ifdef CONFIG_BUILD_PROTECTED
   rp23xx_userspace();
   showprogress('C');
+#endif
+
+#ifdef CONFIG_ARM_MPU
+  /* Then enable the MPU.  privdefena is true so that privileged code keeps
+   * the default map for everything no region covers -- the kernel image, the
+   * peripherals and the boot ROM are all reached that way, and only the two
+   * user regions programmed above are additionally opened to unprivileged
+   * code.
+   */
+
+  mpu_control(true, false, true);
 #endif
 
   /* Initialize onboard resources */

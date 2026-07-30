@@ -121,4 +121,8 @@ if(CONFIG_IEEE80211_INFINEON_CYW43439)
   list(APPEND SRCS rp23xx_cyw43439.c)
 endif()
 
+if(CONFIG_BUILD_PROTECTED)
+  list(APPEND SRCS rp23xx_userspace.c rp23xx_allocateheap.c)
+endif()
+
 target_sources(arch PRIVATE ${SRCS})
