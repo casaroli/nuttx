@@ -58,7 +58,14 @@
 
 #ifdef CONFIG_INPUT_PICOCALC_KBD
 #  include <nuttx/input/picocalc_kbd.h>
-#  include "rp23xx_i2c.h"
+#endif
+
+#ifdef CONFIG_BATTERY_PICOCALC
+#  include <nuttx/power/picocalc_batt.h>
+#endif
+
+#ifdef CONFIG_RP23XX_I2C1
+#  include "picocalc_coproc.h"
 #endif
 
 /****************************************************************************
@@ -140,6 +147,19 @@ int rp23xx_bringup(void)
 #endif
 
 #ifdef CONFIG_LCD_DEV
+#ifdef CONFIG_RP23XX_I2C1
+  /* Bring up the co-processor link first.  Everything else on this board
+   * that matters goes through it -- the keyboard, both backlights, the PMU
+   * -- and the panel in particular needs it before board_lcd_initialize(),
+   * because the backlight it will be asked to set is on the far side.
+   */
+
+  if (picocalc_coproc_initialize() < 0)
+    {
+      syslog(LOG_ERR, "ERROR: co-processor link unavailable\n");
+    }
+#endif
+
   /* Bring up the ST7365P panel and expose it as /dev/lcd0 */
 
   ret = board_lcd_initialize();
@@ -181,22 +201,32 @@ int rp23xx_bringup(void)
    * co-processor firmware has been verified at 400kHz.
    */
 
+  if (picocalc_coproc_i2c() != NULL)
     {
-      FAR struct i2c_master_s *i2c = rp23xx_i2cbus_initialize(1);
-
-      if (i2c == NULL)
+      ret = picocalc_kbd_register("/dev/kbd0", picocalc_coproc_i2c(),
+                                  PICOCALC_KBD_I2C_ADDR, 400000);
+      if (ret < 0)
         {
-          syslog(LOG_ERR, "ERROR: Failed to initialize I2C1\n");
+          syslog(LOG_ERR,
+                 "ERROR: picocalc_kbd_register() failed: %d\n", ret);
         }
-      else
+    }
+#endif
+
+#ifdef CONFIG_BATTERY_PICOCALC
+  /* The battery the co-processor caches for us, as /dev/batt0.  It shares
+   * the keyboard's bus handle: the I2C upper half serialises on it, which
+   * is what keeps a battery read from landing inside the keyboard's poll.
+   */
+
+  if (picocalc_coproc_i2c() != NULL)
+    {
+      ret = picocalc_batt_register("/dev/batt0", picocalc_coproc_i2c(),
+                                   400000);
+      if (ret < 0)
         {
-          ret = picocalc_kbd_register("/dev/kbd0", i2c,
-                                      PICOCALC_KBD_I2C_ADDR, 400000);
-          if (ret < 0)
-            {
-              syslog(LOG_ERR,
-                     "ERROR: picocalc_kbd_register() failed: %d\n", ret);
-            }
+          syslog(LOG_ERR,
+                 "ERROR: picocalc_batt_register() failed: %d\n", ret);
         }
     }
 #endif

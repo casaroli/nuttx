@@ -40,6 +40,10 @@
 #include "rp23xx_spi.h"
 #include "rp23xx_pico.h"
 
+#ifdef CONFIG_RP23XX_I2C1
+#  include "picocalc_coproc.h"
+#endif
+
 /****************************************************************************
  * Private Data
  ****************************************************************************/
@@ -96,7 +100,17 @@ int board_lcd_initialize(void)
       return -ENODEV;
     }
 
-  g_lcd = st7365p_lcdinitialize(spi);
+  /* The backlight is not on a pin of the panel's controller: it is a boost
+   * converter driven by the co-processor, so LCDDEVIO_SETPOWER is passed
+   * through to it over I2C.  Without I2C1 the panel still works, at whatever
+   * brightness the co-processor last set for itself.
+   */
+
+#ifdef CONFIG_RP23XX_I2C1
+  g_lcd = st7365p_lcdinitialize(spi, picocalc_coproc_lcd_backlight);
+#else
+  g_lcd = st7365p_lcdinitialize(spi, NULL);
+#endif
   if (g_lcd == NULL)
     {
       lcderr("ERROR: Failed to bind SPI1 to the ST7365P\n");

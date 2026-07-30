@@ -22,6 +22,13 @@
 
 set(SRCS rp23xx_boardinitialize.c rp23xx_bringup.c rp23xx_pinpark.c)
 
+# The co-processor owns the keyboard, both backlights and the PMU, so this is
+# needed by anything that reaches any of them.
+
+if(CONFIG_RP23XX_I2C1)
+  list(APPEND SRCS picocalc_coproc.c)
+endif()
+
 if(CONFIG_LCD_ST7365P)
   list(APPEND SRCS picocalc_lcd.c)
 endif()
