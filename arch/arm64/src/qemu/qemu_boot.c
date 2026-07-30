@@ -47,6 +47,7 @@
 #include "arm64_mmu.h"
 #include "qemu_boot.h"
 #include "qemu_serial.h"
+#include "qemu_userspace.h"
 
 #ifdef CONFIG_DEVICE_TREE
 #  include <nuttx/fdt.h>
@@ -160,6 +161,14 @@ void arm64_chip_boot(void)
   /* MAP IO and DRAM, enable MMU. */
 
   arm64_mmu_init(true);
+
+#ifdef CONFIG_BUILD_PROTECTED
+  /* Everything DRAM is privileged-only at this point.  Open up the parts
+   * that belong to user space, and initialize the user blob.
+   */
+
+  qemu_userspace();
+#endif
 
 #ifdef CONFIG_ARM64_MTE
   arm64_mte_init();
