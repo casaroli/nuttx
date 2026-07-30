@@ -24,6 +24,13 @@ CSRCS = rp23xx_boardinitialize.c
 CSRCS += rp23xx_bringup.c
 CSRCS += rp23xx_pinpark.c
 
+# The co-processor owns the keyboard, both backlights and the PMU, so this is
+# needed by anything that reaches any of them.
+
+ifeq ($(CONFIG_RP23XX_I2C1),y)
+CSRCS += picocalc_coproc.c
+endif
+
 ifeq ($(CONFIG_LCD_ST7365P),y)
 CSRCS += picocalc_lcd.c
 endif
