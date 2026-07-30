@@ -48,7 +48,7 @@
 #include "arm64_fpu.h"
 #endif
 
-#if defined(CONFIG_ARCH_HAVE_TASK_FORK) || defined(CONFIG_ARCH_HAVE_VFORK) || \
+#if defined(CONFIG_TASK_FORK) || defined(CONFIG_ARCH_HAVE_VFORK) || \
     defined(CONFIG_ARCH_HAVE_FORK)
 
 /****************************************************************************
@@ -487,5 +487,5 @@ pid_t arm64_fork(const struct fork_s *context, int type)
   return arm64_fork_direct(parent, context, type);
 }
 
-#endif /* CONFIG_ARCH_HAVE_TASK_FORK || CONFIG_ARCH_HAVE_VFORK ||
+#endif /* CONFIG_TASK_FORK || CONFIG_ARCH_HAVE_VFORK ||
         * CONFIG_ARCH_HAVE_FORK */
