@@ -74,6 +74,12 @@ if(CONFIG_BATTERY_GAUGE)
     list(APPEND SRCS bq27426.c)
   endif()
 
+  # Add the ClockworkPi PicoCalc co-processor battery gauge
+
+  if(CONFIG_BATTERY_PICOCALC)
+    list(APPEND SRCS picocalc_batt.c)
+  endif()
+
 endif()
 
 # Add battery monitor drivers

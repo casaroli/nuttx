@@ -70,6 +70,12 @@ ifeq ($(CONFIG_BQ27426),y)
 CSRCS += bq27426.c
 endif
 
+# Add the ClockworkPi PicoCalc co-processor battery gauge
+
+ifeq ($(CONFIG_BATTERY_PICOCALC),y)
+CSRCS += picocalc_batt.c
+endif
+
 endif
 
 # Add battery monitor drivers
