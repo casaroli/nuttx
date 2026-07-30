@@ -46,10 +46,6 @@
  * a borrowed stack would need that relocation to be skipped.
  */
 
-#ifdef CONFIG_ARCH_VFORK_STACK_BORROW
-#  error "x86 relocates the vfork() child stack; borrowing is not supported"
-#endif
-
 /* And it has no address environment, so there is no POSIX fork() here.  The
  * assembly half provides no up_fork() entry point either.
  */
@@ -244,8 +240,7 @@ pid_t x86_fork(const struct fork_s *context, int type)
    * the instruction the caller would have returned to.
    */
 
-  child = nxtask_setup_fork((start_t)context->eip, type,
-                            (uintptr_t)context->esp);
+  child = nxtask_setup_fork((start_t)context->eip, type);
   if (!child)
     {
       serr("ERROR: nxtask_setup_fork failed\n");
