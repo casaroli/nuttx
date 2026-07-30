@@ -120,9 +120,29 @@ void up_initial_state(struct tcb_s *tcb)
 
   /* Initialize the context registers to stack top */
 
-  xcp->regs = (void *)((uint32_t)tcb->stack_base_ptr +
-                                 tcb->adj_stack_size -
-                                 XCPTCONTEXT_SIZE);
+#ifdef CONFIG_ARCH_KERNEL_STACK
+  if (xcp->kstack != NULL)
+    {
+      /* Put the frame on the thread's kernel stack rather than its user
+       * stack.  It is restored in kernel context, and leaving it in user
+       * memory means the thread can scribble on the register set it is
+       * about to be started with.
+       *
+       * It also has to be out of the user stack for fork():  the child
+       * inherits the parent's stack address, so a frame carved off the top
+       * of that stack lands in the very frames the child is about to return
+       * through.
+       */
+
+      xcp->regs = (void *)((uint32_t)xcp->ktopstk - XCPTCONTEXT_SIZE);
+    }
+  else
+#endif
+    {
+      xcp->regs = (void *)((uint32_t)tcb->stack_base_ptr +
+                                     tcb->adj_stack_size -
+                                     XCPTCONTEXT_SIZE);
+    }
 
   /* Initialize the xcp registers */
 
