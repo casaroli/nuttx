@@ -32,6 +32,23 @@
 #ifdef CONFIG_LCD_ST7365P
 
 /****************************************************************************
+ * Public Types
+ ****************************************************************************/
+
+/* Set the panel's backlight, 0..CONFIG_LCD_MAXPOWER.
+ *
+ * The backlight is not on a pin of this controller.  On the boards this
+ * panel appears on it is a separate boost converter, often behind something
+ * else again -- on the ClockworkPi PicoCalc it belongs to a co-processor
+ * reached over I2C -- so a board that can dim its own passes a hook here and
+ * the LCD power setting is passed through to it.  A board that cannot passes
+ * NULL, and CONFIG_LCD_MAXPOWER should then be 1: any non-zero value is
+ * simply "on".
+ */
+
+typedef CODE int (*st7365p_backlight_t)(int level);
+
+/****************************************************************************
  * Public Function Prototypes
  ****************************************************************************/
 
@@ -52,7 +69,9 @@ extern "C"
  *   with the power setting at 0 (full off).
  *
  * Input Parameters:
- *   spi - A reference to the SPI driver instance the panel is wired to.
+ *   spi       - A reference to the SPI driver instance the panel is on.
+ *   backlight - Board hook that sets the backlight, or NULL if the board
+ *               cannot dim.  See st7365p_backlight_t.
  *
  * Returned Value:
  *   On success, this function returns a reference to the LCD object for the
@@ -60,7 +79,8 @@ extern "C"
  *
  ****************************************************************************/
 
-FAR struct lcd_dev_s *st7365p_lcdinitialize(FAR struct spi_dev_s *spi);
+FAR struct lcd_dev_s *st7365p_lcdinitialize(FAR struct spi_dev_s *spi,
+                                            st7365p_backlight_t backlight);
 
 /****************************************************************************
  * Name:  st7365p_scroll
