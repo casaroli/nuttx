@@ -46,7 +46,9 @@
 
 #include <nuttx/i2c/i2c_master.h>
 
+#include "rp23xx_gpio.h"
 #include "rp23xx_i2c.h"
+#include "rp23xx_pico.h"
 #include "picocalc_coproc.h"
 
 /****************************************************************************
@@ -322,4 +324,43 @@ int picocalc_coproc_lcd_backlight(int level)
     }
 
   return picocalc_coproc_backlight(PICOCALC_BACKLIGHT_LCD, scaled);
+}
+
+/****************************************************************************
+ * Name: picocalc_coproc_attach_attention
+ *
+ * Description:
+ *   The picocalc_kbd_attach_t hook.  See picocalc_coproc.h.
+ *
+ ****************************************************************************/
+
+int picocalc_coproc_attach_attention(xcpt_t isr, FAR void *arg)
+{
+  int ret;
+
+  /* The pad is already an input with a pull-up: rp23xx_bringup() does that
+   * unconditionally and before anything else, because an unconfigured pad
+   * here reads 0 in both states and would look like a request that can never
+   * be cleared.
+   *
+   * A falling edge, not a low level.  The line is a level -- asserted for as
+   * long as events are queued -- so a level-triggered interrupt re-fires
+   * continuously from the moment it asserted until the queue drained, which
+   * on this part means re-entering the handler rather than making progress.
+   * The driver polls slowly in the background to recover a missed edge.
+   */
+
+  rp23xx_gpio_disable_irq(GPIO_COPROC_ATTN);
+
+  ret = rp23xx_gpio_irq_attach(GPIO_COPROC_ATTN,
+                               RP23XX_GPIO_INTR_EDGE_LOW,
+                               isr, arg);
+  if (ret < 0)
+    {
+      ierr("ERROR: attention irq_attach() failed: %d\n", ret);
+      return ret;
+    }
+
+  rp23xx_gpio_enable_irq(GPIO_COPROC_ATTN);
+  return OK;
 }
