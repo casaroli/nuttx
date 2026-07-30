@@ -30,6 +30,7 @@
 #include <stdbool.h>
 
 #include <nuttx/i2c/i2c_master.h>
+#include <nuttx/irq.h>
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -130,5 +131,22 @@ int picocalc_coproc_backlight(int which, int level);
  ****************************************************************************/
 
 int picocalc_coproc_lcd_backlight(int level);
+
+/****************************************************************************
+ * Name: picocalc_coproc_attach_attention
+ *
+ * Description:
+ *   Install a handler for the co-processor's attention line, GPIO 9.
+ *
+ *   Passed to picocalc_kbd_register() as its picocalc_kbd_attach_t.  That
+ *   is open-drain and active low and is driven only by the replacement
+ *   firmware, so the driver ignores this if its probe found stock.
+ *
+ * Returned Value:
+ *   OK, or a negated errno.
+ *
+ ****************************************************************************/
+
+int picocalc_coproc_attach_attention(xcpt_t isr, FAR void *arg);
 
 #endif /* __BOARDS_ARM_RP23XX_CLOCKWORKPI_PICOCALC_SRC_PICOCALC_COPROC_H */

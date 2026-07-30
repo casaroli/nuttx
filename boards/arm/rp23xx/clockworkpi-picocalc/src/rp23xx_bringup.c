@@ -204,7 +204,8 @@ int rp23xx_bringup(void)
   if (picocalc_coproc_i2c() != NULL)
     {
       ret = picocalc_kbd_register("/dev/kbd0", picocalc_coproc_i2c(),
-                                  PICOCALC_KBD_I2C_ADDR, 400000);
+                                  PICOCALC_KBD_I2C_ADDR, 400000,
+                                  picocalc_coproc_attach_attention);
       if (ret < 0)
         {
           syslog(LOG_ERR,
