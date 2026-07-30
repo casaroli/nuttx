@@ -152,8 +152,8 @@ config ARCH_X86_64
 	select PCI_LATE_DRIVERS_REGISTER if PCI
 	select ARCH_TOOLCHAIN_GNU
 	select ARCH_HAVE_BACKTRACE
-	select ARCH_HAVE_TASK_FORK if !BUILD_KERNEL
-	select ARCH_HAVE_VFORK if !BUILD_KERNEL
+	select ARCH_HAVE_TASK_FORK
+	select ARCH_HAVE_VFORK
 	select ARCH_HAVE_SETJMP
 	select ARCH_HAVE_PERF_EVENTS
 	select ARCH_HAVE_POWEROFF
@@ -510,6 +510,7 @@ config ARCH_HAVE_ADDRENV_FORK
 	default y if ARCH_RISCV
 	default y if ARCH_ARM64 && ARCH_USE_MMU && !BUILD_PROTECTED
 	default y if ARCH_ARMV7A && ARCH_USE_MMU && !BUILD_PROTECTED
+	default y if ARCH_X86_64 && !BUILD_PROTECTED
 	default n
 	depends on ARCH_ADDRENV && !ARCH_STACK_DYNAMIC
 	---help---
@@ -518,18 +519,14 @@ config ARCH_HAVE_ADDRENV_FORK
 		holding a copy of the parent's contents, mapped at the same virtual
 		addresses.  This is what POSIX fork() is built on.
 
-		up_addrenv_fork() is implemented for armv7-a, arm64 (MMU), RISC-V and
-		x86_64, but x86_64 does not select this, because fork() additionally
-		needs the architecture to build the child's register context from the
-		*user's* saved syscall frame.  In a kernel build fork() is reached
-		through a system call, so the return address and stack pointer the
-		architecture's fork entry point sees are the kernel's, not the
-		caller's.  RISC-V, arm64 and armv7-a handle this (riscv_swint.c,
-		arm64_syscall.c and arm_syscall.c record the frame in xcp.sregs, and
-		riscv_fork.c, arm64_fork.c and arm_fork.c build the child from it);
-		x86_64 does not, and a child forked there resumes at a kernel
-		address.  That architecture needs the same path before it can select
-		this.
+		fork() additionally needs the architecture to build the child's
+		register context from the *user's* saved syscall frame.  In a kernel
+		build fork() is reached through a system call, so the return address
+		and stack pointer the architecture's fork entry point sees are the
+		kernel's, not the caller's.  All four architectures that select this
+		handle it:  riscv_swint.c, arm64_syscall.c, arm_syscall.c and
+		x86_64_syscall.c record the frame in xcp.sregs, and riscv_fork.c,
+		arm64_fork.c, arm_fork.c and x86_64_fork.c build the child from it.
 
 		The protected configurations are excluded, MPU and MMU alike.  A
 		protected build has one address space protected by a fixed set of

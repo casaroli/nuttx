@@ -36,6 +36,7 @@
 #include <nuttx/addrenv.h>
 #include <nuttx/arch.h>
 #include <nuttx/sched.h>
+#include <nuttx/userspace.h>
 
 #include "x86_64_internal.h"
 
@@ -122,7 +123,7 @@ uint64_t *x86_64_syscall(uint64_t *regs)
 
   switch (cmd)
     {
-#ifdef CONFIG_BUILD_KERNEL
+#ifndef CONFIG_BUILD_FLAT
       /* cmd=SYS_task_start:  This a user task start
        *
        *   void up_task_start(main_t taskentry, int argc, char *argv[])
@@ -138,18 +139,39 @@ uint64_t *x86_64_syscall(uint64_t *regs)
 
       case SYS_task_start:
         {
-          /* Set up to return to the user-space _start function in
-           * unprivileged mode.  We need:
+          /* Set up to enter user space in unprivileged mode.  Which user
+           * address to enter depends on the build.
+           *
+           * In a kernel build every process is a separately linked ELF whose
+           * entry point is its own _start (x86_64/src/common/crt0.c), and
+           * that is what taskentry is; it calls the start-up stub itself.
+           * We need:
            *
            *   RDI = argc
            *   RSI = argv
            *   RCX = taskentry (SYSRETQ return address)
            *
+           * In a protected build there is one user blob and no per-process
+           * _start, so the start-up stub has to be entered directly -- it is
+           * published in the blob's header as USERSPACE->task_startup -- and
+           * taskentry becomes its first argument.  We need:
+           *
+           *   RDI = taskentry
+           *   RSI = argc
+           *   RDX = argv
+           *   RCX = USERSPACE->task_startup (SYSRETQ return address)
            */
 
+#ifdef CONFIG_BUILD_PROTECTED
+          regs[REG_RDI] = arg1;
+          regs[REG_RSI] = arg2;
+          regs[REG_RDX] = arg3;
+          regs[REG_RCX] = (uint64_t)USERSPACE->task_startup;
+#else
           regs[REG_RDI] = arg2;
           regs[REG_RSI] = arg3;
           regs[REG_RCX] = arg1;
+#endif
 
           break;
         }
@@ -209,10 +231,18 @@ uint64_t *x86_64_syscall(uint64_t *regs)
           rtcb->xcp.sigreturn = regs[REG_RCX];
 
           /* Set up to return to the user-space trampoline function in
-           * unprivileged mode.
+           * unprivileged mode.  A kernel build publishes it per process in
+           * the reserved region at the base of the process's data; a
+           * protected build has one user blob and publishes it in the blob's
+           * header instead.  ARCH_DATA_RESERVE is a CONFIG_BUILD_KERNEL-only
+           * concept -- include/nuttx/addrenv.h only defines it there.
            */
 
+#ifdef CONFIG_BUILD_PROTECTED
+          regs[REG_RCX] = (uint64_t)USERSPACE->signal_handler;
+#else
           regs[REG_RCX] = (uint64_t)ARCH_DATA_RESERVE->ar_sigtramp;
+#endif
 
           /* Change the parameter ordering to match the expectation of struct
            * userpace_s signal_handler.
@@ -288,7 +318,7 @@ uint64_t *x86_64_syscall(uint64_t *regs)
           break;
         }
 #endif  /* CONFIG_ENABLE_ALL_SIGNALS*/
-#endif  /* CONFIG_BUILD_KERNEL */
+#endif  /* !CONFIG_BUILD_FLAT */
 
       /* This is not an architecture-specific system call.  If NuttX is
        * built as a standalone kernel with a system call interface, then
@@ -301,14 +331,42 @@ uint64_t *x86_64_syscall(uint64_t *regs)
 #ifdef CONFIG_LIB_SYSCALL
           int             nbr  = cmd - CONFIG_SYS_RESERVED;
           syscall_stub_t  stub = (syscall_stub_t)g_stublookup[nbr];
+          struct tcb_s   *rtcb = nxsched_self();
+          uint64_t       *sregs;
 
 #ifdef CONFIG_ARCH_KERNEL_STACK
-          struct tcb_s   *rtcb = nxsched_self();
-
           /* Store reference to user RSP for signals */
 
           rtcb->xcp.saved_ursp = regs[REG_RSP];
 #endif
+
+          /* Publish the caller's register context.  up_fork(), up_vfork()
+           * and up_task_fork() have to clone the caller rather than the stub
+           * that is about to invoke them, and this frame is the only
+           * description of it -- see x86_64_fork_syscall(), which also takes
+           * a non-NULL xcp.sregs as its "reached here through a system call"
+           * discriminator.
+           *
+           * It is saved and restored rather than simply set and cleared:
+           * x86_64_syscall_entry() has an explicit path for a nested system
+           * call, and when the inner one returns the outer one must still be
+           * described by its own frame.
+           *
+           * Note what is deliberately *not* done here.  arm64 and RISC-V
+           * also raise TCB_FLAG_SYSCALL across the stub call, which defers
+           * any signal action until the system call returns.  x86_64 has
+           * never set it, and making it do so is not free:  the deferred
+           * action then has to be picked up by nxsig_unmask_pendingsignal()
+           * on the way out, and the signal dispatch path of an x86_64 kernel
+           * build does not survive that today -- it faults in
+           * x86_64_syscall_entry()'s return path with RSP == 0.  That is a
+           * pre-existing bug in a configuration nothing has exercised, and
+           * fixing it does not belong to the fork/vfork work; so this
+           * records the frame and changes nothing else.
+           */
+
+          sregs           = rtcb->xcp.sregs;
+          rtcb->xcp.sregs = regs;
 
           /* Re-enable interrupts if enabled before.
            * Current task RFLAGS are stored in R11.
@@ -322,6 +380,10 @@ uint64_t *x86_64_syscall(uint64_t *regs)
           /* Call syscall function and store return value in RAX register */
 
           regs[REG_RAX] = stub(nbr, arg1, arg2, arg3, arg4, arg5, arg6);
+
+          /* The system call is now done */
+
+          rtcb->xcp.sregs = sregs;
 #else
           svcerr("ERROR: Bad SYS call: %" PRId32 "\n", cmd);
 #endif

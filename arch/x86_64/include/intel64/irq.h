@@ -514,9 +514,10 @@ struct xcpt_syscall_s
 struct xcptcontext
 {
 #ifdef CONFIG_ENABLE_ALL_SIGNALS
-#ifdef CONFIG_BUILD_KERNEL
+#ifndef CONFIG_BUILD_FLAT
   /* This is the saved address to use when returning from a user-space
-   * signal handler.
+   * signal handler.  Any build with unprivileged user code needs it, not
+   * only a kernel build.
    */
 
   uintptr_t sigreturn;
@@ -543,6 +544,18 @@ struct xcptcontext
   /* Register save area - allocated from stack in up_initial_state() */
 
   uint64_t *regs;
+
+#ifdef CONFIG_LIB_SYSCALL
+  /* The register context of the user code that is currently in a system
+   * call, as x86_64_syscall_entry() saved it on the kernel stack.  This is
+   * what the caller of a system call was doing, as opposed to xcp.regs,
+   * which during a system call describes the kernel side of it.
+   * x86_64_fork() needs it to build a child from the caller rather than
+   * from the stub.
+   */
+
+  uint64_t *sregs;
+#endif
 
 #ifdef CONFIG_ARCH_ADDRENV
 #  ifdef CONFIG_ARCH_KERNEL_STACK
