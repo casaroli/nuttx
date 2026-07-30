@@ -152,15 +152,13 @@ static void xtensa_fork_rebase(uintptr_t newsp, uintptr_t usp,
  *   Give the child its stack pointer, and move the parent's frames to it if
  *   they have to move.
  *
- *   Two of the three primitives leave the child on the parent's own stack
- *   memory, at the parent's addresses:  a fork() child inherits it inside
- *   its duplicated address environment, and a borrowing vfork() child shares
- *   it outright.  Neither has anything to copy.
+ *   A fork() child stays on the parent's own stack memory, at the parent's
+ *   addresses, inside its duplicated address environment.  It has nothing to
+ *   copy.
  *
- *   The third case is a stack of the child's own -- always for task_fork(),
- *   and for vfork() wherever CONFIG_ARCH_VFORK_STACK_BORROW is not
- *   available.  That needs the copy, and on this architecture the copy needs
- *   xtensa_fork_rebase() to go with it.
+ *   A task_fork() or vfork() child gets a stack of its own.  That needs the
+ *   copy, and on this architecture the copy needs xtensa_fork_rebase() to go
+ *   with it.
  *
  *   The copy starts one base save area *below* the stack pointer.  That is
  *   not an off-by-one guard:  the frame the child resumes into keeps its
@@ -255,7 +253,7 @@ static pid_t xtensa_fork(int type, FAR const struct fork_snapshot_s *snap)
    * context assembled below.
    */
 
-  child = nxtask_setup_fork((start_t)snap->pc, type, snap->usp);
+  child = nxtask_setup_fork((start_t)snap->pc, type);
   if (child == NULL)
     {
       sinfo("nxtask_setup_fork failed\n");
@@ -287,8 +285,7 @@ static pid_t xtensa_fork(int type, FAR const struct fork_snapshot_s *snap)
        *
        * This is only sound because a child without a kernel stack always has
        * a stack of its own:  writing here on a shared stack would land in
-       * the parent's frames.  See xtensa_fork_stack(), and the condition on
-       * ARCH_VFORK_STACK_BORROW in arch/Kconfig.
+       * the parent's frames.  See xtensa_fork_stack().
        */
 
       DEBUGASSERT(child->stack_alloc_ptr != parent->stack_alloc_ptr);
