@@ -526,7 +526,7 @@ pid_t up_vfork(void)
  *
  ****************************************************************************/
 
-#ifdef CONFIG_ARCH_HAVE_TASK_FORK
+#ifdef CONFIG_TASK_FORK
 pid_t up_task_fork(void)
 {
   return xtensa_fork_entry(FORK_TYPE_TASK);
