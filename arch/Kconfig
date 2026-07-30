@@ -509,6 +509,7 @@ config ARCH_HAVE_ADDRENV_FORK
 	bool
 	default y if ARCH_RISCV
 	default y if ARCH_ARM64 && ARCH_USE_MMU && !BUILD_PROTECTED
+	default y if ARCH_ARMV7A && ARCH_USE_MMU && !BUILD_PROTECTED
 	default n
 	depends on ARCH_ADDRENV && !ARCH_STACK_DYNAMIC
 	---help---
@@ -518,19 +519,20 @@ config ARCH_HAVE_ADDRENV_FORK
 		addresses.  This is what POSIX fork() is built on.
 
 		up_addrenv_fork() is implemented for armv7-a, arm64 (MMU), RISC-V and
-		x86_64, but only RISC-V and arm64 select this, because fork()
-		additionally needs the architecture to build the child's register
-		context from the *user's* saved syscall frame.  In a kernel build
-		fork() is reached through a system call, so the return address and
-		stack pointer the architecture's fork entry point sees are the
-		kernel's, not the caller's.  RISC-V and arm64 handle this
-		(riscv_swint.c and arm64_syscall.c record the frame in xcp.sregs, and
-		riscv_fork.c and arm64_fork.c build the child from it); arm and
-		x86_64 do not, and a child forked there resumes at a kernel address.
-		Those architectures need that path before they can select this.
+		x86_64, but x86_64 does not select this, because fork() additionally
+		needs the architecture to build the child's register context from the
+		*user's* saved syscall frame.  In a kernel build fork() is reached
+		through a system call, so the return address and stack pointer the
+		architecture's fork entry point sees are the kernel's, not the
+		caller's.  RISC-V, arm64 and armv7-a handle this (riscv_swint.c,
+		arm64_syscall.c and arm_syscall.c record the frame in xcp.sregs, and
+		riscv_fork.c, arm64_fork.c and arm_fork.c build the child from it);
+		x86_64 does not, and a child forked there resumes at a kernel
+		address.  That architecture needs the same path before it can select
+		this.
 
-		The arm64 protected configurations are excluded, MPU and MMU alike.
-		A protected build has one address space protected by a fixed set of
+		The protected configurations are excluded, MPU and MMU alike.  A
+		protected build has one address space protected by a fixed set of
 		regions, and its up_addrenv_*() are stubs (arm64_addrenv_stub.c);
 		there is no mapping to duplicate at the same virtual addresses, so
 		POSIX fork() semantics cannot be provided.  vfork() and task_fork(),
