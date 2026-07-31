@@ -75,6 +75,7 @@
 #include "hardware/rp23xx_io_bank0.h"
 #include "hardware/rp23xx_memorymap.h"
 #include "hardware/rp23xx_uart.h"
+#include "hardware/rp23xx_qmi.h"
 
 #ifdef CONFIG_RP23XX_PM
 
@@ -354,6 +355,63 @@ static bool rp23xx_pm_uart_busy(void)
   return false;
 }
 
+#ifdef CONFIG_RP23XX_PM_MEASURE_FLASH_DPD
+
+/****************************************************************************
+ * Name: rp23xx_pm_flash_powerdown
+ *
+ * Description:
+ *   Put the QSPI flash into deep power-down.  A flash part idling with its
+ *   chip select high still draws tens of microamps, which is the same order
+ *   as everything else left alive in the dormant state, so it can easily be
+ *   most of what a current measurement is reading.
+ *
+ *   This is a one-way trip and is why the option is a measurement aid
+ *   rather than a feature.  Leaving deep power-down needs a further command,
+ *   and after that the part comes back in plain SPI mode and would have to
+ *   be set up for execute-in-place again before any code could be fetched.
+ *   Nothing here does that, so the only valid use is immediately before a
+ *   dormant period that is never expected to end.
+ *
+ *   Runs from RAM, like the rest of the sequence: once the command has been
+ *   sent there is nothing left to fetch instructions from.
+ *
+ ****************************************************************************/
+
+static void RP23XX_PM_RAMFUNC rp23xx_pm_flash_powerdown(void)
+{
+  /* Take the QMI into direct mode.  A conservative divisor keeps the single
+   * command well inside the part's timing with no need to know its grade.
+   */
+
+  putreg32((30 << RP23XX_QMI_DIRECT_CSR_CLKDIV_SHIFT) |
+           RP23XX_QMI_DIRECT_CSR_EN, RP23XX_QMI_DIRECT_CSR);
+
+  while ((getreg32(RP23XX_QMI_DIRECT_CSR) &
+          RP23XX_QMI_DIRECT_CSR_BUSY) != 0)
+    {
+    }
+
+  putreg32(getreg32(RP23XX_QMI_DIRECT_CSR) |
+           RP23XX_QMI_DIRECT_CSR_ASSERT_CS0N, RP23XX_QMI_DIRECT_CSR);
+
+  /* 0xb9 is deep power-down, sent at single width with no RX push. */
+
+  putreg32(RP23XX_QMI_DIRECT_TX_OE | RP23XX_QMI_DIRECT_TX_NOPUSH | 0xb9,
+           RP23XX_QMI_DIRECT_TX);
+
+  while ((getreg32(RP23XX_QMI_DIRECT_CSR) &
+          RP23XX_QMI_DIRECT_CSR_BUSY) != 0)
+    {
+    }
+
+  putreg32(getreg32(RP23XX_QMI_DIRECT_CSR) &
+           ~RP23XX_QMI_DIRECT_CSR_ASSERT_CS0N, RP23XX_QMI_DIRECT_CSR);
+  putreg32(getreg32(RP23XX_QMI_DIRECT_CSR) &
+           ~RP23XX_QMI_DIRECT_CSR_EN, RP23XX_QMI_DIRECT_CSR);
+}
+#endif /* CONFIG_RP23XX_PM_MEASURE_FLASH_DPD */
+
 /****************************************************************************
  * Name: rp23xx_pm_dormant
  *
@@ -418,6 +476,14 @@ static void RP23XX_PM_RAMFUNC rp23xx_pm_dormant(void)
   putreg32(RP23XX_PLL_PWR_PD | RP23XX_PLL_PWR_VCOPD |
            RP23XX_PLL_PWR_POSTDIVPD,
            RP23XX_PLL_USB_BASE + RP23XX_PLL_PWR_OFFSET);
+
+#ifdef CONFIG_RP23XX_PM_MEASURE_FLASH_DPD
+  /* Last thing before the clocks stop, and deliberately unrecoverable: see
+   * rp23xx_pm_flash_powerdown().
+   */
+
+  rp23xx_pm_flash_powerdown();
+#endif
 
   /* Stop the crystal oscillator.  Execution stalls inside this write until
    * the dormant-wake detector restarts it.

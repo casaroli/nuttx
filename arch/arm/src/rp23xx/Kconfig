@@ -962,6 +962,28 @@ config RP23XX_PM_SLEEP_GUARD_MS
 		Set to 0 only once the configuration is known good and the board
 		can still be recovered by other means.
 
+config RP23XX_PM_MEASURE_FLASH_DPD
+	bool "Measurement aid: deep power-down the flash before dormancy"
+	default n
+	---help---
+		Send the QSPI flash into deep power-down immediately before the
+		crystal oscillator is stopped.
+
+		This exists to answer one question: how much of the current drawn
+		in the dormant state is the RP2350 and how much is the flash part
+		sitting next to it.  An idling flash still draws tens of microamps,
+		the same order as everything left alive in the dormant state, so
+		without this a sleep measurement is largely a measurement of the
+		flash.
+
+		It is NOT a power management feature and must not be enabled in
+		anything but a measurement build.  Leaving deep power-down takes a
+		further command, after which the part is back in plain SPI mode and
+		would have to be configured for execute-in-place again before any
+		code could be fetched.  Nothing does that, so the chip cannot
+		usefully resume: the only valid use is a dormant period that ends
+		with the board being powered off.
+
 endif # RP23XX_PM
 
 config RP23XX_ADC
