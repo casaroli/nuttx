@@ -69,8 +69,15 @@ void arm_pminitialize(void)
 #    define RP23XX_PM_WAKEUP_ACTIVE_HIGH false
 #  endif
 
-  rp23xx_pm_gpio_wakeup(0, CONFIG_RP23XX_PM_WAKEUP_GPIO,
-                        false, RP23XX_PM_WAKEUP_ACTIVE_HIGH);
+#  ifdef CONFIG_RP23XX_PM_WAKEUP_GPIO_EDGE
+#    define RP23XX_PM_WAKEUP_ON_EDGE true
+#  else
+#    define RP23XX_PM_WAKEUP_ON_EDGE false
+#  endif
+
+  rp23xx_pm_gpio_wakeup(CONFIG_RP23XX_PM_WAKEUP_GPIO,
+                        RP23XX_PM_WAKEUP_ON_EDGE,
+                        RP23XX_PM_WAKEUP_ACTIVE_HIGH);
 #endif
 }
 

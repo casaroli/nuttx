@@ -54,6 +54,7 @@
 
 #include <nuttx/arch.h>
 #include <nuttx/irq.h>
+#include <nuttx/clock.h>
 
 #include "arm_internal.h"
 #include "nvic.h"
@@ -71,18 +72,11 @@
 #include "hardware/rp23xx_xosc.h"
 #include "hardware/rp23xx_pll.h"
 #include "hardware/rp23xx_pads_bank0.h"
+#include "hardware/rp23xx_io_bank0.h"
 #include "hardware/rp23xx_memorymap.h"
+#include "hardware/rp23xx_uart.h"
 
 #ifdef CONFIG_RP23XX_PM
-
-/* A timed wake-up needs both a non-zero budget and the alarm half of the
- * always-on timer driver to arm it with.
- */
-
-#if defined(CONFIG_RP23XX_PM_SLEEP_MAX_MS) && \
-    CONFIG_RP23XX_PM_SLEEP_MAX_MS > 0 && defined(CONFIG_RTC_ALARM)
-#  define RP23XX_PM_HAVE_TIMED_WAKE 1
-#endif
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -304,12 +298,12 @@
  * Private Data
  ****************************************************************************/
 
-/* Bit mask of the POWMAN power-up channels currently armed as wake sources.
- * Dormancy is refused when this is empty and no timed wake-up is available,
- * because nothing short of a reset could then restart the chip.
+/* GPIOs currently armed in the dormant-wake detector.  Dormancy is refused
+ * while this is empty, because nothing would then be able to restart the
+ * crystal oscillator and the chip would only come back on a reset.
  */
 
-static uint32_t g_pm_wakeup_channels;
+static uint64_t g_pm_wakeup_gpios;
 
 /****************************************************************************
  * Private Functions
@@ -323,6 +317,41 @@ static inline void powman_setbits(uint32_t reg, uint32_t bits)
 static inline void powman_clrbits(uint32_t reg, uint32_t bits)
 {
   putreg32(POWMAN_PASSWORD | bits, reg + POWMAN_CLR_ALIAS);
+}
+
+/****************************************************************************
+ * Name: rp23xx_pm_uart_busy
+ *
+ * Description:
+ *   True while a UART still has a character to get out.  UARTFR.BUSY stays
+ *   asserted until the last stop bit has left the shift register, so it
+ *   covers both the transmit FIFO and the byte in flight.
+ *
+ *   Dormancy stops clk_peri along with clk_sys, which strands a transmit in
+ *   progress until the next wake.  On a console that turns into output
+ *   arriving a couple of characters at a time, indistinguishable from a
+ *   hung board.  Standby keeps the UART clocked, so deferring to it costs
+ *   nothing and lets the transfer finish.
+ *
+ ****************************************************************************/
+
+static bool rp23xx_pm_uart_busy(void)
+{
+#ifdef CONFIG_RP23XX_UART0
+  if ((getreg32(RP23XX_UART0_UARTFR) & RP23XX_UART_UARTFR_BUSY) != 0)
+    {
+      return true;
+    }
+#endif
+
+#ifdef CONFIG_RP23XX_UART1
+  if ((getreg32(RP23XX_UART1_UARTFR) & RP23XX_UART_UARTFR_BUSY) != 0)
+    {
+      return true;
+    }
+#endif
+
+  return false;
 }
 
 /****************************************************************************
@@ -353,9 +382,15 @@ static void RP23XX_PM_RAMFUNC rp23xx_pm_dormant(void)
 
   /* Switch clk_sys off its aux input (the system PLL) and onto clk_ref.
    * Both muxes are glitchless, so this is safe while running.
+   *
+   * The divisors are deliberately left alone.  They are 16.16 fixed point
+   * and an integer part of zero means divide by 2^16, not divide by one, so
+   * a well-meaning write of 1 here drops clk_sys to a few hundred hertz and
+   * looks for all the world like a chip that never woke up.  Both are
+   * already 1.0 from clocks_init(), and neither needs to change to run from
+   * the crystal.
    */
 
-  putreg32(1, RP23XX_CLOCKS_CLK_SYS_DIV);
   clrbits_reg32(RP23XX_CLOCKS_CLK_SYS_CTRL_SRC, RP23XX_CLOCKS_CLK_SYS_CTRL);
   while (getreg32(RP23XX_CLOCKS_CLK_SYS_SELECTED) != 1)
     {
@@ -365,7 +400,6 @@ static void RP23XX_PM_RAMFUNC rp23xx_pm_dormant(void)
    * request stops and what the wake event restarts.
    */
 
-  putreg32(1, RP23XX_CLOCKS_CLK_REF_DIV);
   modbits_reg32(RP23XX_CLOCKS_CLK_REF_CTRL_SRC_XOSC_CLKSRC,
                 RP23XX_CLOCKS_CLK_REF_CTRL_SRC_MASK,
                 RP23XX_CLOCKS_CLK_REF_CTRL);
@@ -385,8 +419,8 @@ static void RP23XX_PM_RAMFUNC rp23xx_pm_dormant(void)
            RP23XX_PLL_PWR_POSTDIVPD,
            RP23XX_PLL_USB_BASE + RP23XX_PLL_PWR_OFFSET);
 
-  /* Stop the crystal oscillator.  Execution stalls inside this write until a
-   * power-up request from the always-on domain restarts it.
+  /* Stop the crystal oscillator.  Execution stalls inside this write until
+   * the dormant-wake detector restarts it.
    */
 
   putreg32(RP23XX_XOSC_DORMANT_DORMANT, RP23XX_XOSC_DORMANT);
@@ -470,108 +504,102 @@ void rp23xx_pm_standby(void)
 
 void rp23xx_pm_sleep(void)
 {
-#ifdef RP23XX_PM_HAVE_TIMED_WAKE
-  struct rp23xx_alarm_state_s saved;
-  bool borrowed = false;
+  int gpio;
 
-  /* Borrow the single always-on alarm comparator as a timed backstop, so
-   * that the chip always comes back even if no GPIO event ever arrives.
-   * Any application alarm is saved and re-armed on the way out.
+#if CONFIG_RP23XX_PM_SLEEP_GUARD_MS > 0
+  /* A dormant chip does not answer SWD, so a configuration that reaches
+   * dormancy immediately after boot cannot be reflashed through the debug
+   * port at all: the only way back is the BOOTSEL button.  Refuse to go
+   * dormant until the guard interval has elapsed, which always leaves a
+   * window in which a debugger can attach and take the board over.
    */
 
-  rp23xx_rtc_savealarm(&saved);
-
-  if (rp23xx_rtc_setalarm(rp23xx_rtc_getms() +
-                          CONFIG_RP23XX_PM_SLEEP_MAX_MS, NULL, NULL) == OK)
+  if (clock_systime_ticks() < MSEC2TICK(CONFIG_RP23XX_PM_SLEEP_GUARD_MS))
     {
-      rp23xx_rtc_alarm_pwrup(true);
-      borrowed = true;
-    }
-  else
-    {
-      rp23xx_rtc_restorealarm(&saved);
+      rp23xx_pm_standby();
+      return;
     }
 #endif
 
-  /* Entering dormancy with nothing able to raise a power-up request leaves
-   * the chip recoverable only by a reset, which on a deployed board means a
-   * power cycle.  Degrade to standby rather than risk that.
-   */
+  /* Never stop the clocks out from under a transmit in progress. */
 
-  if (g_pm_wakeup_channels == 0
-#ifdef RP23XX_PM_HAVE_TIMED_WAKE
-      && !borrowed
-#endif
-     )
+  if (rp23xx_pm_uart_busy())
     {
-      _warn("no wake source armed; entering standby instead of dormant\n");
       rp23xx_pm_standby();
       return;
     }
 
-  rp23xx_pm_dormant();
+  /* Stopping the crystal oscillator stops everything that is clocked from
+   * it, so the only thing that can restart the chip is the dormant-wake
+   * detector in the IO bank, which is asynchronous and needs no clock.
+   * Note that the always-on timer alarm cannot serve here: it belongs to the
+   * POWMAN power-state machine, which is a different mechanism, and it has
+   * no way to restart a stopped oscillator.  Without an armed GPIO the chip
+   * would stay dormant until it was reset, so degrade to standby instead.
+   */
 
-#ifdef RP23XX_PM_HAVE_TIMED_WAKE
-  if (borrowed)
+  if (g_pm_wakeup_gpios == 0)
     {
-      rp23xx_rtc_alarm_pwrup(false);
-      rp23xx_rtc_cancelalarm();
-      rp23xx_rtc_restorealarm(&saved);
+      rp23xx_pm_standby();
+      return;
     }
-#endif
+
+  /* Drop the edges latched by whatever ended the previous dormant period.
+   * The detector feeds off the same latch, so leaving it set would end the
+   * next period the instant it began and the chip would never actually
+   * sleep.
+   */
+
+  for (gpio = 0; gpio < RP23XX_GPIO_NUM; gpio++)
+    {
+      if ((g_pm_wakeup_gpios & (1ull << gpio)) != 0)
+        {
+          setbits_reg32(0xfu << ((gpio % 8) * 4),
+                        RP23XX_IO_BANK0_INTR(gpio));
+        }
+    }
+
+  rp23xx_pm_dormant();
 }
 
 /****************************************************************************
  * Name: rp23xx_pm_gpio_wakeup
  ****************************************************************************/
 
-int rp23xx_pm_gpio_wakeup(int channel, int gpio, bool edge, bool high)
+int rp23xx_pm_gpio_wakeup(int gpio, bool edge, bool high)
 {
-  uint32_t regval;
-  uint32_t reg;
-
-  if (channel < 0 || channel >= RP23XX_PM_PWRUP_NCHANNELS)
-    {
-      return -EINVAL;
-    }
+  uint32_t bit;
 
   if (gpio < 0 || gpio >= RP23XX_GPIO_NUM)
     {
       return -EINVAL;
     }
 
-  reg = RP23XX_POWMAN_PWRUP0 + channel * 4;
-
-  /* The pad has to be input enabled for the detector to see anything, and
-   * the detector lives in the always-on domain so it keeps watching after
-   * the switched core has stopped.
-   */
+  /* The pad has to be input enabled for the detector to see anything. */
 
   modbits_reg32(RP23XX_PADS_BANK0_GPIO_IE, RP23XX_PADS_BANK0_GPIO_IE,
                 RP23XX_PADS_BANK0_GPIO(gpio));
 
-  /* Disable the channel while its source is changed, otherwise a spurious
-   * power-up request can be latched from the old configuration.
-   */
-
-  powman_clrbits(reg, RP23XX_POWMAN_PWRUP0_ENABLE);
-
-  regval = (uint32_t)gpio & RP23XX_POWMAN_PWRUP0_SOURCE_MASK;
-
   if (edge)
     {
-      regval |= RP23XX_POWMAN_PWRUP0_MODE;
+      bit = high ? RP23XX_IO_BANK0_INTR_GPIO_EDGE_HIGH(gpio)
+                 : RP23XX_IO_BANK0_INTR_GPIO_EDGE_LOW(gpio);
     }
-
-  if (high)
+  else
     {
-      regval |= RP23XX_POWMAN_PWRUP0_DIRECTION;
+      bit = high ? RP23XX_IO_BANK0_INTR_GPIO_LEVEL_HIGH(gpio)
+                 : RP23XX_IO_BANK0_INTR_GPIO_LEVEL_LOW(gpio);
     }
 
-  putreg32(POWMAN_PASSWORD | regval, reg);
-  powman_setbits(reg, RP23XX_POWMAN_PWRUP0_ENABLE);
+  /* Drop anything the detector latched earlier, so that a stale edge does
+   * not end the very next dormant period before it starts.
+   */
 
-  g_pm_wakeup_channels |= 1u << channel;
+  setbits_reg32(0xfu << ((gpio % 8) * 4), RP23XX_IO_BANK0_INTR(gpio));
+
+  setbits_reg32(bit, RP23XX_IO_BANK0_DORMANT_WAKE_INTE(gpio));
+
+  g_pm_wakeup_gpios |= 1ull << gpio;
   return OK;
 }
 
@@ -579,17 +607,17 @@ int rp23xx_pm_gpio_wakeup(int channel, int gpio, bool edge, bool high)
  * Name: rp23xx_pm_gpio_wakeup_disable
  ****************************************************************************/
 
-int rp23xx_pm_gpio_wakeup_disable(int channel)
+int rp23xx_pm_gpio_wakeup_disable(int gpio)
 {
-  if (channel < 0 || channel >= RP23XX_PM_PWRUP_NCHANNELS)
+  if (gpio < 0 || gpio >= RP23XX_GPIO_NUM)
     {
       return -EINVAL;
     }
 
-  powman_clrbits(RP23XX_POWMAN_PWRUP0 + channel * 4,
-                 RP23XX_POWMAN_PWRUP0_ENABLE);
+  clrbits_reg32(0xfu << ((gpio % 8) * 4),
+                RP23XX_IO_BANK0_DORMANT_WAKE_INTE(gpio));
 
-  g_pm_wakeup_channels &= ~(1u << channel);
+  g_pm_wakeup_gpios &= ~(1ull << gpio);
   return OK;
 }
 

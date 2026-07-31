@@ -34,16 +34,6 @@
 
 #ifdef CONFIG_RP23XX_PM
 
-/****************************************************************************
- * Pre-processor Definitions
- ****************************************************************************/
-
-/* Wake-up channel numbers.  POWMAN provides four independent PWRUP slots,
- * each of which can watch one GPIO.
- */
-
-#define RP23XX_PM_PWRUP_NCHANNELS  4
-
 #ifndef __ASSEMBLY__
 
 #undef EXTERN
@@ -81,12 +71,16 @@ void rp23xx_pm_standby(void);
  * Description:
  *   Enter the RP2350 DORMANT state: the PLLs are stopped, the system clock
  *   is dropped to the crystal oscillator and then the crystal oscillator
- *   itself is halted.  Nothing in the switched core is clocked, so only a
- *   configured wake source can restart execution:
+ *   itself is halted.  Nothing in the switched core is clocked, so the only
+ *   thing that can restart execution is the dormant-wake detector in the IO
+ *   bank, which is asynchronous and so keeps watching with no clock at all.
+ *   Arm it with rp23xx_pm_gpio_wakeup().
  *
- *     - a GPIO edge or level registered through a POWMAN PWRUP channel, or
- *     - the always-on timer alarm, which is clocked from the low-power
- *       oscillator and therefore survives dormancy.
+ *   The always-on timer alarm cannot be used here, and no timed wake-up is
+ *   available in this state.  The alarm belongs to the POWMAN power-state
+ *   machine, which powers domains down rather than stopping the oscillator,
+ *   and it has no way to restart a halted crystal.  A timed deep sleep would
+ *   need that machine instead, which does not resume in place.
  *
  *   The core resumes at the instruction after the dormant request with all
  *   RAM and register state intact; this function then restarts the PLLs and
@@ -94,9 +88,9 @@ void rp23xx_pm_standby(void);
  *
  *   Called with interrupts disabled.
  *
- *   WARNING: with no wake source configured the chip can only be recovered
- *   by a reset.  rp23xx_pm_sleep() therefore refuses to enter dormancy
- *   unless at least one wake source is armed, falling back to standby.
+ *   WARNING: with no GPIO armed the chip can only be recovered by a reset.
+ *   rp23xx_pm_sleep() therefore refuses to enter dormancy unless at least
+ *   one wake GPIO is armed, falling back to standby.
  *
  ****************************************************************************/
 
@@ -106,31 +100,34 @@ void rp23xx_pm_sleep(void);
  * Name: rp23xx_pm_gpio_wakeup
  *
  * Description:
- *   Configure one of the four POWMAN power-up channels to watch a GPIO.
+ *   Arm a GPIO in the dormant-wake detector, making it able to end a
+ *   PM_SLEEP dormant period.  Any number of GPIOs may be armed.
+ *
+ *   The detector watches the pad itself, so the pin keeps whatever function
+ *   it is already assigned; a console receive pin can be armed without
+ *   taking it away from the UART.
  *
  * Input Parameters:
- *   channel - Power-up channel, 0 to RP23XX_PM_PWRUP_NCHANNELS - 1.
- *   gpio    - GPIO number to watch.
- *   edge    - True to trigger on a transition, false on a level.
- *   high    - True for rising edge / high level, false for falling / low.
+ *   gpio - GPIO number to watch.
+ *   edge - True to trigger on a transition, false on a level.
+ *   high - True for rising edge / high level, false for falling / low.
  *
  * Returned Value:
  *   Zero on success; a negated errno on failure.
  *
  ****************************************************************************/
 
-int rp23xx_pm_gpio_wakeup(int channel, int gpio, bool edge, bool high);
+int rp23xx_pm_gpio_wakeup(int gpio, bool edge, bool high);
 
 /****************************************************************************
  * Name: rp23xx_pm_gpio_wakeup_disable
  *
  * Description:
- *   Release a power-up channel previously configured with
- *   rp23xx_pm_gpio_wakeup().
+ *   Disarm a GPIO previously passed to rp23xx_pm_gpio_wakeup().
  *
  ****************************************************************************/
 
-int rp23xx_pm_gpio_wakeup_disable(int channel);
+int rp23xx_pm_gpio_wakeup_disable(int gpio);
 
 #undef EXTERN
 #if defined(__cplusplus)

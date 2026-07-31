@@ -901,8 +901,8 @@ menuconfig RP23XX_PM
 
 		PM_SLEEP additionally stops both PLLs and the crystal oscillator,
 		leaving only the always-on domain alive.  This is far deeper, but
-		the chip can then only be restarted by a configured wake source,
-		so read the two options below before enabling it.
+		the chip can then only be restarted by a GPIO edge or level, so
+		read the options below before enabling it.
 
 if RP23XX_PM
 
@@ -911,46 +911,56 @@ config RP23XX_PM_WAKEUP_GPIO
 	default -1
 	range -1 47
 	---help---
-		GPIO watched by a POWMAN power-up detector while the chip is
-		dormant.  The detector sits in the always-on domain, so it keeps
-		watching after the switched core has stopped.
+		GPIO armed in the dormant-wake detector.  The detector is
+		asynchronous, so it keeps watching the pad with no clock running
+		and is the only thing that can end a dormant period.
 
-		Set this to the pin an operator can actually reach, typically a
-		button.  Note that the console UART receive pin does NOT wake the
-		chip from dormancy by itself: the UART needs a clock to detect a
-		start bit, and in the dormant state it has none.  Routing the
-		console receive pin here makes a keypress wake the board, at the
-		cost of losing the character that did it.
+		This is not optional in practice: with no GPIO armed the power
+		management logic refuses to go dormant at all and stays in
+		standby, because a dormant chip with no wake source can only be
+		recovered by resetting it.
 
-		-1 leaves every power-up detector free, in which case the dormant
-		state relies entirely on RP23XX_PM_SLEEP_MAX_MS.
+		The detector watches the pad, not the peripheral, so the pin keeps
+		its existing function.  Pointing this at the console UART receive
+		pin therefore works and makes any keypress wake the board, at the
+		cost of corrupting the character that did the waking.  A button is
+		the better choice where one exists.
 
 config RP23XX_PM_WAKEUP_GPIO_HIGH
-	bool "Wake on a high level rather than a low level"
+	bool "Wake on a high level or rising edge"
 	default n
 	depends on RP23XX_PM_WAKEUP_GPIO >= 0
 	---help---
-		Wake when the configured GPIO is high.  The default wakes on a low
-		level, which suits a button wired to ground with a pull-up.
+		Wake on the high/rising sense.  The default wakes on low/falling,
+		which suits both a button wired to ground with a pull-up and a
+		UART receive line, whose start bit is a falling edge.
 
-config RP23XX_PM_SLEEP_MAX_MS
-	int "Timed wake-up backstop in milliseconds (0 to disable)"
-	default 0
-	depends on RTC_ALARM && RP23XX_RTC
+config RP23XX_PM_WAKEUP_GPIO_EDGE
+	bool "Wake on an edge rather than a level"
+	default y
+	depends on RP23XX_PM_WAKEUP_GPIO >= 0
 	---help---
-		Longest time the chip may stay dormant before the always-on timer
-		alarm wakes it regardless of any other event.  This is a safety
-		net: with no GPIO wake source configured it is the only thing that
-		can restart the chip short of a power cycle, and it is strongly
-		recommended while bringing the dormant state up on a bench.
+		Trigger on a transition rather than a level.  Edge is almost
+		always what is wanted: a level-triggered source that is still
+		asserted when the system next goes idle prevents it from ever
+		reaching the dormant state again.
 
-		The always-on timer has exactly one alarm comparator, so the power
-		management logic borrows it and restores any application alarm on
-		wake-up.  An application alarm that would have expired during the
-		dormant window is reported as soon as the chip wakes.
+config RP23XX_PM_SLEEP_GUARD_MS
+	int "Refuse the dormant state for this long after boot"
+	default 10000
+	---help---
+		A dormant chip does not answer the debug port, so a configuration
+		that reaches dormancy as soon as it goes idle cannot be reflashed
+		over SWD at all; recovering it needs the BOOTSEL button, which is
+		awkward on a deployed board and impossible on one whose USB is not
+		wired to the host.
 
-		0 disables the backstop, leaving the GPIO wake source as the only
-		way out of the dormant state.
+		For this interval after boot the power management logic stays in
+		the standby state instead, which always leaves a window for a
+		debugger to attach.  Ten seconds is enough to attach by hand.
+
+		Set to 0 only once the configuration is known good and the board
+		can still be recovered by other means.
 
 endif # RP23XX_PM
 
