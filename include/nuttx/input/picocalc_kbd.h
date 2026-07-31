@@ -27,6 +27,7 @@
 
 #include <nuttx/config.h>
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include <nuttx/i2c/i2c_master.h>
@@ -76,6 +77,26 @@ extern "C"
 typedef CODE int (*picocalc_kbd_attach_t)(xcpt_t isr, FAR void *arg);
 
 /****************************************************************************
+ * Name: picocalc_kbd_asserted_t
+ *
+ * Description:
+ *   Read the attention line: true if the co-processor still has events.
+ *
+ *   This is what makes an edge interrupt correct on a level signal, and
+ *   without it the driver is subtly wrong.  A key queued while the line is
+ *   already low produces no new edge -- the line never went high to fall
+ *   again -- and it is not in the block being read either, so nothing tells
+ *   the driver about it and it waits for the background read.
+ *
+ *   Testing the line after each read closes that window: the level is still
+ *   asserted, so the driver simply reads again.  It costs a GPIO read and no
+ *   bus traffic at all.
+ *
+ ****************************************************************************/
+
+typedef CODE bool (*picocalc_kbd_asserted_t)(void);
+
+/****************************************************************************
  * Name: picocalc_kbd_register
  *
  * Description:
@@ -105,6 +126,9 @@ typedef CODE int (*picocalc_kbd_attach_t)(xcpt_t isr, FAR void *arg);
  *   attach    - Installs the attention line handler, or NULL.  Ignored if
  *               the co-processor turns out to be running stock firmware,
  *               which drives no such line.
+ *   asserted  - Reads that same line, or NULL.  Strongly recommended
+ *               wherever attach is given; see picocalc_kbd_asserted_t for
+ *               what goes wrong without it.
  *
  * Returned Value:
  *   Zero on success; a negated errno value on failure.
@@ -114,7 +138,8 @@ typedef CODE int (*picocalc_kbd_attach_t)(xcpt_t isr, FAR void *arg);
 int picocalc_kbd_register(FAR const char *devpath,
                           FAR struct i2c_master_s *i2c,
                           uint8_t addr, uint32_t frequency,
-                          picocalc_kbd_attach_t attach);
+                          picocalc_kbd_attach_t attach,
+                          picocalc_kbd_asserted_t asserted);
 
 #undef EXTERN
 #ifdef __cplusplus

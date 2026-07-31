@@ -149,4 +149,18 @@ int picocalc_coproc_lcd_backlight(int level);
 
 int picocalc_coproc_attach_attention(xcpt_t isr, FAR void *arg);
 
+/****************************************************************************
+ * Name: picocalc_coproc_attention_asserted
+ *
+ * Description:
+ *   True while the co-processor is asserting its attention line, GPIO 9.
+ *
+ *   Passed to picocalc_kbd_register() as its picocalc_kbd_asserted_t.  The
+ *   line is a level, so this is what tells the driver about a key that
+ *   arrived while it was already low and therefore produced no edge.
+ *
+ ****************************************************************************/
+
+bool picocalc_coproc_attention_asserted(void);
+
 #endif /* __BOARDS_ARM_RP23XX_CLOCKWORKPI_PICOCALC_SRC_PICOCALC_COPROC_H */
