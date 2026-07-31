@@ -112,9 +112,14 @@ static void rp23xx_idlepm(void)
    * loop rather than only on a transition: pm_changestate() reports the
    * boundary, but the chip has to be put back to sleep after each wake-up
    * that does not raise the state again.
+   *
+   * The wait is deliberately not wrapped in a critical section.  Holding one
+   * across the WFI raises the current execution priority, and an interrupt
+   * only wakes the core from WFI if it would preempt at the priority in
+   * force, so the masked-off interrupts stop being wake-up events and the
+   * system limps along on whatever is left.  Each state handler takes its
+   * own critical section over the part that genuinely needs one.
    */
-
-  flags = enter_critical_section();
 
   switch (oldstate)
     {
@@ -134,8 +139,6 @@ static void rp23xx_idlepm(void)
         asm("WFI");
         break;
     }
-
-  leave_critical_section(flags);
 }
 #endif
 
