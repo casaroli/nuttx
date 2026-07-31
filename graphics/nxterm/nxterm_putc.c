@@ -51,10 +51,17 @@ void nxterm_putc(FAR struct nxterm_state_s *priv, uint8_t ch)
   FAR const struct nxterm_bitmap_s *bm;
   int lineheight;
 
-  /* Ignore carriage returns */
+  /* Carriage return moves back to the left margin.
+   *
+   * This used to be ignored, which is defensible for output that only ever
+   * appends but breaks any line editor: readline redraws a line with
+   * "\r", erase-to-end-of-line, then the whole line again, and with the
+   * return dropped that redraw was appended instead of replacing.
+   */
 
   if (ch == '\r')
     {
+      priv->fpos.x = priv->spwidth;
       return;
     }
 
@@ -153,11 +160,45 @@ void nxterm_showcursor(FAR struct nxterm_state_s *priv)
       nxterm_scroll(priv, lineheight);
     }
 
-  /* Render the cursor glyph onto the display. */
-
   priv->cursor.pos.x = priv->fpos.x;
   priv->cursor.pos.y = priv->fpos.y;
-  nxterm_fillchar(priv, NULL, &priv->cursor);
+
+  /* Draw the cursor as a block that the text shows through.
+   *
+   * A cursor that simply renders a glyph over the cell hides whatever is
+   * underneath, which is invisible while the cursor can only sit past the
+   * last character and very obvious once a line editor can park it on one --
+   * the character appears to have been deleted.
+   *
+   * So fill the cell with the foreground colour and, if a character lives
+   * there, draw it back in reverse video on top.  On an empty cell that
+   * leaves a plain block, which is what a cursor at the end of a line should
+   * look like anyway.
+   */
+
+    {
+      struct nxgl_rect_s bounds;
+      int i;
+
+      bounds.pt1.x = priv->cursor.pos.x;
+      bounds.pt1.y = priv->cursor.pos.y;
+      bounds.pt2.x = priv->cursor.pos.x + priv->fwidth - 1;
+      bounds.pt2.y = priv->cursor.pos.y + priv->fheight - 1;
+
+      priv->ops->fill(priv, &bounds, priv->wndo.fcolor);
+
+      for (i = priv->nchars - 1; i >= 0; i--)
+        {
+          FAR struct nxterm_bitmap_s *bm = &priv->bm[i];
+
+          if (bm->pos.x == priv->cursor.pos.x &&
+              bm->pos.y == priv->cursor.pos.y)
+            {
+              nxterm_reversechar(priv, bm);
+              break;
+            }
+        }
+    }
 }
 
 /****************************************************************************
@@ -170,5 +211,31 @@ void nxterm_showcursor(FAR struct nxterm_state_s *priv)
 
 void nxterm_hidecursor(FAR struct nxterm_state_s *priv)
 {
+  int i;
+
   nxterm_hidechar(priv, &priv->cursor);
+
+  /* Put back whatever the cursor was covering.
+   *
+   * Hiding the cursor clears its whole cell, which was harmless while the
+   * cursor could only ever sit past the last character.  A line editor moves
+   * it back over text, and without this the character underneath is erased
+   * for good the next time anything writes -- it looks exactly as though the
+   * left arrow deleted it.
+   *
+   * Searched from the end because the most recently written glyph at a
+   * position is the one currently displayed there.
+   */
+
+  for (i = priv->nchars - 1; i >= 0; i--)
+    {
+      FAR struct nxterm_bitmap_s *bm = &priv->bm[i];
+
+      if (bm->pos.x == priv->cursor.pos.x &&
+          bm->pos.y == priv->cursor.pos.y)
+        {
+          nxterm_fillchar(priv, NULL, bm);
+          break;
+        }
+    }
 }
