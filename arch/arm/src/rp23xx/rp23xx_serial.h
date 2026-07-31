@@ -50,4 +50,19 @@
  * Public Functions Prototypes
  ****************************************************************************/
 
+/****************************************************************************
+ * Name: rp23xx_serial_resume
+ *
+ * Description:
+ *   Reconfigure the UART hardware after a suspend to RAM, from the driver
+ *   state that survived it in RAM.  Called from the start-up code in place
+ *   of arm_earlyserialinit(), which would take the reset hardware as the
+ *   truth and leave a console that cannot receive.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_RP23XX_PM_SUSPEND
+void rp23xx_serial_resume(void);
+#endif
+
 #endif /* __ARCH_ARM_SRC_RP23XX_RP23XX_SERIAL_H */

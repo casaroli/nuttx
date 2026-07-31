@@ -988,6 +988,56 @@ void arm_earlyserialinit(void)
 #endif
 
 /****************************************************************************
+ * Name: rp23xx_serial_resume
+ *
+ * Description:
+ *   Put the UARTs back after a suspend to RAM, which powers the switched
+ *   core down and so loses every register they have.
+ *
+ *   This exists rather than reusing arm_earlyserialinit() because that would
+ *   make things worse rather than better.  up_setup() initialises its record
+ *   of the enabled interrupts by reading the mask register back, which is a
+ *   sound way to start from a reset UART and the wrong thing entirely here:
+ *   the hardware is reset but the driver is not, and the ports it thinks it
+ *   has receiving are still expected to receive.  So the record is what is
+ *   authoritative on this path, and it is put back over the hardware.
+ *
+ *   A port nothing has opened is left alone; there is nothing to restore and
+ *   bringing it up would be a change of state rather than a return to one.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_RP23XX_PM_SUSPEND
+static void up_resume_one(struct uart_dev_s *dev)
+{
+  struct up_dev_s *priv = (struct up_dev_s *)dev->priv;
+  uint32_t ier;
+
+  if (dev->open_count == 0 && !dev->isconsole)
+    {
+      return;
+    }
+
+  ier = priv->ier;
+
+  up_setup(dev);
+
+  priv->ier = ier;
+  up_serialout(priv, RP23XX_UART_UARTIMSC_OFFSET, ier);
+}
+
+void rp23xx_serial_resume(void)
+{
+#ifdef TTYS0_DEV
+  up_resume_one(&TTYS0_DEV);
+#endif
+#ifdef TTYS1_DEV
+  up_resume_one(&TTYS1_DEV);
+#endif
+}
+#endif
+
+/****************************************************************************
  * Name: arm_serialinit
  *
  * Description:

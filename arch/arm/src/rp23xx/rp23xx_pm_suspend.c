@@ -45,6 +45,20 @@
  * switched core is down automatically drops to a retention mode and keeps
  * its contents, so RAM survives and the resume path is a warm restart.
  *
+ * Resume deliberately takes the long way round.  POWMAN can hold a boot
+ * vector that the bootrom jumps to as soon as the core is back, but that
+ * vector runs before execute-in-place has been set up, so it may touch only
+ * RAM and registers.  An earlier version of this file jumped back into the
+ * OS from there and lost the core on its first call into flash, because
+ * putting the vector itself in RAM does nothing for what it calls.
+ *
+ * So no vector is installed.  The bootrom completes an ordinary boot, which
+ * brings up XIP and the clock tree through the path every cold boot already
+ * exercises, and the resume is picked up in __start -- which asks
+ * rp23xx_pm_resume_pending() before it can destroy the retained state, and
+ * hands control back through rp23xx_pm_resume() where it would otherwise
+ * have started the OS.
+ *
  * Reference: RP2350 datasheet sections 5.2.3 (POWMAN boot vector), 6.2.2
  * (power states) and 6.2.3 (power state transitions).
  *
@@ -59,8 +73,6 @@
 #include <setjmp.h>
 #include <debug.h>
 
-#include <arch/board/board.h>
-
 #include <nuttx/arch.h>
 #include <nuttx/irq.h>
 
@@ -68,11 +80,8 @@
 #include "nvic.h"
 
 #include "rp23xx_pm.h"
-#include "rp23xx_clock.h"
-#include "rp23xx_uart.h"
 
 #include "hardware/rp23xx_powman.h"
-#include "hardware/rp23xx_pads_bank0.h"
 #include "hardware/rp23xx_memorymap.h"
 
 #ifdef CONFIG_RP23XX_PM_SUSPEND
@@ -80,14 +89,6 @@
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
-
-/* The resume vector runs before anything has been set up, out of memory the
- * bootrom has just handed control to.  It must not be in flash: reaching it
- * is the very thing that has not been arranged yet.
- */
-
-#define RP23XX_PM_RAMFUNC \
-  __attribute__((section(".time_critical.rp23xx_pm_suspend"), noinline))
 
 /* Most POWMAN registers carry a password in the top 16 bits and take only
  * 16 bits of data, which is why the alarm time is split across four of
@@ -111,10 +112,26 @@
 
 #define POWMAN_STATE_P1_0  (0x8 << 4)
 
-/* Magic values the bootrom looks for in BOOT0..BOOT3 (datasheet 5.2.3). */
+/* Left in SCRATCH0 on the way down and consumed by the next boot, which is
+ * how that boot knows it is a resume rather than a cold start.  SCRATCH0
+ * lives in the always-on domain, so it survives the very thing that makes
+ * the question worth asking; a magic word in RAM would too, but only for as
+ * long as the assumption that RAM was retained holds, and that assumption is
+ * exactly what must not be taken on trust before the bss is cleared.
+ */
 
-#define POWMAN_BOOT_MAGIC  0xb007c0d3
-#define POWMAN_BOOT_XOR    0x4ff83f2d
+#define POWMAN_SUSPEND_MAGIC 0x50575231  /* 'PWR1' */
+
+/****************************************************************************
+ * Public Data
+ ****************************************************************************/
+
+/* The stack a resume boots on.  Defined here rather than in the start-up
+ * code so that a build without suspend to RAM does not carry it.
+ */
+
+uint32_t g_pm_resume_stack[RP23XX_PM_RESUME_STACK_WORDS]
+  __attribute__((aligned(8)));
 
 /****************************************************************************
  * Private Data
@@ -126,20 +143,7 @@
 
 static jmp_buf g_suspend_ctx;
 
-/* The resume vector runs on whatever stack pointer was handed to the
- * bootrom in BOOT2, before longjmp() puts the suspending thread's stack
- * back.  It needs somewhere real to run: it calls into the clock setup,
- * which is not a leaf.  Retained in SRAM like everything else.
- */
-
-#define RP23XX_PM_RESUME_STACK_WORDS 256
-
-static uint32_t g_resume_stack[RP23XX_PM_RESUME_STACK_WORDS]
-  __attribute__((aligned(8)));
-
-/* Set by the resume vector so the caller can tell a real resume from the
- * initial pass, and report what woke the chip.
- */
+/* Set on the way back so the caller can report what woke the chip. */
 
 static volatile uint32_t g_suspend_wake_source;
 
@@ -207,7 +211,7 @@ static void rp23xx_pm_nvic_save(void)
   g_suspend_nvic.vectab         = getreg32(NVIC_VECTAB);
 }
 
-static void RP23XX_PM_RAMFUNC rp23xx_pm_nvic_restore(void)
+static void rp23xx_pm_nvic_restore(void)
 {
   int i;
 
@@ -253,56 +257,104 @@ static inline void powman_clrbits(uint32_t reg, uint32_t bits)
 }
 
 /****************************************************************************
- * Name: rp23xx_pm_resume_vector
+ * Public Functions
+ ****************************************************************************/
+
+/****************************************************************************
+ * Name: rp23xx_pm_resume_pending
  *
  * Description:
- *   Entered from the bootrom after the switched core has been powered back
- *   up.  Nothing in the switched core has any state: the clock tree is at
- *   its reset defaults, every peripheral has been reset, and the stack is
- *   whatever was handed over in BOOT2.
+ *   Whether this boot is a resume from suspend to RAM, and therefore whether
+ *   the retained contents of SRAM are live data rather than something to be
+ *   initialised over.
  *
- *   Only enough is rebuilt here to get back into C with a working clock
- *   tree; the rest is the caller's problem, which is why suspending is an
- *   explicit request rather than something the idle loop can do.
+ *   Called from __start before the bss is cleared, so it must touch no
+ *   global state of its own; everything it consults is a register in the
+ *   always-on domain.  It is also one-shot: the marker is consumed here, so
+ *   that a boot which fails somewhere after this point comes up cold rather
+ *   than trying to resume into whatever it left behind.
+ *
+ *   The marker alone is not enough.  It survives a plain reset as happily as
+ *   it survives the power down, so a board reset while suspended -- pulling
+ *   RUN low, or a debugger reflashing it -- would otherwise look exactly
+ *   like a resume, and jumping into a stale context on a freshly flashed
+ *   image is a hang that needs BOOTSEL to clear.  CHIP_RESET reports the
+ *   cause of the last reset, so require it to say the switched core was
+ *   powered down.
+ *
+ * Returned Value:
+ *   True if the rest of the boot should preserve SRAM and finish through
+ *   rp23xx_pm_resume().
  *
  ****************************************************************************/
 
-static void RP23XX_PM_RAMFUNC rp23xx_pm_resume_vector(void)
+bool rp23xx_pm_resume_pending(void)
 {
-  /* Record what woke us before anything else can disturb it. */
+  uint32_t marker;
+  uint32_t cause;
+
+  marker = getreg32(RP23XX_POWMAN_SCRATCH0);
+  cause  = getreg32(RP23XX_POWMAN_CHIP_RESET);
+
+  putreg32(0, RP23XX_POWMAN_SCRATCH0);
+
+  return marker == POWMAN_SUSPEND_MAGIC &&
+         (cause & RP23XX_POWMAN_CHIP_RESET_HAD_SWCORE_PD) != 0;
+}
+
+/****************************************************************************
+ * Name: rp23xx_pm_resume
+ *
+ * Description:
+ *   Finish a resume by handing control back to the thread that suspended,
+ *   in place of starting the OS.  Called from __start once the ordinary
+ *   boot has rebuilt everything in the switched core: the clock tree, the
+ *   pin muxing, the console and the board's own hardware are all back by
+ *   this point, through the same code a cold boot runs.
+ *
+ *   What that boot cannot rebuild is anything whose state lived only in
+ *   RAM, which is why the interrupt controller is put back from a snapshot
+ *   here rather than reinitialised.
+ *
+ *   Does not return.
+ *
+ ****************************************************************************/
+
+void rp23xx_pm_resume(void)
+{
+  /* Report what woke the chip.  LAST_SWCORE_PWRUP is in the always-on
+   * domain and holds until the next power up, so there is no hurry to read
+   * it, and reading it here keeps it clear of the bss decision above.
+   */
 
   g_suspend_wake_source = getreg32(RP23XX_POWMAN_LAST_SWCORE_PWRUP);
 
-  /* Rebuild the clock tree.  Until this runs the chip is on its boot
-   * defaults, which is not what the rest of the system believes.
+  /* Nothing may be delivered between the interrupt controller coming back
+   * and the suspending thread getting its stack back: until the longjmp the
+   * core is still on the stack the resume booted on, which belongs to no
+   * thread at all, and every handler the NVIC is about to point at expects
+   * to be running on one.
    */
 
-  rp23xx_clockconfig();
-
-  /* Put back the pin muxing and the console.  Both live in the switched
-   * core, so the UART is not merely unconfigured, its pins are no longer
-   * connected to it.
-   */
-
-  rp23xx_boardearlyinitialize();
-  rp23xx_lowsetup();
-
-  /* And the interrupt controller, which is what actually makes the system
-   * run again rather than merely appear to.
-   */
+  up_irq_save();
 
   rp23xx_pm_nvic_restore();
 
   /* Back into the suspending thread, which resumes as though
-   * rp23xx_pm_suspend() had simply returned.
+   * rp23xx_pm_suspend() had simply returned.  The critical section it took
+   * on the way down is released there, which is also what re-enables
+   * interrupts.
    */
 
   longjmp(g_suspend_ctx, 1);
-}
 
-/****************************************************************************
- * Public Functions
- ****************************************************************************/
+  /* longjmp() does not come back, and there is nothing sane to do if it
+   * ever did: the caller's alternative was to start the OS, and the OS is
+   * already running as far as everything in RAM is concerned.
+   */
+
+  for (; ; );
+}
 
 /****************************************************************************
  * Name: rp23xx_pm_suspend
@@ -329,7 +381,6 @@ static void RP23XX_PM_RAMFUNC rp23xx_pm_resume_vector(void)
 int rp23xx_pm_suspend(uint32_t wake_ms)
 {
   irqstate_t flags;
-  uint32_t entry;
   uint32_t state;
 
   /* A debugger asserting CSYSPWRUPREQ forces P0.0 and makes the power
@@ -349,21 +400,22 @@ int rp23xx_pm_suspend(uint32_t wake_ms)
       return OK;
     }
 
-  /* Install the resume vector.  The entry point needs its Thumb bit set:
-   * the bootrom treats a clear bit as a RISC-V pointer handed to an Arm
-   * core and deliberately hangs rather than running it.
-   */
-
   rp23xx_pm_nvic_save();
 
-  entry = (uint32_t)&rp23xx_pm_resume_vector | 1u;
+  /* Make sure the bootrom is not handed a resume vector.  This build never
+   * installs one -- the whole point is to come back through the ordinary
+   * boot -- but BOOT0 is in the always-on domain and outlives the image
+   * that wrote it, so a firmware update from a version that did install one
+   * would otherwise leave the bootrom jumping into a stale address.
+   */
 
   putreg32(0, RP23XX_POWMAN_BOOT0);
-  putreg32(entry ^ POWMAN_BOOT_XOR, RP23XX_POWMAN_BOOT1);
-  putreg32((uint32_t)&g_resume_stack[RP23XX_PM_RESUME_STACK_WORDS],
-           RP23XX_POWMAN_BOOT2);
-  putreg32(entry, RP23XX_POWMAN_BOOT3);
-  putreg32(POWMAN_BOOT_MAGIC, RP23XX_POWMAN_BOOT0);
+
+  /* Tell the next boot what it is.  This is the last thing set before the
+   * chip goes down and the first thing the next boot consumes.
+   */
+
+  putreg32(POWMAN_SUSPEND_MAGIC, RP23XX_POWMAN_SCRATCH0);
 
   /* Arm the timed wake if one was asked for.  Both bits are needed: the
    * alarm has to be enabled and it has to be allowed to raise a power up.
@@ -405,14 +457,14 @@ int rp23xx_pm_suspend(uint32_t wake_ms)
        * still a debugger, despite DBG_PWRCFG.IGNORE above.
        */
 
-      putreg32(0, RP23XX_POWMAN_BOOT0);
+      putreg32(0, RP23XX_POWMAN_SCRATCH0);
       leave_critical_section(flags);
       return -EBUSY;
     }
 
   if ((state & RP23XX_POWMAN_STATE_BAD_SW_REQ) != 0)
     {
-      putreg32(0, RP23XX_POWMAN_BOOT0);
+      putreg32(0, RP23XX_POWMAN_SCRATCH0);
       leave_critical_section(flags);
       return -EINVAL;
     }

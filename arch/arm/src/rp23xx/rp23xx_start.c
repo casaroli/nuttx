@@ -27,6 +27,7 @@
 #include <nuttx/config.h>
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <assert.h>
 #include <nuttx/debug.h>
 #include <sys/param.h>
@@ -39,6 +40,11 @@
 #include "rp23xx_clock.h"
 #include "rp23xx_uart.h"
 #include "hardware/rp23xx_sio.h"
+
+#ifdef CONFIG_RP23XX_PM_SUSPEND
+#  include "rp23xx_pm.h"
+#  include "rp23xx_serial.h"
+#endif
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -71,24 +77,35 @@ const uintptr_t g_idle_topstack = IDLE_STACK;
 #endif
 
 /****************************************************************************
- * Public Functions
- ****************************************************************************/
-
-/****************************************************************************
- * Name: __start
+ * Name: rp23xx_hwinit
  *
  * Description:
- *   This is the reset entry point.
+ *   Bring up everything that lives in the switched core: the clock tree, the
+ *   board's early pin setup, the spinlocks, the FPU, the console and the
+ *   board's own hardware.
+ *
+ *   This is split out of __start because a resume from suspend to RAM needs
+ *   precisely this and nothing else.  Powering the switched core down loses
+ *   every register in it, so all of it has to be built again; what must not
+ *   happen on that path is the memory initialisation around it, since RAM is
+ *   the one thing that was retained.  Sharing the sequence rather than
+ *   copying it is the point -- a second copy of the boot path is what makes
+ *   a resume drift away from a cold boot over time.
+ *
+ * Input Parameters:
+ *   resume - True when this is a resume rather than a cold boot.
  *
  ****************************************************************************/
 
-void __start(void)
+static void rp23xx_hwinit(bool resume)
 {
-#ifdef CONFIG_BOOT_RUNFROMFLASH
-  const uint32_t *src;
-#endif
-  uint32_t       *dest;
-  size_t         i;
+  size_t i;
+
+  /* Which of the steps below care about a resume depends on the
+   * configuration, and in the smallest one none of them do.
+   */
+
+  UNUSED(resume);
 
   /* Errata RP2350-E2 SIO SPINLOCK writes are mirrored at +0x80 offset
    * Use only safe SPINLOCKS
@@ -102,42 +119,6 @@ void __start(void)
     20, 21, 22, 23, 24, 25, 26,
     27, 28, 29, 30, 31
   };
-
-  /* Set MSP to the top of the IDLE stack */
-
-  __asm__ __volatile__ ("\tmsr msp, %0\n" :: "r" (g_idle_topstack));
-
-  if (this_cpu() != 0)
-    {
-      while (1)
-        {
-          __asm__ volatile ("wfe");
-        }
-    }
-
-  /* Clear .bss.  We'll do this inline (vs. calling memset) just to be
-   * certain that there are no issues with the state of global variables.
-   */
-
-  for (dest = (uint32_t *)_sbss; dest < (uint32_t *)_ebss; )
-    {
-      *dest++ = 0;
-    }
-
-  /* Move the initialized data section from its temporary holding spot in
-   * FLASH into the correct place in SRAM.  The correct place in SRAM is
-   * give by _sdata and _edata.  The temporary location is in FLASH at the
-   * end of all of the other read-only data (.text, .rodata) at _eronly.
-   */
-
-#ifdef CONFIG_BOOT_RUNFROMFLASH
-  for (src = (const uint32_t *)_eronly,
-       dest = (uint32_t *)_sdata; dest < (uint32_t *)_edata;
-      )
-    {
-      *dest++ = *src++;
-    }
-#endif
 
   /* Set up clock */
 
@@ -165,10 +146,23 @@ void __start(void)
   rp23xx_lowsetup();
   showprogress('A');
 
-  /* Perform early serial initialization */
+  /* Perform early serial initialization.  A resume takes the other route:
+   * the UARTs are reset but the driver is not, so what it remembers about
+   * them outranks what they now say about themselves.
+   */
 
 #ifdef USE_EARLYSERIALINIT
-  arm_earlyserialinit();
+#  ifdef CONFIG_RP23XX_PM_SUSPEND
+  if (resume)
+    {
+      rp23xx_serial_resume();
+    }
+  else
+#  endif
+    {
+      arm_earlyserialinit();
+    }
+
 #endif
   showprogress('B');
 
@@ -179,14 +173,143 @@ void __start(void)
    */
 
 #ifdef CONFIG_BUILD_PROTECTED
-  rp23xx_userspace();
-  showprogress('C');
+  /* Not on a resume, though: the user-space data and bss hold the state
+   * being resumed, exactly as the kernel's do.
+   */
+
+  if (!resume)
+    {
+      rp23xx_userspace();
+      showprogress('C');
+    }
 #endif
 
   /* Initialize onboard resources */
 
   rp23xx_boardinitialize();
   showprogress('D');
+}
+
+/****************************************************************************
+ * Public Functions
+ ****************************************************************************/
+
+#ifdef CONFIG_RP23XX_PM_SUSPEND
+
+/****************************************************************************
+ * Name: rp23xx_resume_boot
+ *
+ * Description:
+ *   The tail of a boot that turned out to be a resume from suspend to RAM.
+ *   Entered from __start by branch rather than by call, on a stack of its
+ *   own, and does not return.
+ *
+ *   Public only because __start reaches it from inline assembly; nothing
+ *   else should call it.
+ *
+ ****************************************************************************/
+
+void rp23xx_resume_boot(void)
+{
+  rp23xx_hwinit(true);
+
+  showprogress('\r');
+  showprogress('\n');
+
+  /* Hand back to the thread that suspended, in place of starting an OS that
+   * is, as far as everything in RAM is concerned, already running.
+   */
+
+  rp23xx_pm_resume();
+
+  for (; ; );
+}
+#endif
+
+/****************************************************************************
+ * Name: __start
+ *
+ * Description:
+ *   This is the reset entry point.
+ *
+ ****************************************************************************/
+
+void __start(void)
+{
+#ifdef CONFIG_BOOT_RUNFROMFLASH
+  const uint32_t *src;
+#endif
+  uint32_t       *dest;
+
+  /* Set MSP to the top of the IDLE stack */
+
+  __asm__ __volatile__ ("\tmsr msp, %0\n" :: "r" (g_idle_topstack));
+
+  if (this_cpu() != 0)
+    {
+      while (1)
+        {
+          __asm__ volatile ("wfe");
+        }
+    }
+
+#ifdef CONFIG_RP23XX_PM_SUSPEND
+  /* A resume from suspend to RAM arrives here indistinguishable from a cold
+   * boot: powering the switched core down means the chip comes back through
+   * the bootrom, with SRAM still holding a running system.  Ask before
+   * anything can destroy the evidence, or the state it protects.
+   *
+   * Then leave this stack immediately, because it is the IDLE *thread's*
+   * stack and on a resume it is in use: a resume does not restart the idle
+   * thread, it merely schedules it again, and nx_start()'s frame -- which is
+   * where the idle loop itself runs -- reaches all the way to the top of it.
+   *
+   * Nothing may be called here beyond the check, which is why the boot
+   * continues on a stack of its own rather than a few lines further down.
+   * What this function has already written is the handful of bytes its own
+   * prologue pushed, in the register save slots at the very top of that
+   * frame, and those are only read back if nx_start() returns, which is the
+   * one thing an idle loop never does.
+   */
+
+  if (rp23xx_pm_resume_pending())
+    {
+      __asm__ __volatile__
+      (
+        "msr msp, %0\n"
+        "b   rp23xx_resume_boot\n"
+        :
+        : "r" (&g_pm_resume_stack[RP23XX_PM_RESUME_STACK_WORDS])
+        : "memory"
+      );
+    }
+#endif
+
+  /* Clear .bss.  We'll do this inline (vs. calling memset) just to be
+   * certain that there are no issues with the state of global variables.
+   */
+
+  for (dest = (uint32_t *)_sbss; dest < (uint32_t *)_ebss; )
+    {
+      *dest++ = 0;
+    }
+
+  /* Move the initialized data section from its temporary holding spot in
+   * FLASH into the correct place in SRAM.  The correct place in SRAM is
+   * give by _sdata and _edata.  The temporary location is in FLASH at the
+   * end of all of the other read-only data (.text, .rodata) at _eronly.
+   */
+
+#ifdef CONFIG_BOOT_RUNFROMFLASH
+  for (src = (const uint32_t *)_eronly,
+       dest = (uint32_t *)_sdata; dest < (uint32_t *)_edata;
+      )
+    {
+      *dest++ = *src++;
+    }
+#endif
+
+  rp23xx_hwinit(false);
 
   /* Then start NuttX */
 

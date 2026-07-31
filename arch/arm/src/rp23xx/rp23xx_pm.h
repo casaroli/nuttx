@@ -160,9 +160,49 @@ void rp23xx_pm_pads_quiesce(void);
  *
  ****************************************************************************/
 
+/****************************************************************************
+ * Name: g_pm_resume_stack
+ *
+ * Description:
+ *   The stack a resume from suspend to RAM boots on.
+ *
+ *   A resume cannot use the stack it is handed, because that is the IDLE
+ *   thread's stack and the idle thread's frames are live on it: a resume
+ *   does not restart the idle thread, it merely schedules it again, and it
+ *   returns into exactly those frames.  Sized like the idle stack, since
+ *   the work it carries is the same boot sequence.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_RP23XX_PM_SUSPEND
+#  define RP23XX_PM_RESUME_STACK_WORDS (CONFIG_IDLETHREAD_STACKSIZE / 4)
+
+EXTERN uint32_t g_pm_resume_stack[RP23XX_PM_RESUME_STACK_WORDS];
+#endif
+
+/****************************************************************************
+ * Name: rp23xx_pm_resume_pending / rp23xx_pm_resume
+ *
+ * Description:
+ *   The two halves of a resume from suspend to RAM, both called from
+ *   __start and from nowhere else.
+ *
+ *   Suspending powers the switched core off, so there is no returning from
+ *   the WFI: the chip comes back through the bootrom and boots as though it
+ *   had been reset, except that SRAM still holds a running system.
+ *   rp23xx_pm_resume_pending() says whether that is the case, and must be
+ *   asked before the bss is cleared or the data section copied, both of
+ *   which would destroy exactly the state being resumed.
+ *   rp23xx_pm_resume() is then called in place of nx_start(), once the boot
+ *   has rebuilt the hardware, and does not return.
+ *
+ ****************************************************************************/
+
 #ifdef CONFIG_RP23XX_PM_SUSPEND
 int rp23xx_pm_suspend(uint32_t wake_ms);
 uint32_t rp23xx_pm_wake_source(void);
+bool rp23xx_pm_resume_pending(void);
+void rp23xx_pm_resume(void);
 #endif
 
 #undef EXTERN
