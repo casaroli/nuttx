@@ -143,6 +143,28 @@ int rp23xx_pm_gpio_wakeup_disable(int gpio);
 void rp23xx_pm_pads_quiesce(void);
 #endif
 
+/****************************************************************************
+ * Name: rp23xx_pm_suspend
+ *
+ * Description:
+ *   Power the switched core down (POWMAN P1.0) and return once something
+ *   wakes it.  Memory is retained, but every peripheral comes back reset,
+ *   so the caller must have saved anything it cares about.
+ *
+ * Input Parameters:
+ *   wake_ms - Timed wake in milliseconds, or 0 for none.
+ *
+ * Returned Value:
+ *   Zero once resumed; a negated errno if the request was refused and the
+ *   chip never went down.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_RP23XX_PM_SUSPEND
+int rp23xx_pm_suspend(uint32_t wake_ms);
+uint32_t rp23xx_pm_wake_source(void);
+#endif
+
 #undef EXTERN
 #if defined(__cplusplus)
 }

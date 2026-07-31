@@ -1003,6 +1003,30 @@ config RP23XX_PM_QUIESCE_PADS
 		alone.  Disable this only if a board drives inputs that no NuttX
 		driver claims and that must keep working.
 
+config RP23XX_PM_SUSPEND
+	bool "Suspend to RAM (POWMAN P1.0)"
+	default n
+	select ARCH_SETJMP_H
+	---help---
+		Power the switched core off entirely, keeping the XIP cache and
+		both SRAM banks alive so memory is retained.
+
+		This is the RP2350's real low power state.  The dormant state that
+		PM_SLEEP uses only stops the clocks, leaving the switched core
+		powered, and cannot go below a couple of milliamps; the P1 states
+		power that core off and are quoted in the hundreds of microamps.
+
+		The price is that every peripheral loses its registers and
+		execution resumes through the boot path rather than by returning
+		from an instruction.  It is therefore never entered by the idle
+		governor: an application calls rp23xx_pm_suspend() when it has
+		decided it can afford to lose that state and has saved whatever
+		it needs.
+
+		Wake is by GPIO through a POWMAN power-up detector, or by the
+		always-on timer alarm, which -- unlike in the dormant state --
+		genuinely works here.
+
 endif # RP23XX_PM
 
 config RP23XX_ADC
