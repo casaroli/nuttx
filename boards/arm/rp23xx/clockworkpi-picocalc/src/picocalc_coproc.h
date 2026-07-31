@@ -45,6 +45,15 @@
 #define PICOCALC_COPROC_ADDR_LEGACY  0x1f
 #define PICOCALC_COPROC_ADDR_V2      0x1e
 
+/* picocalc_coproc_audio() modes.  The amplifiers boot off; nothing switches
+ * them on until something asks, because switching an amplifier on makes a
+ * noise and firmware cannot know whether anything is about to be played.
+ */
+
+#define PICOCALC_AUDIO_OFF           0
+#define PICOCALC_AUDIO_ON            1
+#define PICOCALC_AUDIO_AUTO          2
+
 /* Which backlight picocalc_coproc_backlight() means. */
 
 #define PICOCALC_BACKLIGHT_LCD       0
@@ -162,5 +171,27 @@ int picocalc_coproc_attach_attention(xcpt_t isr, FAR void *arg);
  ****************************************************************************/
 
 bool picocalc_coproc_attention_asserted(void);
+
+/****************************************************************************
+ * Name: picocalc_coproc_audio
+ *
+ * Description:
+ *   Set the speaker amplifier mode, PICOCALC_AUDIO_*.
+ *
+ *   The amplifier enable and the headphone socket's detect contact are both
+ *   on the co-processor, so this is the only way the host can be heard --
+ *   the PWM pair it drives reaches the speakers through an amplifier it
+ *   cannot switch on itself.
+ *
+ *   AUTO is what a user expects: speakers when nothing is plugged in, and
+ *   silence from them when something is.
+ *
+ * Returned Value:
+ *   OK, or a negated errno.  Stock firmware gates the amplifiers itself and
+ *   has no register for this, so it reports success without writing.
+ *
+ ****************************************************************************/
+
+int picocalc_coproc_audio(int mode);
 
 #endif /* __BOARDS_ARM_RP23XX_CLOCKWORKPI_PICOCALC_SRC_PICOCALC_COPROC_H */

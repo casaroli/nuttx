@@ -35,6 +35,10 @@ ifeq ($(CONFIG_LCD_ST7365P),y)
 CSRCS += picocalc_lcd.c
 endif
 
+ifeq ($(CONFIG_PWM),y)
+CSRCS += picocalc_audio.c
+endif
+
 ifeq ($(CONFIG_CLOCKWORKPI_PICOCALC_AUTOSTART),y)
 CSRCS += picocalc_autostart.c
 endif

@@ -68,6 +68,10 @@
 #  include "picocalc_coproc.h"
 #endif
 
+#ifdef CONFIG_PWM
+#  include "picocalc_audio.h"
+#endif
+
 /****************************************************************************
  * Public Data
  ****************************************************************************/
@@ -230,6 +234,19 @@ int rp23xx_bringup(void)
           syslog(LOG_ERR,
                  "ERROR: picocalc_batt_register() failed: %d\n", ret);
         }
+    }
+#endif
+
+#ifdef CONFIG_PWM
+  /* Audio last: it asks the co-processor to enable the amplifiers, which
+   * is the one thing here that makes a noise, and doing it after the panel
+   * and the keyboard means an earlier failure is seen before it is heard.
+   */
+
+  ret = picocalc_audio_initialize();
+  if (ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: picocalc_audio_initialize failed: %d\n", ret);
     }
 #endif
 

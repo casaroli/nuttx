@@ -64,6 +64,13 @@
 
 #define GPIO_COPROC_ATTN   9
 
+/* Audio: a PWM pair into the buffer, filter and jack switch.  Both are
+ * channels of one PWM slice; see picocalc_audio.h.
+ */
+
+#define GPIO_PICOCALC_PWM_L  26
+#define GPIO_PICOCALC_PWM_R  27
+
 /* Buttons IRQ definitions */
 
 #define MIN_IRQBUTTON     BUTTON_USER1

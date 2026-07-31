@@ -78,6 +78,7 @@
 #define V2_REG_CAPS        0x02
 #define V2_REG_BL_LCD      0x10
 #define V2_REG_BL_KEY      0x11
+#define V2_REG_AUDIO       0x13
 #define V2_WRITE_MASK      0x80
 
 /* CAPS bit 11: the backlights are linear rather than quantised. */
@@ -378,4 +379,34 @@ bool picocalc_coproc_attention_asserted(void)
   /* Open drain and active low: asserted means the pin reads zero. */
 
   return !rp23xx_gpio_get(GPIO_COPROC_ATTN);
+}
+
+/****************************************************************************
+ * Name: picocalc_coproc_audio
+ *
+ * Description:
+ *   Set the amplifier mode.  See picocalc_coproc.h.
+ *
+ ****************************************************************************/
+
+int picocalc_coproc_audio(int mode)
+{
+  if (g_coproc_i2c == NULL)
+    {
+      return -ENODEV;
+    }
+
+  /* Stock firmware gates the amplifiers on the jack by itself and has no
+   * register for it, so there is nothing to write and nothing to fail: the
+   * speakers already behave.  Reporting success is the honest answer -- the
+   * caller asked for the amplifiers to follow the jack, and they do.
+   */
+
+  if (!g_coproc_v2)
+    {
+      return OK;
+    }
+
+  return coproc_write(PICOCALC_COPROC_ADDR_V2,
+                      V2_REG_AUDIO | V2_WRITE_MASK, (uint8_t)mode);
 }
