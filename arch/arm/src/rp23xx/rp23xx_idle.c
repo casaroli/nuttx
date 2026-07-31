@@ -29,10 +29,12 @@
 
 #include <nuttx/arch.h>
 #include <nuttx/board.h>
+#include <nuttx/power/pm.h>
 
 #include <nuttx/irq.h>
 
 #include "arm_internal.h"
+#include "rp23xx_pm.h"
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -57,6 +59,85 @@
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
+
+/****************************************************************************
+ * Name: rp23xx_idlepm
+ *
+ * Description:
+ *   Perform IDLE state power management.
+ *
+ *   The state the governor asks for is only advisory: rp23xx_pm_sleep()
+ *   degrades to standby when no wake source can bring the chip back, and
+ *   the deeper states are unavailable altogether unless CONFIG_RP23XX_PM is
+ *   selected.  In that case this reduces to the plain WFI below.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_PM
+static void rp23xx_idlepm(void)
+{
+  static enum pm_state_e oldstate = PM_NORMAL;
+  enum pm_state_e newstate;
+  irqstate_t flags;
+  int ret;
+
+  /* Decide which power saving level can be obtained */
+
+  newstate = pm_checkstate(PM_IDLE_DOMAIN);
+
+  /* Check for state changes */
+
+  if (newstate != oldstate)
+    {
+      flags = enter_critical_section();
+
+      ret = pm_changestate(PM_IDLE_DOMAIN, newstate);
+      if (ret < 0)
+        {
+          /* The new state change failed, revert to the preceding state */
+
+          pm_changestate(PM_IDLE_DOMAIN, oldstate);
+        }
+      else
+        {
+          /* Save the new state */
+
+          oldstate = newstate;
+        }
+
+      leave_critical_section(flags);
+    }
+
+  /* Enter the low power state.  This is done on every pass through the idle
+   * loop rather than only on a transition: pm_changestate() reports the
+   * boundary, but the chip has to be put back to sleep after each wake-up
+   * that does not raise the state again.
+   */
+
+  flags = enter_critical_section();
+
+  switch (oldstate)
+    {
+#ifdef CONFIG_RP23XX_PM
+      case PM_STANDBY:
+        rp23xx_pm_standby();
+        break;
+
+      case PM_SLEEP:
+        rp23xx_pm_sleep();
+        break;
+#endif
+
+      case PM_NORMAL:
+      case PM_IDLE:
+      default:
+        asm("WFI");
+        break;
+    }
+
+  leave_critical_section(flags);
+}
+#endif
 
 /****************************************************************************
  * Public Functions
@@ -88,7 +169,11 @@ void up_idle(void)
   /* Sleep until an interrupt occurs to save power */
 
   BEGIN_IDLE();
+#ifdef CONFIG_PM
+  rp23xx_idlepm();
+#else
   asm("WFI");
+#endif
   END_IDLE();
 #endif
 }
