@@ -36,6 +36,7 @@
 #include <nuttx/ascii.h>
 #include <nuttx/debug.h>
 
+#include <nuttx/signal.h>
 #include <nuttx/spinlock.h>
 
 #include "nxterm.h"
@@ -463,6 +464,29 @@ void nxterm_kbdin(NXTERM handle, FAR const uint8_t *buffer, uint8_t buflen)
       /* Add the next character */
 
       ch = buffer[nwritten];
+
+#ifdef CONFIG_NXTERM_SIGINT
+      /* The interrupt character is a signal, not data.
+       *
+       * Delivered to whoever claimed the terminal with TIOCSCTTY -- for NSH
+       * that is the foreground command -- and swallowed rather than queued,
+       * because a shell that both interrupted the command and then read a
+       * stray 0x03 at its prompt would be wrong twice.
+       *
+       * With nobody claiming the terminal the character is left alone and
+       * behaves as it always did: a program reading raw input still sees it.
+       */
+
+      if (ch == CONFIG_NXTERM_SIGINT_CHAR && priv->pid > 0)
+        {
+          priv->intr_echo = true;
+
+          spin_unlock_irqrestore_nopreempt(&priv->spinlock, flags);
+          nxsig_kill(priv->pid, SIGINT);
+          flags = spin_lock_irqsave_nopreempt(&priv->spinlock);
+          continue;
+        }
+#endif
 
       /* Calculate the write index AFTER the next byte is add to the ring
        * buffer

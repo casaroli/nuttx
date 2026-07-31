@@ -92,6 +92,10 @@ FAR struct nxterm_state_s *
    */
 
   priv->tc_lflag = ECHO;
+#ifdef CONFIG_NXTERM_SIGINT
+  priv->pid      = INVALID_PROCESS_ID;
+  priv->intr_echo = false;
+#endif
   priv->escape   = NXTERM_ESCAPE_NONE;
 #endif
 

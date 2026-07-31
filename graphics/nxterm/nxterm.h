@@ -181,6 +181,31 @@ struct nxterm_state_s
   tcflag_t tc_lflag;                         /* Local modes; only ECHO is used */
   uint8_t escape;                            /* See NXTERM_ESCAPE_* */
 
+#ifdef CONFIG_NXTERM_SIGINT
+  /* The task that receives SIGINT when the interrupt character is typed.
+   *
+   * Set by TIOCSCTTY, which NSH issues with the pid of each foreground
+   * command it spawns -- so Ctrl-C interrupts the command rather than the
+   * shell that is waiting for it.  INVALID_PROCESS_ID when no task has
+   * claimed the terminal, in which case the character is data like any
+   * other.
+   */
+
+  pid_t pid;
+
+  /* Set when the interrupt character has been seen and not yet shown.
+   *
+   * A terminal echoes "^C" so the user can see why their command stopped.
+   * It cannot be echoed where it is detected: nxterm_kbdin() may be called
+   * from an interrupt handler, and putting a character on the display needs
+   * priv->lock, which is a mutex.  So the sighting is recorded here and the
+   * next write -- in practice the shell's next prompt, in the writer's own
+   * context with the lock properly held -- emits it.
+   */
+
+  bool intr_echo;
+#endif
+
   uint8_t rxbuffer[CONFIG_NXTERM_KBDBUFSIZE];
 
   /* The following is a list if poll structures of threads waiting for
