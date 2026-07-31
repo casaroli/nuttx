@@ -69,6 +69,7 @@
 
 #include "rp23xx_pm.h"
 #include "rp23xx_clock.h"
+#include "rp23xx_uart.h"
 
 #include "hardware/rp23xx_powman.h"
 #include "hardware/rp23xx_pads_bank0.h"
@@ -142,6 +143,96 @@ static uint32_t g_resume_stack[RP23XX_PM_RESUME_STACK_WORDS]
 
 static volatile uint32_t g_suspend_wake_source;
 
+/* The interrupt controller is in the switched core, so it comes back with
+ * every enable and priority cleared while the rest of the system still
+ * believes it configured them.  Nothing in the NVIC can be recovered from
+ * the OS state cheaply, so snapshot the registers on the way down.
+ *
+ * RP2350 has 52 interrupts, which is two enable words and thirteen priority
+ * words; size these from NR_IRQS rather than hard coding.
+ */
+
+#define RP23XX_PM_NVIC_ENABLE_REGS  2
+#define RP23XX_PM_NVIC_PRIO_REGS    13
+
+struct rp23xx_pm_nvic_s
+{
+  uint32_t enable[RP23XX_PM_NVIC_ENABLE_REGS];
+  uint32_t prio[RP23XX_PM_NVIC_PRIO_REGS];
+  uint32_t systick_ctrl;
+  uint32_t systick_reload;
+  uint32_t shpr2;
+  uint32_t shpr3;
+  uint32_t vectab;
+};
+
+static struct rp23xx_pm_nvic_s g_suspend_nvic;
+
+/****************************************************************************
+ * Name: rp23xx_pm_nvic_save / rp23xx_pm_nvic_restore
+ *
+ * Description:
+ *   Snapshot and reinstate the interrupt controller across a power down of
+ *   the switched core.  Re-running up_irqinitialize() is not an option: it
+ *   would reset the handler table as well, and the handlers are exactly
+ *   what has survived in RAM.
+ *
+ ****************************************************************************/
+
+static void rp23xx_pm_nvic_save(void)
+{
+  int i;
+
+  for (i = 0; i < RP23XX_PM_NVIC_ENABLE_REGS; i++)
+    {
+      g_suspend_nvic.enable[i] = getreg32(NVIC_IRQ_ENABLE(i * 32));
+    }
+
+  for (i = 0; i < RP23XX_PM_NVIC_PRIO_REGS; i++)
+    {
+      g_suspend_nvic.prio[i] = getreg32(NVIC_IRQ0_3_PRIORITY + i * 4);
+    }
+
+  g_suspend_nvic.systick_ctrl   = getreg32(NVIC_SYSTICK_CTRL);
+  g_suspend_nvic.systick_reload = getreg32(NVIC_SYSTICK_RELOAD);
+  g_suspend_nvic.shpr2          = getreg32(NVIC_SYSH8_11_PRIORITY);
+  g_suspend_nvic.shpr3          = getreg32(NVIC_SYSH12_15_PRIORITY);
+
+  /* The vector table offset is the one that makes every other restore
+   * pointless if it is missed: without it the core takes exceptions
+   * through whatever table the bootrom left behind, so no NuttX handler
+   * ever runs and the system is dead while still perfectly clocked.
+   */
+
+  g_suspend_nvic.vectab         = getreg32(NVIC_VECTAB);
+}
+
+static void RP23XX_PM_RAMFUNC rp23xx_pm_nvic_restore(void)
+{
+  int i;
+
+  putreg32(g_suspend_nvic.vectab, NVIC_VECTAB);
+
+  for (i = 0; i < RP23XX_PM_NVIC_PRIO_REGS; i++)
+    {
+      putreg32(g_suspend_nvic.prio[i], NVIC_IRQ0_3_PRIORITY + i * 4);
+    }
+
+  putreg32(g_suspend_nvic.shpr2, NVIC_SYSH8_11_PRIORITY);
+  putreg32(g_suspend_nvic.shpr3, NVIC_SYSH12_15_PRIORITY);
+
+  putreg32(g_suspend_nvic.systick_reload, NVIC_SYSTICK_RELOAD);
+  putreg32(0, NVIC_SYSTICK_CURRENT);
+  putreg32(g_suspend_nvic.systick_ctrl, NVIC_SYSTICK_CTRL);
+
+  /* Enables last, so nothing fires before its priority is back. */
+
+  for (i = 0; i < RP23XX_PM_NVIC_ENABLE_REGS; i++)
+    {
+      putreg32(g_suspend_nvic.enable[i], NVIC_IRQ_ENABLE(i * 32));
+    }
+}
+
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
@@ -187,6 +278,20 @@ static void RP23XX_PM_RAMFUNC rp23xx_pm_resume_vector(void)
    */
 
   rp23xx_clockconfig();
+
+  /* Put back the pin muxing and the console.  Both live in the switched
+   * core, so the UART is not merely unconfigured, its pins are no longer
+   * connected to it.
+   */
+
+  rp23xx_boardearlyinitialize();
+  rp23xx_lowsetup();
+
+  /* And the interrupt controller, which is what actually makes the system
+   * run again rather than merely appear to.
+   */
+
+  rp23xx_pm_nvic_restore();
 
   /* Back into the suspending thread, which resumes as though
    * rp23xx_pm_suspend() had simply returned.
@@ -248,6 +353,8 @@ int rp23xx_pm_suspend(uint32_t wake_ms)
    * the bootrom treats a clear bit as a RISC-V pointer handed to an Arm
    * core and deliberately hangs rather than running it.
    */
+
+  rp23xx_pm_nvic_save();
 
   entry = (uint32_t)&rp23xx_pm_resume_vector | 1u;
 
