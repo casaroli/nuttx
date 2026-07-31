@@ -463,6 +463,32 @@ config NXTERM_KBDBUFSIZE
 		If NXTERM_NXKBDIN is enabled, then this value may be used to
 		define the size of the per-window keyboard input buffer.  Default: 16
 
+config NXTERM_SIGINT
+	bool "Generate SIGINT on the interrupt character"
+	default n
+	depends on NXTERM_NXKBDIN
+	---help---
+		Send SIGINT to the task that claimed the terminal with TIOCSCTTY
+		when the interrupt character is typed, so that Ctrl-C interrupts a
+		running command instead of being delivered to it as data.
+
+		This is the same behaviour CONFIG_TTY_SIGINT gives a serial console,
+		but implemented here because an NxTerm is not a serial device and
+		the serial driver never sees its input.  It is a separate symbol
+		rather than a use of CONFIG_TTY_SIGINT so that a board can have it
+		on the display without enabling it for every serial port.
+
+		Requires SIG_DEFAULT for the signal to terminate anything, and a
+		shell that hands the terminal to its foreground command -- NSH does
+		this already.
+
+config NXTERM_SIGINT_CHAR
+	hex "Interrupt character"
+	default 0x03
+	depends on NXTERM_SIGINT
+	---help---
+		The character that raises SIGINT.  0x03 is Ctrl-C.
+
 config NXTERM_NPOLLWAITERS
 	int "Number of Poll Waiters"
 	default 4
