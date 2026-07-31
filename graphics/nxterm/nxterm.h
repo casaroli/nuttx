@@ -167,6 +167,14 @@ struct nxterm_state_s
   /* Font cache data storage */
 
   FCACHE fcache;                             /* Font cache handle */
+
+  /* A second cache with the colours swapped, used to draw the character the
+   * cursor is sitting on.  That is what makes the cursor a block that the
+   * text shows through rather than one that hides it, and a cache is the
+   * only way to get it: glyphs are rendered with their colours baked in.
+   */
+
+  FCACHE rcache;
   struct nxterm_bitmap_s cursor;
   struct nxterm_bitmap_s bm[CONFIG_NXTERM_MXCHARS];
 
@@ -281,6 +289,8 @@ void nxterm_fillchar(FAR struct nxterm_state_s *priv,
                      FAR const struct nxterm_bitmap_s *bm);
 
 void nxterm_putc(FAR struct nxterm_state_s *priv, uint8_t ch);
+void nxterm_reversechar(FAR struct nxterm_state_s *priv,
+                        FAR const struct nxterm_bitmap_s *bm);
 void nxterm_showcursor(FAR struct nxterm_state_s *priv);
 void nxterm_hidecursor(FAR struct nxterm_state_s *priv);
 

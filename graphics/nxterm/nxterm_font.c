@@ -313,9 +313,10 @@ void nxterm_newline(FAR struct nxterm_state_s *priv)
  *
  ****************************************************************************/
 
-void nxterm_fillchar(FAR struct nxterm_state_s *priv,
-                     FAR const struct nxgl_rect_s *rect,
-                     FAR const struct nxterm_bitmap_s *bm)
+static void nxterm_renderchar(FAR struct nxterm_state_s *priv,
+                              FAR const struct nxgl_rect_s *rect,
+                              FAR const struct nxterm_bitmap_s *bm,
+                              bool reverse)
 {
   FAR const struct nxfonts_glyph_s *glyph;
   struct nxgl_rect_s bounds;
@@ -323,11 +324,18 @@ void nxterm_fillchar(FAR struct nxterm_state_s *priv,
   struct nxgl_size_s fsize;
   int ret;
 
-  /* Handle the special case of spaces which have no glyph bitmap */
+  /* Handle the special case of spaces which have no glyph bitmap.  In
+   * reverse video the cell has already been filled, so there is nothing a
+   * space could add.
+   */
 
   if (BM_ISSPACE(bm))
     {
-      nxterm_fillspace(priv, rect, bm);
+      if (!reverse)
+        {
+          nxterm_fillspace(priv, rect, bm);
+        }
+
       return;
     }
 
@@ -375,7 +383,8 @@ void nxterm_fillchar(FAR struct nxterm_state_s *priv,
 
       /* Find (or create) the glyph that goes with this font */
 
-      glyph = nxf_cache_getglyph(priv->fcache, bm->code);
+      glyph = nxf_cache_getglyph(reverse ? priv->rcache : priv->fcache,
+                                 bm->code);
       if (!glyph)
         {
           /* Shouldn't happen */
@@ -389,5 +398,40 @@ void nxterm_fillchar(FAR struct nxterm_state_s *priv,
       ret = priv->ops->bitmap(priv, &intersection, &src,
                               &bm->pos, (unsigned int)glyph->stride);
       DEBUGASSERT(ret >= 0);
+    }
+}
+
+/****************************************************************************
+ * Name: nxterm_fillchar
+ *
+ * Description:
+ *   Render a character at its recorded position.
+ *
+ ****************************************************************************/
+
+void nxterm_fillchar(FAR struct nxterm_state_s *priv,
+                     FAR const struct nxgl_rect_s *rect,
+                     FAR const struct nxterm_bitmap_s *bm)
+{
+  nxterm_renderchar(priv, rect, bm, false);
+}
+
+/****************************************************************************
+ * Name: nxterm_reversechar
+ *
+ * Description:
+ *   Render a character in reverse video, for the cell the cursor occupies.
+ *
+ *   Falls back to doing nothing if there is no reverse-video cache, which
+ *   leaves a plain block cursor rather than an unreadable one.
+ *
+ ****************************************************************************/
+
+void nxterm_reversechar(FAR struct nxterm_state_s *priv,
+                        FAR const struct nxterm_bitmap_s *bm)
+{
+  if (priv->rcache != NULL)
+    {
+      nxterm_renderchar(priv, NULL, bm, true);
     }
 }
