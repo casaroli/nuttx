@@ -364,3 +364,18 @@ int picocalc_coproc_attach_attention(xcpt_t isr, FAR void *arg)
   rp23xx_gpio_enable_irq(GPIO_COPROC_ATTN);
   return OK;
 }
+
+/****************************************************************************
+ * Name: picocalc_coproc_attention_asserted
+ *
+ * Description:
+ *   The picocalc_kbd_asserted_t hook.  See picocalc_coproc.h.
+ *
+ ****************************************************************************/
+
+bool picocalc_coproc_attention_asserted(void)
+{
+  /* Open drain and active low: asserted means the pin reads zero. */
+
+  return !rp23xx_gpio_get(GPIO_COPROC_ATTN);
+}

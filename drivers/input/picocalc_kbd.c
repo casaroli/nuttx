@@ -152,6 +152,10 @@ struct picocalc_kbd_dev_s
   bool ctrl;
   bool v2;                    /* Extended protocol available              */
   bool attention;             /* ...and an attention line is driving us    */
+
+  /* Reads that line, may be NULL.  See picocalc_kbd_asserted_t. */
+
+  picocalc_kbd_asserted_t asserted;
 };
 
 /****************************************************************************
@@ -520,7 +524,22 @@ static bool picocalc_kbd_hot(FAR struct picocalc_kbd_dev_s *priv)
       picocalc_kbd_event(priv, state, code);
     }
 
-  return queued > count;
+  if (queued > count)
+    {
+      return true;
+    }
+
+  /* The block said it handed over everything it had -- but it described the
+   * queue as it was when it was assembled, and a key pressed since then is
+   * not in it and generated no edge either, because the line never went high
+   * to fall again.  The line itself is the only thing that knows.
+   *
+   * Without this test such a key waits for the background read.  Measured on
+   * hardware before it was added: a mean of 5.5ms against a floor of 583us,
+   * with the worst case past the 65ms the statistic can hold.
+   */
+
+  return priv->asserted != NULL && priv->asserted();
 }
 
 /****************************************************************************
@@ -615,7 +634,8 @@ static void picocalc_kbd_worker(FAR void *arg)
 int picocalc_kbd_register(FAR const char *devpath,
                           FAR struct i2c_master_s *i2c,
                           uint8_t addr, uint32_t frequency,
-                          picocalc_kbd_attach_t attach)
+                          picocalc_kbd_attach_t attach,
+                          picocalc_kbd_asserted_t asserted)
 {
   FAR struct picocalc_kbd_dev_s *priv;
   int ret;
@@ -651,6 +671,7 @@ int picocalc_kbd_register(FAR const char *devpath,
   if (priv->v2 && attach != NULL && attach(picocalc_kbd_isr, priv) >= 0)
     {
       priv->attention = true;
+      priv->asserted  = asserted;
     }
 
   iinfo("%s: %s protocol, %s\n", devpath,
