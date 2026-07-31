@@ -222,6 +222,26 @@ static ssize_t nxterm_write(FAR struct file *filep, FAR const char *buffer,
 
   nxterm_hidecursor(priv);
 
+#ifdef CONFIG_NXTERM_SIGINT
+  /* Show an interrupt that has been signalled but not yet displayed.
+   *
+   * This is where a terminal's "^C" comes from.  It is emitted here rather
+   * than where the character was seen because that path may be an interrupt
+   * handler and cannot take the display lock; by the time anything writes
+   * again the lock is held legitimately.  In practice the next write is the
+   * shell's prompt, so it lands exactly where a user expects it.
+   */
+
+  if (priv->intr_echo)
+    {
+      priv->intr_echo = false;
+
+      nxterm_putc(priv, '^');
+      nxterm_putc(priv, 'C');
+      nxterm_putc(priv, '\n');
+    }
+#endif
+
   /* Loop writing each character to the display */
 
   for (remaining = (ssize_t)buflen; remaining > 0; remaining--)
@@ -359,6 +379,37 @@ static int nxterm_ioctl(FAR struct file *filep, int cmd, unsigned long arg)
           priv->tc_lflag = termiosp->c_lflag;
           return OK;
         }
+
+#ifdef CONFIG_NXTERM_SIGINT
+      /* Claim or release the terminal for signal delivery.
+       *
+       * NSH issues TIOCSCTTY with the pid of each foreground command it
+       * spawns and TIOCNOTTY when that command exits, so the interrupt
+       * character reaches whatever is actually running rather than the
+       * shell waiting on it.  Without this the driver has nobody to signal
+       * and Ctrl-C is only a character.
+       */
+
+      case TIOCSCTTY:
+        {
+          priv = (FAR struct nxterm_state_s *)filep->f_priv;
+
+          if ((pid_t)arg <= 0)
+            {
+              return -EINVAL;
+            }
+
+          priv->pid = (pid_t)arg;
+          return OK;
+        }
+
+      case TIOCNOTTY:
+        {
+          priv      = (FAR struct nxterm_state_s *)filep->f_priv;
+          priv->pid = INVALID_PROCESS_ID;
+          return OK;
+        }
+#endif
 
       default:
         break;
