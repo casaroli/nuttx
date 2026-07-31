@@ -76,6 +76,7 @@
 #include "hardware/rp23xx_memorymap.h"
 #include "hardware/rp23xx_uart.h"
 #include "hardware/rp23xx_qmi.h"
+#include "hardware/rp23xx_resets.h"
 
 #ifdef CONFIG_RP23XX_PM
 
@@ -435,9 +436,105 @@ static void RP23XX_PM_RAMFUNC rp23xx_pm_flash_powerdown(void)
  *
  ****************************************************************************/
 
+/* Blocks with no driver in this configuration, held in reset.  Gating a
+ * clock only stops the synchronous logic; an analogue block such as the USB
+ * PHY keeps drawing its bias current regardless, and that current is present
+ * in every state including dormancy.  Holding the block in reset removes it.
+ *
+ * Only blocks whose driver is absent are listed, on the same reasoning as
+ * the sleep clock mask: with no driver there is nothing to break.  Anything
+ * the system needs to keep running -- the QSPI pads and IO the flash is
+ * reached through, the bus fabric, the console -- is never touched.
+ */
+
+#ifndef CONFIG_USBDEV
+#  define RP23XX_PM_RST_USB   RP23XX_RESETS_RESET_USBCTRL
+#else
+#  define RP23XX_PM_RST_USB   0
+#endif
+
+#ifndef CONFIG_RP23XX_ADC
+#  define RP23XX_PM_RST_ADC   RP23XX_RESETS_RESET_ADC
+#else
+#  define RP23XX_PM_RST_ADC   0
+#endif
+
+#ifndef CONFIG_RP23XX_RNG
+#  define RP23XX_PM_RST_TRNG  RP23XX_RESETS_RESET_TRNG
+#else
+#  define RP23XX_PM_RST_TRNG  0
+#endif
+
+#ifndef CONFIG_CRYPTO_CRYPTODEV_HARDWARE
+#  define RP23XX_PM_RST_SHA   RP23XX_RESETS_RESET_SHA256
+#else
+#  define RP23XX_PM_RST_SHA   0
+#endif
+
+#ifndef CONFIG_RP23XX_PWM
+#  define RP23XX_PM_RST_PWM   RP23XX_RESETS_RESET_PWM
+#else
+#  define RP23XX_PM_RST_PWM   0
+#endif
+
+#if !defined(CONFIG_RP23XX_I2S) && !defined(CONFIG_WS2812) && \
+    !defined(CONFIG_IEEE80211_INFINEON_CYW43439)
+#  define RP23XX_PM_RST_PIO   (RP23XX_RESETS_RESET_PIO0 | \
+                               RP23XX_RESETS_RESET_PIO1 | \
+                               RP23XX_RESETS_RESET_PIO2)
+#else
+#  define RP23XX_PM_RST_PIO   0
+#endif
+
+#ifndef CONFIG_RP23XX_SPI0
+#  define RP23XX_PM_RST_SPI0  RP23XX_RESETS_RESET_SPI0
+#else
+#  define RP23XX_PM_RST_SPI0  0
+#endif
+
+#ifndef CONFIG_RP23XX_SPI1
+#  define RP23XX_PM_RST_SPI1  RP23XX_RESETS_RESET_SPI1
+#else
+#  define RP23XX_PM_RST_SPI1  0
+#endif
+
+#ifndef CONFIG_RP23XX_I2C0
+#  define RP23XX_PM_RST_I2C0  RP23XX_RESETS_RESET_I2C0
+#else
+#  define RP23XX_PM_RST_I2C0  0
+#endif
+
+#ifndef CONFIG_RP23XX_I2C1
+#  define RP23XX_PM_RST_I2C1  RP23XX_RESETS_RESET_I2C1
+#else
+#  define RP23XX_PM_RST_I2C1  0
+#endif
+
+#ifndef CONFIG_RP23XX_UART1
+#  define RP23XX_PM_RST_UART1 RP23XX_RESETS_RESET_UART1
+#else
+#  define RP23XX_PM_RST_UART1 0
+#endif
+
+/* Nothing has ever driven the HSTX on this port. */
+
+#define RP23XX_PM_RST_HSTX    RP23XX_RESETS_RESET_HSTX
+
+#define RP23XX_PM_RESET_UNUSED \
+  (RP23XX_PM_RST_USB  | RP23XX_PM_RST_ADC  | RP23XX_PM_RST_TRNG | \
+   RP23XX_PM_RST_SHA  | RP23XX_PM_RST_PWM  | RP23XX_PM_RST_PIO  | \
+   RP23XX_PM_RST_SPI0 | RP23XX_PM_RST_SPI1 | RP23XX_PM_RST_I2C0 | \
+   RP23XX_PM_RST_I2C1 | RP23XX_PM_RST_UART1 | RP23XX_PM_RST_HSTX)
+
 void rp23xx_pm_pads_quiesce(void)
 {
   int gpio;
+
+  /* Put the unused blocks into reset first, so their pads stop being
+   * driven before the pad loop below decides what to do with them.
+   */
+
+  setbits_reg32(RP23XX_PM_RESET_UNUSED, RP23XX_RESETS_RESET);
 
   for (gpio = 0; gpio < RP23XX_GPIO_NUM; gpio++)
     {
