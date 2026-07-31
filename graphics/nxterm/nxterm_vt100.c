@@ -51,6 +51,8 @@ struct vt100_sequence_s
  ****************************************************************************/
 
 static int nxterm_erasetoeol(FAR struct nxterm_state_s *priv);
+static int nxterm_cursorleft(FAR struct nxterm_state_s *priv);
+static int nxterm_cursorright(FAR struct nxterm_state_s *priv);
 
 /****************************************************************************
  * Private Data
@@ -60,15 +62,40 @@ static int nxterm_erasetoeol(FAR struct nxterm_state_s *priv);
  * a placeholder for a future, more complete VT100 emulation.
  */
 
-/* <esc>[K is the VT100 command erases to the end of the line. */
+/* <esc>[K erases to the end of the line. */
 
 static const char g_erasetoeol[] = VT100_CLEAREOL;
+
+/* <esc>[D and <esc>[C move the cursor one column left and right.
+ *
+ * A line editor needs all three: it redraws by returning to the margin,
+ * erasing what was there, writing the line again and then walking the
+ * cursor back to where the user is typing.  Without them the escape bytes
+ * were emitted as text and "[D" appeared on screen.
+ */
+
+/* Spelled out rather than taken from vt100.h, whose VT100_CURSORLF(n) form
+ * carries a count parameter.  A line editor emits the bare three-byte
+ * sequence, and that is what has to be matched here.
+ */
+
+static const char g_cursorleft[]  =
+{
+  ASCII_ESC, '[', 'D'
+};
+
+static const char g_cursorright[] =
+{
+  ASCII_ESC, '[', 'C'
+};
 
 /* The list of all VT100 sequences supported by the emulation */
 
 static const struct vt100_sequence_s g_vt100sequences[] =
 {
-  {g_erasetoeol, nxterm_erasetoeol, sizeof(g_erasetoeol)},
+  {g_erasetoeol,  nxterm_erasetoeol,  sizeof(g_erasetoeol)},
+  {g_cursorleft,  nxterm_cursorleft,  sizeof(g_cursorleft)},
+  {g_cursorright, nxterm_cursorright, sizeof(g_cursorright)},
   {NULL, NULL, 0}
 };
 
@@ -92,7 +119,67 @@ static const struct vt100_sequence_s g_vt100sequences[] =
 
 static int nxterm_erasetoeol(FAR struct nxterm_state_s *priv)
 {
-  /* Does nothing yet (other than consume the sequence) */
+  /* Glyphs are appended in order, so the ones at or right of the cursor on
+   * this line are exactly the trailing entries of the array.  Drop them from
+   * the back until one is on another line or left of the cursor.
+   *
+   * The cursor deliberately does not move: erase-to-end-of-line clears what
+   * is ahead of it and leaves it where it is, which is what makes the
+   * caller's subsequent rewrite land in the right place.
+   */
+
+  while (priv->nchars > 0)
+    {
+      FAR struct nxterm_bitmap_s *bm = &priv->bm[priv->nchars - 1];
+
+      if (bm->pos.y != priv->fpos.y || bm->pos.x < priv->fpos.x)
+        {
+          break;
+        }
+
+      nxterm_hidechar(priv, bm);
+      priv->nchars--;
+    }
+
+  return OK;
+}
+
+/****************************************************************************
+ * Name: nxterm_cursorleft
+ *
+ * Description:
+ *   Move the cursor one column left, stopping at the left margin.
+ *
+ ****************************************************************************/
+
+static int nxterm_cursorleft(FAR struct nxterm_state_s *priv)
+{
+  if (priv->fpos.x >= priv->spwidth + priv->fwidth)
+    {
+      priv->fpos.x -= priv->fwidth;
+    }
+  else
+    {
+      priv->fpos.x = priv->spwidth;
+    }
+
+  return OK;
+}
+
+/****************************************************************************
+ * Name: nxterm_cursorright
+ *
+ * Description:
+ *   Move the cursor one column right, stopping at the right margin.
+ *
+ ****************************************************************************/
+
+static int nxterm_cursorright(FAR struct nxterm_state_s *priv)
+{
+  if (priv->fpos.x + 2 * priv->fwidth <= priv->wndo.wsize.w)
+    {
+      priv->fpos.x += priv->fwidth;
+    }
 
   return OK;
 }

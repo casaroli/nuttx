@@ -115,6 +115,14 @@ FAR struct nxterm_state_s *
 
   /* Get the handle of the font managed by the font cache */
 
+  /* The reverse-video cache, for the character under the cursor.  Failing to
+   * get one is not fatal: the cursor simply falls back to a plain block.
+   */
+
+  priv->rcache = nxf_cache_connect(wndo->fontid, wndo->wcolor[0],
+                                   wndo->fcolor[0], CONFIG_NXTERM_BPP,
+                                   CONFIG_NXTERM_CACHESIZE);
+
   hfont = nxf_cache_getfonthandle(priv->fcache);
   if (hfont == NULL)
     {
