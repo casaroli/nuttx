@@ -58,6 +58,11 @@
 #  include "rp23xx_flash_mtd.h"
 #endif
 
+#if defined(CONFIG_RP23XX_RTC) && defined(CONFIG_RTC_DRIVER)
+#  include <nuttx/timers/rtc.h>
+#  include "rp23xx_rtc.h"
+#endif
+
 #ifdef CONFIG_RP23XX_OTP
 #  include "rp23xx_otp.h"
 #endif
@@ -459,6 +464,29 @@ int rp23xx_common_bringup(void)
   if (ret < 0)
     {
       syslog(LOG_ERR, "Failed to initialize the OTP: %d\n", ret);
+    }
+#endif
+
+#if defined(CONFIG_RP23XX_RTC) && defined(CONFIG_RTC_DRIVER)
+  /* Expose the always-on timer as /dev/rtc0.  This is also what makes its
+   * alarm reachable from user space when RTC_ALARM is selected.
+   */
+
+    {
+      FAR struct rtc_lowerhalf_s *rtclower = rp23xx_rtc_lowerhalf();
+
+      if (rtclower == NULL)
+        {
+          syslog(LOG_ERR, "Failed to instantiate the RTC lower half\n");
+        }
+      else
+        {
+          ret = rtc_initialize(0, rtclower);
+          if (ret < 0)
+            {
+              syslog(LOG_ERR, "Failed to bind /dev/rtc0: %d\n", ret);
+            }
+        }
     }
 #endif
 

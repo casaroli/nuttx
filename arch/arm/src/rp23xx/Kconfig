@@ -878,6 +878,82 @@ config RP23XX_RTC
 		timer is a 64-bit millisecond counter clocked from the low-power
 		oscillator, so it keeps running across warm resets.
 
+		The always-on timer also carries a single alarm comparator.  Select
+		RTC_ALARM to expose it, which additionally makes a timed wake-up
+		available to the power management logic.
+
+#####################################################################
+#  Power Management
+#####################################################################
+
+menuconfig RP23XX_PM
+	bool "Power management (SLEEP and DORMANT states)"
+	default n
+	depends on PM
+	---help---
+		Map the NuttX power management states onto the RP2350 low-power
+		modes.
+
+		PM_STANDBY gates the clocks of every peripheral block whose driver
+		is not built into this configuration for the duration of a WFI.
+		The oscillators and PLLs keep running, so wake-up is immediate and
+		nothing is visible to the drivers that are present.
+
+		PM_SLEEP additionally stops both PLLs and the crystal oscillator,
+		leaving only the always-on domain alive.  This is far deeper, but
+		the chip can then only be restarted by a configured wake source,
+		so read the two options below before enabling it.
+
+if RP23XX_PM
+
+config RP23XX_PM_WAKEUP_GPIO
+	int "Wake-up GPIO for the dormant state (-1 to disable)"
+	default -1
+	range -1 47
+	---help---
+		GPIO watched by a POWMAN power-up detector while the chip is
+		dormant.  The detector sits in the always-on domain, so it keeps
+		watching after the switched core has stopped.
+
+		Set this to the pin an operator can actually reach, typically a
+		button.  Note that the console UART receive pin does NOT wake the
+		chip from dormancy by itself: the UART needs a clock to detect a
+		start bit, and in the dormant state it has none.  Routing the
+		console receive pin here makes a keypress wake the board, at the
+		cost of losing the character that did it.
+
+		-1 leaves every power-up detector free, in which case the dormant
+		state relies entirely on RP23XX_PM_SLEEP_MAX_MS.
+
+config RP23XX_PM_WAKEUP_GPIO_HIGH
+	bool "Wake on a high level rather than a low level"
+	default n
+	depends on RP23XX_PM_WAKEUP_GPIO >= 0
+	---help---
+		Wake when the configured GPIO is high.  The default wakes on a low
+		level, which suits a button wired to ground with a pull-up.
+
+config RP23XX_PM_SLEEP_MAX_MS
+	int "Timed wake-up backstop in milliseconds (0 to disable)"
+	default 0
+	depends on RTC_ALARM && RP23XX_RTC
+	---help---
+		Longest time the chip may stay dormant before the always-on timer
+		alarm wakes it regardless of any other event.  This is a safety
+		net: with no GPIO wake source configured it is the only thing that
+		can restart the chip short of a power cycle, and it is strongly
+		recommended while bringing the dormant state up on a bench.
+
+		The always-on timer has exactly one alarm comparator, so the power
+		management logic borrows it and restores any application alarm on
+		wake-up.  An application alarm that would have expired during the
+		dormant window is reported as soon as the chip wakes.
+
+		0 disables the backstop, leaving the GPIO wake source as the only
+		way out of the dormant state.
+
+endif # RP23XX_PM
+
 config RP23XX_ADC
 	bool "Enable ADC Support"
 	default n
