@@ -984,6 +984,25 @@ config RP23XX_PM_MEASURE_FLASH_DPD
 		usefully resume: the only valid use is a dormant period that ends
 		with the board being powered off.
 
+config RP23XX_PM_QUIESCE_PADS
+	bool "Disable the input buffer of unused pads"
+	default y
+	---help---
+		Turn off the input buffer of every GPIO that nothing is using, once
+		at start-up.
+
+		An unconnected RP2350 bank 0 input does not settle at either rail:
+		erratum E9 leaves it around 2.2V, which a 3.3V input buffer cannot
+		resolve, so both of its transistors conduct and the pad draws a
+		static current.  That current is analogue, so gating clocks and
+		going dormant do nothing to reduce it, and across the unused pads of
+		a typical board it can add up to more than the power management
+		logic saves.
+
+		The console UART pins and any GPIO armed as a wake source are left
+		alone.  Disable this only if a board drives inputs that no NuttX
+		driver claims and that must keep working.
+
 endif # RP23XX_PM
 
 config RP23XX_ADC

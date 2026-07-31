@@ -412,6 +412,73 @@ static void RP23XX_PM_RAMFUNC rp23xx_pm_flash_powerdown(void)
 }
 #endif /* CONFIG_RP23XX_PM_MEASURE_FLASH_DPD */
 
+#ifdef CONFIG_RP23XX_PM_QUIESCE_PADS
+
+/****************************************************************************
+ * Name: rp23xx_pm_pads_quiesce
+ *
+ * Description:
+ *   Turn off the input buffer of every pad nothing is using.
+ *
+ *   An unconnected bank 0 input does not sit at either rail: RP2350 erratum
+ *   E9 has it settling around 2.2V.  That is squarely in the middle for a
+ *   3.3V input buffer, so both of its transistors conduct and the pad draws
+ *   a static current for as long as it stays there.  It is analogue, so
+ *   nothing about stopping clocks or going dormant reduces it, and across
+ *   the couple of dozen unused pads on a typical board it adds up to
+ *   milliamps -- easily more than everything the power management logic
+ *   saves.
+ *
+ *   Disabling the input buffer removes the path entirely, which is cheaper
+ *   than holding each pad at a rail with a pull.  Pads that are actually in
+ *   use are left alone.
+ *
+ ****************************************************************************/
+
+void rp23xx_pm_pads_quiesce(void)
+{
+  int gpio;
+
+  for (gpio = 0; gpio < RP23XX_GPIO_NUM; gpio++)
+    {
+      /* Leave anything armed as a wake source alone: it has to keep
+       * watching, and rp23xx_pm_gpio_wakeup() has already given it a
+       * defined level.
+       */
+
+      if ((g_pm_wakeup_gpios & (1ull << gpio)) != 0)
+        {
+          continue;
+        }
+
+#ifdef CONFIG_RP23XX_UART0
+      if (gpio == CONFIG_RP23XX_UART0_TX_GPIO ||
+          gpio == CONFIG_RP23XX_UART0_RX_GPIO)
+        {
+          continue;
+        }
+#endif
+
+#ifdef CONFIG_RP23XX_UART1
+      if (gpio == CONFIG_RP23XX_UART1_TX_GPIO ||
+          gpio == CONFIG_RP23XX_UART1_RX_GPIO)
+        {
+          continue;
+        }
+#endif
+
+      /* Clear the input enable, and isolate the pad so nothing downstream
+       * of it floats either.
+       */
+
+      modbits_reg32(RP23XX_PADS_BANK0_GPIO_ISO,
+                    RP23XX_PADS_BANK0_GPIO_IE |
+                    RP23XX_PADS_BANK0_GPIO_ISO,
+                    RP23XX_PADS_BANK0_GPIO(gpio));
+    }
+}
+#endif /* CONFIG_RP23XX_PM_QUIESCE_PADS */
+
 /****************************************************************************
  * Name: rp23xx_pm_dormant
  *
@@ -491,6 +558,21 @@ static void RP23XX_PM_RAMFUNC rp23xx_pm_dormant(void)
 
   putreg32(RP23XX_XOSC_DORMANT_DORMANT, RP23XX_XOSC_DORMANT);
 
+  /* Writing the dormant request only arms it.  The oscillator stops when
+   * the processor itself stops requesting a clock, so the core has to enter
+   * deep sleep for the request to take effect; without this the write falls
+   * straight through, the clocks keep running and the sequence below
+   * immediately puts everything back.
+   */
+
+  putreg32(getreg32(NVIC_SYSCON) | NVIC_SYSCON_SLEEPDEEP, NVIC_SYSCON);
+
+  __asm__ __volatile__ ("dsb" ::: "memory");
+  __asm__ __volatile__ ("wfi");
+  __asm__ __volatile__ ("isb" ::: "memory");
+
+  putreg32(getreg32(NVIC_SYSCON) & ~NVIC_SYSCON_SLEEPDEEP, NVIC_SYSCON);
+
   /* --- Woken.  The oscillator is running again but not yet stable. --- */
 
   while (!(getreg32(RP23XX_XOSC_STATUS) & RP23XX_XOSC_STATUS_STABLE))
@@ -538,6 +620,7 @@ static void RP23XX_PM_RAMFUNC rp23xx_pm_dormant(void)
 void rp23xx_pm_standby(void)
 {
   uint32_t saved_en0;
+
   uint32_t saved_en1;
 
   /* SLEEP_EN0/1 only take effect while the processors are asleep, so these
@@ -580,7 +663,15 @@ void rp23xx_pm_sleep(void)
    * window in which a debugger can attach and take the board over.
    */
 
-  if (clock_systime_ticks() < MSEC2TICK(CONFIG_RP23XX_PM_SLEEP_GUARD_MS))
+  /* Measured against the always-on timer, not the system tick.  The tick is
+   * derived from the system clock, which the states below it stop, so a
+   * guard timed against it stops advancing exactly when it is in force and
+   * never expires.  The always-on timer runs from the low-power oscillator
+   * and keeps counting through everything.
+   */
+
+  if (getreg32(RP23XX_POWMAN_READ_TIME_LOWER) <
+      CONFIG_RP23XX_PM_SLEEP_GUARD_MS)
     {
       rp23xx_pm_standby();
       return;
@@ -641,9 +732,18 @@ int rp23xx_pm_gpio_wakeup(int gpio, bool edge, bool high)
       return -EINVAL;
     }
 
-  /* The pad has to be input enabled for the detector to see anything. */
+  /* The pad has to be input enabled for the detector to see anything, and
+   * its isolation has to be removed: RP2350 pads come out of reset isolated
+   * and stay that way until software configures them.  Enabling the input
+   * without clearing ISO leaves the detector watching a disconnected pad,
+   * which reads as a permanent low and makes any pull configured below do
+   * nothing at all.
+   */
 
-  modbits_reg32(RP23XX_PADS_BANK0_GPIO_IE, RP23XX_PADS_BANK0_GPIO_IE,
+  modbits_reg32(RP23XX_PADS_BANK0_GPIO_IE,
+                RP23XX_PADS_BANK0_GPIO_ISO |
+                RP23XX_PADS_BANK0_GPIO_IE |
+                RP23XX_PADS_BANK0_GPIO_OD,
                 RP23XX_PADS_BANK0_GPIO(gpio));
 
   /* Give the pad a defined idle level, opposite to the sense being watched.

@@ -129,6 +129,20 @@ int rp23xx_pm_gpio_wakeup(int gpio, bool edge, bool high);
 
 int rp23xx_pm_gpio_wakeup_disable(int gpio);
 
+/****************************************************************************
+ * Name: rp23xx_pm_pads_quiesce
+ *
+ * Description:
+ *   Disable the input buffer of every pad that nothing is using, removing
+ *   the static current an unconnected input draws when it floats to a level
+ *   the buffer cannot resolve.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_RP23XX_PM_QUIESCE_PADS
+void rp23xx_pm_pads_quiesce(void);
+#endif
+
 #undef EXTERN
 #if defined(__cplusplus)
 }

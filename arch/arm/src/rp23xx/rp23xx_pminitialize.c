@@ -79,6 +79,10 @@ void arm_pminitialize(void)
                         RP23XX_PM_WAKEUP_ON_EDGE,
                         RP23XX_PM_WAKEUP_ACTIVE_HIGH);
 #endif
+
+#ifdef CONFIG_RP23XX_PM_QUIESCE_PADS
+  rp23xx_pm_pads_quiesce();
+#endif
 }
 
 #endif /* CONFIG_PM */
