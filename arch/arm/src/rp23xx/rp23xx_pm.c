@@ -580,6 +580,17 @@ int rp23xx_pm_gpio_wakeup(int gpio, bool edge, bool high)
   modbits_reg32(RP23XX_PADS_BANK0_GPIO_IE, RP23XX_PADS_BANK0_GPIO_IE,
                 RP23XX_PADS_BANK0_GPIO(gpio));
 
+  /* Give the pad a defined idle level, opposite to the sense being watched.
+   * A wake input is very often something that is only sometimes connected,
+   * such as a button or the receive pin of a console that gets unplugged,
+   * and an undriven input does not reliably sit at either rail: RP2350
+   * erratum E9 has floating bank 0 inputs settling around 2.2V.  Left that
+   * way the detector sees its own noise and dormancy ends the moment it
+   * begins.
+   */
+
+  rp23xx_gpio_set_pulls(gpio, !high, high);
+
   if (edge)
     {
       bit = high ? RP23XX_IO_BANK0_INTR_GPIO_EDGE_HIGH(gpio)
