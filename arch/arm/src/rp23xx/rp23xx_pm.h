@@ -205,6 +205,20 @@ bool rp23xx_pm_resume_pending(void);
 void rp23xx_pm_resume(void);
 #endif
 
+/****************************************************************************
+ * Name: rp23xx_pm_autosuspend_start
+ *
+ * Description:
+ *   Start the kernel thread that suspends on a timer, so a board can be
+ *   measured with nothing attached to it.  A measurement aid; see the
+ *   Kconfig help.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_RP23XX_PM_AUTOSUSPEND
+void rp23xx_pm_autosuspend_start(void);
+#endif
+
 #undef EXTERN
 #if defined(__cplusplus)
 }

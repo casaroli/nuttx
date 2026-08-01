@@ -73,6 +73,14 @@
 #include <setjmp.h>
 #include <debug.h>
 
+#ifdef CONFIG_RP23XX_PM_AUTOSUSPEND
+#  include <stdlib.h>
+#  include <unistd.h>
+#  include <sched.h>
+#  include <nuttx/kthread.h>
+#  include <nuttx/clock.h>
+#endif
+
 #include <nuttx/arch.h>
 #include <nuttx/irq.h>
 #include <nuttx/power/pm.h>
@@ -125,6 +133,15 @@
 
 #define POWMAN_SUSPEND_MAGIC 0x50575231  /* 'PWR1' */
 
+#ifdef CONFIG_RP23XX_PM_AUTOSUSPEND
+/* The automatic suspend thread does very little itself, but it is the thread
+ * the resume returns onto, so it carries whatever rp23xx_pm_suspend() needs.
+ */
+
+#  define RP23XX_PM_AUTOSUSPEND_STACKSIZE 2048
+#endif
+
+/****************************************************************************
  * Public Data
  ****************************************************************************/
 
@@ -600,5 +617,183 @@ uint32_t rp23xx_pm_wake_source(void)
 {
   return g_suspend_wake_source;
 }
+
+#ifdef CONFIG_RP23XX_PM_AUTOSUSPEND
+
+/****************************************************************************
+ * Name: rp23xx_pm_autosuspend_thread
+ *
+ * Description:
+ *   Suspend on a timer for as long as the board is powered, so that it can
+ *   be measured with nothing attached.  Runs as a kernel thread because a
+ *   suspend has to happen in task context: the resume comes back through
+ *   setjmp()/longjmp() onto the stack of whatever asked for it.
+ *
+ ****************************************************************************/
+
+/****************************************************************************
+ * Name: rp23xx_pm_autosuspend_led
+ *
+ * Description:
+ *   Drive the indicator LED, if the configuration named one.  The board
+ *   start-up code lights it on every boot and every resume, so without this
+ *   it burns a milliamp through every state being measured.
+ *
+ ****************************************************************************/
+
+static void rp23xx_pm_autosuspend_led(bool on)
+{
+#if CONFIG_RP23XX_PM_AUTOSUSPEND_LED_GPIO >= 0
+  rp23xx_gpio_init(CONFIG_RP23XX_PM_AUTOSUSPEND_LED_GPIO);
+  rp23xx_gpio_setdir(CONFIG_RP23XX_PM_AUTOSUSPEND_LED_GPIO, true);
+  rp23xx_gpio_put(CONFIG_RP23XX_PM_AUTOSUSPEND_LED_GPIO, on);
+#endif
+}
+
+/****************************************************************************
+ * Name: rp23xx_pm_autosuspend_spin
+ *
+ * Description:
+ *   Burn a phase at full speed.  Deliberately busy rather than asleep: this
+ *   is the step the rest of the trace is read against, so the core must be
+ *   kept out of any idle state.
+ *
+ ****************************************************************************/
+
+static void rp23xx_pm_autosuspend_spin(int seconds)
+{
+  volatile uint32_t sink = 0;
+  clock_t start;
+  int i;
+
+  start = clock_systime_ticks();
+
+  while (clock_systime_ticks() - start < (clock_t)SEC2TICK(seconds))
+    {
+      for (i = 0; i < 1000; i++)
+        {
+          sink = sink + i;
+        }
+    }
+}
+
+/****************************************************************************
+ * Name: rp23xx_pm_autosuspend_hold
+ *
+ * Description:
+ *   Pin the idle domain at one state, releasing whatever was held before.
+ *   The governor picks the shallowest state carrying a wakelock, so a single
+ *   hold is what decides how far down it goes.
+ *
+ ****************************************************************************/
+
+static void rp23xx_pm_autosuspend_hold(enum pm_state_e want,
+                                       enum pm_state_e held)
+{
+  pm_stay(PM_IDLE_DOMAIN, want);
+  pm_relax(PM_IDLE_DOMAIN, held);
+}
+
+static int rp23xx_pm_autosuspend_thread(int argc, char **argv)
+{
+  int ret;
+
+  /* Hold the governor at PM_NORMAL for good.  Two reasons, and the second
+   * one strands the board:
+   *
+   * P1.0 is entered from here rather than from the idle loop, so the state
+   * the governor happens to have reached is not something this code has ever
+   * been asked to cope with.
+   *
+   * More seriously, the dormant state is left only by the configured wake
+   * GPIO, which is the console receive pin.  The whole point of this option
+   * is to run with nothing attached -- so there would be nothing to drive
+   * that pin, and a board that went dormant would stay there.
+   */
+
+  pm_stay(PM_IDLE_DOMAIN, PM_NORMAL);
+
+  for (; ; )
+    {
+      /* Every awake phase comes before the suspend, never after: together
+       * they are the only window in which the board can be reflashed, and a
+       * boot that went straight down would leave no way in short of BOOTSEL.
+       *
+       * The LED starts lit because the board start-up code lights it, on a
+       * resume just as much as on a cold boot.  Giving it a phase of its own
+       * rather than extinguishing it immediately puts its cost in the trace
+       * as a step, which is worth more than not paying it.
+       */
+
+      rp23xx_pm_autosuspend_led(true);
+      rp23xx_pm_autosuspend_spin(CONFIG_RP23XX_PM_AUTOSUSPEND_PHASE_S);
+
+      /* Same state, LED off: the difference between these two steps is what
+       * the indicator costs.
+       */
+
+      rp23xx_pm_autosuspend_led(false);
+      rp23xx_pm_autosuspend_spin(CONFIG_RP23XX_PM_AUTOSUSPEND_PHASE_S);
+
+      /* Idle: still PM_NORMAL, so nothing is gated, but the core reaches WFI
+       * because this thread is asleep rather than spinning.
+       */
+
+      sleep(CONFIG_RP23XX_PM_AUTOSUSPEND_PHASE_S);
+
+      /* Standby: let the governor gate the peripheral clocks, but no
+       * further.  It picks the shallowest state holding a wakelock.
+       */
+
+      rp23xx_pm_autosuspend_hold(PM_STANDBY, PM_NORMAL);
+      sleep(CONFIG_RP23XX_PM_AUTOSUSPEND_PHASE_S);
+
+      /* Back up to PM_NORMAL before suspending.  P1.0 is entered from here
+       * rather than from the idle loop, and entering it from a clock-gated
+       * state is not something the entry path was written for.
+       */
+
+      rp23xx_pm_autosuspend_hold(PM_NORMAL, PM_STANDBY);
+
+      /* And down.  The timer alarm is what brings it back, so this ends by
+       * itself with nothing attached to the board; the wake GPIO is armed as
+       * well, but only as a way in if one is wanted.
+       */
+
+      ret = rp23xx_pm_suspend(CONFIG_RP23XX_PM_AUTOSUSPEND_HOLD_S * 1000);
+      if (ret < 0)
+        {
+          pwrerr("ERROR: automatic suspend refused: %d\n", ret);
+        }
+
+#ifndef CONFIG_RP23XX_PM_AUTOSUSPEND_REPEAT
+      break;
+#endif
+    }
+
+  return EXIT_SUCCESS;
+}
+
+/****************************************************************************
+ * Name: rp23xx_pm_autosuspend_start
+ *
+ * Description:
+ *   Start the automatic suspend thread.  Called from arm_pminitialize().
+ *
+ ****************************************************************************/
+
+void rp23xx_pm_autosuspend_start(void)
+{
+  int ret;
+
+  ret = kthread_create("rp23xx_suspend", SCHED_PRIORITY_DEFAULT,
+                       RP23XX_PM_AUTOSUSPEND_STACKSIZE,
+                       rp23xx_pm_autosuspend_thread, NULL);
+  if (ret < 0)
+    {
+      pwrerr("ERROR: cannot start the automatic suspend thread: %d\n", ret);
+    }
+}
+#endif /* CONFIG_RP23XX_PM_AUTOSUSPEND */
 
 #endif /* CONFIG_RP23XX_PM_SUSPEND */

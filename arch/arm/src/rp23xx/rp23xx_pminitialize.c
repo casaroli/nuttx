@@ -83,6 +83,12 @@ void arm_pminitialize(void)
 #ifdef CONFIG_RP23XX_PM_QUIESCE_PADS
   rp23xx_pm_pads_quiesce();
 #endif
+
+  /* The automatic suspend thread is deliberately NOT started here.  This
+   * function runs before the device drivers, early enough that creating a
+   * task panics the board -- which is exactly what it did.  It is started
+   * from board_late_initialize() instead.
+   */
 }
 
 #endif /* CONFIG_PM */

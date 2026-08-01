@@ -1027,6 +1027,72 @@ config RP23XX_PM_SUSPEND
 		always-on timer alarm, which -- unlike in the dormant state --
 		genuinely works here.
 
+config RP23XX_PM_AUTOSUSPEND
+	bool "Measurement aid: suspend on a timer, unasked"
+	default n
+	depends on RP23XX_PM_SUSPEND
+	---help---
+		Suspend from a kernel thread on a timer after boot, with no
+		console command and no application involvement, so that a board
+		can be measured with nothing attached to it at all.
+
+		This exists because the instrumentation is not free at these
+		currents.  A debug probe costs tens of microamps in P1.0, and
+		driving the board from a console needs the receive pin held as an
+		input; both matter once the target is under a milliamp.  With this
+		the probe is only needed to flash, after which everything can be
+		unplugged and the board suspends by itself.
+
+		It is a measurement aid rather than a feature: anything that
+		genuinely wants suspend to RAM should ask for it, having decided
+		it can afford to lose the switched core.
+
+if RP23XX_PM_AUTOSUSPEND
+
+config RP23XX_PM_AUTOSUSPEND_PHASE_S
+	int "Seconds per awake phase"
+	default 15
+	---help---
+		Each cycle walks four awake phases of this length before
+		suspending: busy with the LED lit, busy with it off, idle, then
+		standby.  The steps are what make the states identifiable in a
+		current trace without having to correlate against a clock.
+
+		Four of these is also the only window in which the board can be
+		reflashed over SWD, since a suspended chip does not answer the
+		debug port.  A board that suspended straight after boot could be
+		recovered only through BOOTSEL.
+
+config RP23XX_PM_AUTOSUSPEND_HOLD_S
+	int "Seconds to stay suspended"
+	default 30
+	---help---
+		The wake is the always-on timer alarm, so this always ends by
+		itself even with nothing attached to the board.
+
+config RP23XX_PM_AUTOSUSPEND_LED_GPIO
+	int "GPIO of the LED to extinguish, or -1 for none"
+	default -1
+	---help---
+		An indicator LED draws a milliamp or more, which is not a detail
+		when the state being measured is a few hundred microamps -- and
+		the board start-up code lights it on every boot *and every
+		resume*, so nothing turns it off by itself.
+
+		The cycle lights it for one phase and drives it low for the rest,
+		so its cost appears as a step in the trace rather than as a
+		mystery offset.  Set to the board's LED pin (25 on a Pico).
+
+config RP23XX_PM_AUTOSUSPEND_REPEAT
+	bool "Keep cycling"
+	default y
+	---help---
+		Suspend again after each wake, giving a square wave that can be
+		measured for as long as wanted.  Turn this off to suspend exactly
+		once and then stay up.
+
+endif # RP23XX_PM_AUTOSUSPEND
+
 endif # RP23XX_PM
 
 config RP23XX_ADC

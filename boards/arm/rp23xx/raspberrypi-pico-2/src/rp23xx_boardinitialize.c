@@ -31,6 +31,10 @@
 
 #include "rp23xx_gpio.h"
 
+#ifdef CONFIG_RP23XX_PM_AUTOSUSPEND
+#  include "rp23xx_pm.h"
+#endif
+
 #ifdef CONFIG_RP23XX_PSRAM
 #include "rp23xx_psram.h"
 #endif
@@ -112,5 +116,14 @@ void rp23xx_boardinitialize(void)
 void board_late_initialize(void)
 {
   rp23xx_bringup();
+
+#ifdef CONFIG_RP23XX_PM_AUTOSUSPEND
+  /* Start the measurement aid that suspends on a timer.  It has to be here
+   * rather than in arm_pminitialize(): that runs before the drivers, too
+   * early to create a task at all.
+   */
+
+  rp23xx_pm_autosuspend_start();
+#endif
 }
 #endif
