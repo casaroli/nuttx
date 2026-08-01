@@ -564,12 +564,27 @@ void rp23xx_pm_pads_quiesce(void)
         }
 #endif
 
-      /* Note that the memory chip selects are not special-cased.  They do
-       * not need to be: CS0 and CS1 carry external pull-ups on the boards
-       * this has been measured on, so the line stays high and the memory
-       * stays deselected whatever this loop does to the pad.
+#ifdef CONFIG_RP23XX_PSRAM
+      /* Never touch the PSRAM chip select.  Isolating a pad disconnects it
+       * from the core, so the QMI can no longer drive it -- and a memory
+       * whose chip select never asserts is a memory that answers nothing.
        *
-       * Clear the input enable, and isolate the pad so nothing downstream
+       * This is a correctness constraint, not a power one.  Detection runs
+       * from rp23xx_boardinitialize(), before this loop, so it succeeds and
+       * reports the part present; every memory-mapped access afterwards then
+       * reads the same fixed pattern at every address, and the failure is
+       * invisible to a write-then-read-back test because that hits the XIP
+       * cache.  Isolating this pad once cost an entire 8 MiB of heap that
+       * appeared to be there and was not.
+       */
+
+      if (gpio == CONFIG_RP23XX_PSRAM_CS1_GPIO)
+        {
+          continue;
+        }
+#endif
+
+      /* Clear the input enable, and isolate the pad so nothing downstream
        * of it floats either.  Measured 2026-08-01 against the alternative of
        * driving the pad low: no difference beyond a microamp, which is what
        * you would expect since an isolated pad is disconnected from the core
