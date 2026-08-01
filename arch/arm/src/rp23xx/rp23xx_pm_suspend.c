@@ -75,13 +75,16 @@
 
 #include <nuttx/arch.h>
 #include <nuttx/irq.h>
+#include <nuttx/power/pm.h>
 
 #include "arm_internal.h"
 #include "nvic.h"
 
 #include "rp23xx_pm.h"
+#include "rp23xx_gpio.h"
 
 #include "hardware/rp23xx_powman.h"
+#include "hardware/rp23xx_pads_bank0.h"
 #include "hardware/rp23xx_memorymap.h"
 
 #ifdef CONFIG_RP23XX_PM_SUSPEND
@@ -122,7 +125,6 @@
 
 #define POWMAN_SUSPEND_MAGIC 0x50575231  /* 'PWR1' */
 
-/****************************************************************************
  * Public Data
  ****************************************************************************/
 
@@ -259,6 +261,87 @@ static inline void powman_clrbits(uint32_t reg, uint32_t bits)
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
+
+/****************************************************************************
+ * Name: rp23xx_pm_pwrup_gpio
+ *
+ * Description:
+ *   Arm a GPIO in a POWMAN power-up detector, so that it can end a P1.0
+ *   suspend.  This is a different mechanism from the dormant-wake detector
+ *   in rp23xx_pm.c: that one watches the pad through the IO bank, which is
+ *   in the switched core and therefore gone here.  These detectors belong to
+ *   the power manager and keep watching with the core powered down.
+ *
+ * Input Parameters:
+ *   gpio - Pin to watch.
+ *   edge - True for a transition, false for a level.
+ *   high - True for rising/high, false for falling/low.
+ *
+ ****************************************************************************/
+
+static void rp23xx_pm_pwrup_gpio(int gpio, bool edge, bool high)
+{
+  uint32_t regval;
+
+  /* The detector reads the pad, so the input buffer has to be on -- and the
+   * isolation latch has to be off.  Setting IE alone is not enough: a pad
+   * still isolated reads a constant low and no amount of configuration
+   * makes it see anything.
+   */
+
+  modifyreg32(RP23XX_PADS_BANK0_GPIO(gpio), RP23XX_PADS_BANK0_GPIO_ISO,
+              RP23XX_PADS_BANK0_GPIO_IE);
+
+  /* And a defined idle level, opposite to whatever it triggers on.  This is
+   * not tidiness: the pad default is a pull-down, and a pull-down on a line
+   * that idles high -- a UART receive, say -- is a resistor across the
+   * supply for as long as the board is asleep.  Measured at 66 uA on the
+   * console pin, which is over a tenth of the whole suspend current.
+   *
+   * A cold boot gets this right via rp23xx_pm_gpio_wakeup(), but a resume
+   * never runs arm_pminitialize(), so doing it here is what makes the two
+   * paths agree.
+   */
+
+  if (high)
+    {
+      modifyreg32(RP23XX_PADS_BANK0_GPIO(gpio), RP23XX_PADS_BANK0_GPIO_PUE,
+                  RP23XX_PADS_BANK0_GPIO_PDE);
+    }
+  else
+    {
+      modifyreg32(RP23XX_PADS_BANK0_GPIO(gpio), RP23XX_PADS_BANK0_GPIO_PDE,
+                  RP23XX_PADS_BANK0_GPIO_PUE);
+    }
+
+  /* Disable while the source changes, or a spurious request can be latched
+   * from the previous configuration.
+   */
+
+  powman_clrbits(RP23XX_POWMAN_PWRUP0, RP23XX_POWMAN_PWRUP0_ENABLE);
+
+  regval = (uint32_t)gpio & RP23XX_POWMAN_PWRUP0_SOURCE_MASK;
+
+  if (edge)
+    {
+      regval |= RP23XX_POWMAN_PWRUP0_MODE;
+    }
+
+  if (high)
+    {
+      regval |= RP23XX_POWMAN_PWRUP0_DIRECTION;
+    }
+
+  putreg32(POWMAN_PASSWORD | regval, RP23XX_POWMAN_PWRUP0);
+
+  /* Clear anything already latched *before* enabling, not after.  An edge
+   * from before the pin was configured would otherwise end the suspend the
+   * instant it began.
+   */
+
+  powman_clrbits(RP23XX_POWMAN_PWRUP0, RP23XX_POWMAN_PWRUP0_STATUS);
+  powman_setbits(RP23XX_POWMAN_PWRUP0, RP23XX_POWMAN_PWRUP0_ENABLE);
+}
 
 /****************************************************************************
  * Name: rp23xx_pm_resume_pending
@@ -416,6 +499,30 @@ int rp23xx_pm_suspend(uint32_t wake_ms)
    */
 
   putreg32(POWMAN_SUSPEND_MAGIC, RP23XX_POWMAN_SCRATCH0);
+
+#if CONFIG_RP23XX_PM_WAKEUP_GPIO >= 0
+  /* Arm the board's wake pin as well.  The timer is what this state is
+   * normally left by, but a pin gives a way back in from outside without
+   * waiting for the alarm -- the console receive line, by default, whose
+   * start bit is a falling edge.
+   */
+
+#  ifdef CONFIG_RP23XX_PM_WAKEUP_GPIO_EDGE
+#    define RP23XX_PM_SUSPEND_WAKE_EDGE true
+#  else
+#    define RP23XX_PM_SUSPEND_WAKE_EDGE false
+#  endif
+
+#  ifdef CONFIG_RP23XX_PM_WAKEUP_GPIO_HIGH
+#    define RP23XX_PM_SUSPEND_WAKE_HIGH true
+#  else
+#    define RP23XX_PM_SUSPEND_WAKE_HIGH false
+#  endif
+
+  rp23xx_pm_pwrup_gpio(CONFIG_RP23XX_PM_WAKEUP_GPIO,
+                       RP23XX_PM_SUSPEND_WAKE_EDGE,
+                       RP23XX_PM_SUSPEND_WAKE_HIGH);
+#endif
 
   /* Arm the timed wake if one was asked for.  Both bits are needed: the
    * alarm has to be enabled and it has to be allowed to raise a power up.
