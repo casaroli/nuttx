@@ -78,12 +78,12 @@
 #  include <unistd.h>
 #  include <sched.h>
 #  include <nuttx/kthread.h>
-#  include <nuttx/clock.h>
 #endif
 
 #include <nuttx/arch.h>
 #include <nuttx/irq.h>
 #include <nuttx/power/pm.h>
+#include <nuttx/clock.h>
 
 #include "arm_internal.h"
 #include "nvic.h"
@@ -497,6 +497,22 @@ int rp23xx_pm_suspend(uint32_t wake_ms)
   if (setjmp(g_suspend_ctx) != 0)
     {
       leave_critical_section(flags);
+
+#ifdef CONFIG_RTC
+      /* The system tick stopped for the whole suspend and was never caught
+       * up, so the time of day is now slow by however long the chip was
+       * down.  The always-on timer kept counting, being in the domain that
+       * stayed powered, so it is the one thing that still knows.
+       *
+       * Only CLOCK_REALTIME is corrected by this, and that is deliberate.
+       * CLOCK_MONOTONIC is defined as elapsed time *excluding* suspend --
+       * see clock_gettime() -- so a monotonic clock that skipped the
+       * interval is not a defect to be repaired.  Winding the tick forward
+       * would break it rather than fix it.
+       */
+
+      clock_synchronize(NULL);
+#endif
       return OK;
     }
 
