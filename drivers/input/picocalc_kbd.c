@@ -36,6 +36,7 @@
 #include <nuttx/wqueue.h>
 #include <nuttx/kmalloc.h>
 #include <nuttx/i2c/i2c_master.h>
+#include <nuttx/input/kbd_codec.h>
 #include <nuttx/input/keyboard.h>
 #include <nuttx/input/picocalc_kbd.h>
 
@@ -128,15 +129,6 @@
 #define PICOCALC_KBD_CODE_MOD_MIN 0xa1  /* Alt                              */
 #define PICOCALC_KBD_CODE_CTRL    0xa5
 #define PICOCALC_KBD_CODE_MOD_MAX 0xa5  /* Ctrl                             */
-
-/* The convention apps/examples/lvglterm expects, shared with the M5
- * Cardputer: printable ASCII verbatim, arrows at 0x80-0x83.
- */
-
-#define PICOCALC_KBD_KEY_UP       0x80
-#define PICOCALC_KBD_KEY_DOWN     0x81
-#define PICOCALC_KBD_KEY_LEFT     0x82
-#define PICOCALC_KBD_KEY_RIGHT    0x83
 
 /****************************************************************************
  * Private Types
@@ -317,7 +309,17 @@ static bool picocalc_kbd_probe(FAR struct picocalc_kbd_dev_s *priv)
  * Name: picocalc_kbd_translate
  *
  * Description:
- *   Map a co-processor key code onto the code the upper half reports.
+ *   Map a co-processor key code onto the code the upper half reports, and
+ *   say whether that code is a keycode rather than a character.
+ *
+ *   The arrow keys produce no character, so they are reported as special
+ *   keys carrying a value from enum kbd_keycode_e and the caller turns
+ *   *special into a SPEC event type.  Escape is not one of them:  it is
+ *   the control character 0x1B and belongs in the ordinary stream.
+ *
+ *   Whether a key is special depends only on the code the co-processor
+ *   sends, so a release translates the same way its press did and no state
+ *   has to be carried between the two.
  *
  *   The co-processor deliberately does not synthesise control codes: with
  *   CFG_USE_MODS and CFG_REPORT_MODS set it reports Ctrl as its own event
@@ -328,27 +330,33 @@ static bool picocalc_kbd_probe(FAR struct picocalc_kbd_dev_s *priv)
  ****************************************************************************/
 
 static uint32_t picocalc_kbd_translate(FAR struct picocalc_kbd_dev_s *priv,
-                                       uint8_t code)
+                                       uint8_t code, FAR bool *special)
 {
+  *special = true;
+
   switch (code)
     {
       case PICOCALC_KBD_CODE_UP:
-        return PICOCALC_KBD_KEY_UP;
+        return KEYCODE_UP;
 
       case PICOCALC_KBD_CODE_DOWN:
-        return PICOCALC_KBD_KEY_DOWN;
+        return KEYCODE_DOWN;
 
       case PICOCALC_KBD_CODE_LEFT:
-        return PICOCALC_KBD_KEY_LEFT;
+        return KEYCODE_LEFT;
 
       case PICOCALC_KBD_CODE_RIGHT:
-        return PICOCALC_KBD_KEY_RIGHT;
-
-      case PICOCALC_KBD_CODE_ESC:
-        return ASCII_ESC;
+        return KEYCODE_RIGHT;
 
       default:
         break;
+    }
+
+  *special = false;
+
+  if (code == PICOCALC_KBD_CODE_ESC)
+    {
+      return ASCII_ESC;
     }
 
   if (priv->ctrl)
@@ -378,7 +386,9 @@ static uint32_t picocalc_kbd_translate(FAR struct picocalc_kbd_dev_s *priv,
 static void picocalc_kbd_event(FAR struct picocalc_kbd_dev_s *priv,
                                uint8_t state, uint8_t code)
 {
+  uint32_t keycode;
   uint32_t type;
+  bool special;
 
   /* Track Ctrl and swallow every modifier.  Reporting 0xA1-0xA5 verbatim
    * would hand consumers codes that collide with nothing meaningful and
@@ -401,16 +411,18 @@ static void picocalc_kbd_event(FAR struct picocalc_kbd_dev_s *priv,
    * that does not is no worse off than with the stock firmware.
    */
 
+  keycode = picocalc_kbd_translate(priv, code, &special);
+
   if (state == PICOCALC_KBD_STATE_RELEASED)
     {
-      type = KEYBOARD_RELEASE;
+      type = special ? KEYBOARD_SPECREL : KEYBOARD_RELEASE;
     }
   else
     {
-      type = KEYBOARD_PRESS;
+      type = special ? KEYBOARD_SPECPRESS : KEYBOARD_PRESS;
     }
 
-  keyboard_event(&priv->lower, picocalc_kbd_translate(priv, code), type);
+  keyboard_event(&priv->lower, keycode, type);
 }
 
 /****************************************************************************

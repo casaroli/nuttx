@@ -753,9 +753,10 @@ config INPUT_PICOCALC_KBD
 		slave if neither of its callbacks has run for 2500ms, so a host
 		that goes quiet gets a link that resets underneath it.
 
-		Printable ASCII passes through unchanged and the arrow keys are
-		reported as 0x80-0x83, which is the convention
-		apps/examples/lvglterm expects.
+		Printable ASCII passes through unchanged.  The arrow keys produce
+		no character, so they are reported as special keys carrying
+		KEYCODE_UP and friends, which is what an application reading a
+		keyboard expects.
 
 if INPUT_PICOCALC_KBD
 
