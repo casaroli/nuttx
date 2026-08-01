@@ -309,10 +309,30 @@ rp23xx_psramconfig(void)
 
   flags = up_irq_save();
 
-  size = rp23xx_psram_detect();
-  if (size != 0)
+  if (g_psram_size != 0)
     {
+      /* A previous boot already found the part, and said so in memory that
+       * has survived -- which means this is a resume from suspend to RAM
+       * rather than a cold start, and the PSRAM was never power cycled.
+       *
+       * Do not detect again.  Detection assumes a part fresh from power-on
+       * and cannot cope with one still in quad mode from before: it fails,
+       * reports nothing fitted, and leaves the chip part way through a
+       * command sequence drawing far more than an idle one should.  The
+       * retained size is the more trustworthy answer, so put the format
+       * back and keep it.
+       */
+
       rp23xx_psram_apply_format();
+      size = g_psram_size;
+    }
+  else
+    {
+      size = rp23xx_psram_detect();
+      if (size != 0)
+        {
+          rp23xx_psram_apply_format();
+        }
     }
 
   up_irq_restore(flags);
