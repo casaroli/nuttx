@@ -1,0 +1,112 @@
+/****************************************************************************
+ * boards/arm/rp23xx/clockworkpi-picocalc/src/rp23xx_pico.h
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.  The
+ * ASF licenses this file to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance with the
+ * License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
+ *
+ ****************************************************************************/
+
+#ifndef __BOARDS_ARM_RP23XX_CLOCKWORKPI_PICOCALC_SRC_RP23XX_PICO_H
+#define __BOARDS_ARM_RP23XX_CLOCKWORKPI_PICOCALC_SRC_RP23XX_PICO_H
+
+/****************************************************************************
+ * Included Files
+ ****************************************************************************/
+
+#include <nuttx/config.h>
+
+/* CYW43439 wireless chip
+ *
+ * The gSPI bus is half duplex -- a single data line carries both directions
+ * and doubles as the chip's interrupt request line.
+ */
+
+#define GPIO_CYW43439_ON      23  /* Drive high to power the chip up   */
+#define GPIO_CYW43439_DATA    24  /* Bidirectional data, also the IRQ  */
+#define GPIO_CYW43439_CS      25  /* Drive low to select the chip      */
+#define GPIO_CYW43439_CLOCK   29  /* gSPI clock                       */
+
+/* LEDs
+ *
+ * The board's only LED hangs off GPIO 0 of the CYW43439, see
+ * include/rp23xx_extra_gpio.h.  There is no LED on an RP2350 pin.
+ */
+
+/* Buttons */
+
+/* Buttons GPIO pins definition */
+
+/* The board's BOOT button doubles as a user button once NuttX is running.
+ * It is active low.  RESET is not readable as a GPIO.
+ */
+
+#define GPIO_BTN_USER1     45
+
+/* The co-processor's attention line, STM32 PC10 -> GP9 (J302-12).
+ *
+ * Open drain and active low at the far end, and there is no pull-up on the
+ * board, so the RP2350's internal one is the only thing that ever pulls it
+ * high.  Without it the pad reads 0 in both states, and the line cannot be
+ * observed at all.
+ */
+
+#define GPIO_COPROC_ATTN   9
+
+/* Audio: a PWM pair into the buffer, filter and jack switch.  Both are
+ * channels of one PWM slice; see picocalc_audio.h.
+ */
+
+#define GPIO_PICOCALC_PWM_L  26
+#define GPIO_PICOCALC_PWM_R  27
+
+/* Buttons IRQ definitions */
+
+#define MIN_IRQBUTTON     BUTTON_USER1
+#define MAX_IRQBUTTON     BUTTON_USER1
+#define NUM_IRQBUTTONS    (MAX_IRQBUTTON - MIN_IRQBUTTON + 1)
+
+int rp23xx_bringup(void);
+
+/****************************************************************************
+ * Name: picocalc_autostart
+ *
+ * Description:
+ *   Start the terminal and the keyboard bridge on the panel, so the machine
+ *   comes up usable without a debug console.  Returns immediately; the work
+ *   happens on its own task.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_CLOCKWORKPI_PICOCALC_AUTOSTART
+void picocalc_autostart(void);
+#endif
+
+/****************************************************************************
+ * Name: picocalc_pin_park
+ *
+ * Description:
+ *   Park every unowned GPIO so it does not leak, as a mitigation for erratum
+ *   RP2350-E9.  Call from rp23xx_boardearlyinitialize(), before any driver
+ *   claims a pin.  See src/rp23xx_pinpark.c.
+ *
+ ****************************************************************************/
+
+void picocalc_pin_park(void);
+
+#if defined(CONFIG_DEV_GPIO) && !defined(CONFIG_ARCH_BOARD_COMMON)
+int rp23xx_dev_gpio_init(void);
+#endif
+
+#endif /* __BOARDS_ARM_RP23XX_CLOCKWORKPI_PICOCALC_SRC_RP23XX_PICO_H */
