@@ -24,6 +24,8 @@
 
 #include <nuttx/config.h>
 
+#include <errno.h>
+
 #include <nuttx/debug.h>
 #include <nuttx/mmcsd.h>
 #include <nuttx/board.h>
@@ -99,7 +101,18 @@ int board_spisd_initialize(int minor, int bus)
   /* Mount filesystem */
 
   ret = nx_mount("/dev/mmcsd0", "/mnt/sd0", "vfat", 0, NULL);
-  if (ret < 0)
+  if (ret == -EINVAL || ret == -ENODEV)
+    {
+      /* No card in the slot, or a card with no filesystem on it.  Neither is
+       * a fault: the block device is registered either way and the card can
+       * be formatted with mkfatfs and mounted by hand.  Logging it at error
+       * level every boot -- which it did -- teaches people to ignore a
+       * channel that should mean something.
+       */
+
+      _info("No filesystem on /dev/mmcsd0 (no card, or unformatted)\n");
+    }
+  else if (ret < 0)
     {
       _err("ERROR: Failed to mount the SDCARD. %d\n", ret);
     }
