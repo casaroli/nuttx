@@ -213,6 +213,19 @@ void rp23xx_resume_boot(void)
 {
   rp23xx_hwinit(true);
 
+#ifdef CONFIG_RP23XX_PM_QUIESCE_PADS
+  /* A cold boot quiesces the unused pads from arm_pminitialize().  A resume
+   * never reaches it -- control goes back to the suspended thread instead of
+   * into nx_start() -- yet the bootrom has just reset every pad on the way
+   * through, so they come back with their input buffers live and floating.
+   * That is erratum E9 leakage, and it is worth tens of microamps: invisible
+   * against active current, plainly visible in standby and in the suspend
+   * that follows.
+   */
+
+  rp23xx_pm_pads_quiesce();
+#endif
+
   showprogress('\r');
   showprogress('\n');
 

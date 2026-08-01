@@ -564,8 +564,16 @@ void rp23xx_pm_pads_quiesce(void)
         }
 #endif
 
-      /* Clear the input enable, and isolate the pad so nothing downstream
-       * of it floats either.
+      /* Note that the memory chip selects are not special-cased.  They do
+       * not need to be: CS0 and CS1 carry external pull-ups on the boards
+       * this has been measured on, so the line stays high and the memory
+       * stays deselected whatever this loop does to the pad.
+       *
+       * Clear the input enable, and isolate the pad so nothing downstream
+       * of it floats either.  Measured 2026-08-01 against the alternative of
+       * driving the pad low: no difference beyond a microamp, which is what
+       * you would expect since an isolated pad is disconnected from the core
+       * and so cannot float in the first place.
        */
 
       modbits_reg32(RP23XX_PADS_BANK0_GPIO_ISO,
