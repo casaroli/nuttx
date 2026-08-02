@@ -25,6 +25,7 @@
 #include <nuttx/config.h>
 
 #include <errno.h>
+#include <syslog.h>
 
 #include <nuttx/debug.h>
 #include <nuttx/mmcsd.h>
@@ -125,7 +126,7 @@ static void board_spisd_cdwork(FAR void *arg)
       if (ret >= 0)
         {
           g_mounted = true;
-          _info("Card inserted, mounted at %s\n", SD_MOUNT);
+          syslog(LOG_INFO, "SD card inserted, mounted at %s\n", SD_MOUNT);
         }
       else
         {
@@ -133,14 +134,14 @@ static void board_spisd_cdwork(FAR void *arg)
            * device is there either way and mkfatfs will still work on it.
            */
 
-          _info("Card inserted, not mounted: %d\n", ret);
+          syslog(LOG_INFO, "SD card inserted, no filesystem: %d\n", ret);
         }
     }
   else if (!present && g_mounted)
     {
       ret = nx_umount2(SD_MOUNT, MNT_FORCE);
       g_mounted = false;
-      _info("Card removed, unmounted %s: %d\n", SD_MOUNT, ret);
+      syslog(LOG_INFO, "SD card removed, unmounted %s: %d\n", SD_MOUNT, ret);
     }
 }
 
