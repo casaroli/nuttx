@@ -150,3 +150,55 @@ int rp23xx_spi1cmddata(struct spi_dev_s *dev, uint32_t devid, bool cmd)
 }
 #endif
 #endif
+
+#ifdef CONFIG_SPI_CALLBACK
+
+#ifdef CONFIG_RP23XX_SPISD
+/* Implemented in rp23xx_spisd.c, alongside the card-detect handler that
+ * uses it.  Declared here rather than in a header because board_spisd_status
+ * next to it is reached the same way: these are the board's side of a
+ * contract the SPI driver defines, not a public interface.
+ */
+
+int board_spisd_registercallback(spi_mediachange_t callback, FAR void *arg);
+#endif
+
+/****************************************************************************
+ * Name: rp23xx_spi0register / rp23xx_spi1register
+ *
+ * Description:
+ *   Remember a driver's media-change callback.  Only the bus carrying the
+ *   MMC/SD card has anything to report, so the other one refuses the
+ *   registration rather than accepting a callback that could never fire.
+ *
+ *   The MMC/SD driver latches "no disk" when a card is removed and clears
+ *   it only when this callback runs, so without it a card put back is never
+ *   identified again and every mount fails against a healthy card.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_RP23XX_SPI0
+int rp23xx_spi0register(struct spi_dev_s *dev, spi_mediachange_t callback,
+                        void *arg)
+{
+#if defined(CONFIG_RP23XX_SPISD) && (CONFIG_RP23XX_SPISD_SPI_CH == 0)
+  return board_spisd_registercallback(callback, arg);
+#else
+  return -ENOSYS;
+#endif
+}
+#endif
+
+#ifdef CONFIG_RP23XX_SPI1
+int rp23xx_spi1register(struct spi_dev_s *dev, spi_mediachange_t callback,
+                        void *arg)
+{
+#if defined(CONFIG_RP23XX_SPISD) && (CONFIG_RP23XX_SPISD_SPI_CH == 1)
+  return board_spisd_registercallback(callback, arg);
+#else
+  return -ENOSYS;
+#endif
+}
+#endif
+
+#endif /* CONFIG_SPI_CALLBACK */

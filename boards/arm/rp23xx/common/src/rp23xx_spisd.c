@@ -38,6 +38,7 @@
 
 #include "rp23xx_spi.h"
 #include "rp23xx_gpio.h"
+#include "hardware/rp23xx_io_bank0.h"
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -73,6 +74,16 @@
 
 static struct work_s g_cd_work;
 static bool          g_mounted;
+
+/* The MMC/SD driver's media-change callback, from SPI_REGISTERCALLBACK.
+ *
+ * Without calling it, a card put back after being removed is never probed
+ * again: the driver still holds the "no disk" state it latched on removal,
+ * and the mount fails however healthy the card is.
+ */
+
+static spi_mediachange_t g_cd_callback;
+static FAR void         *g_cd_callback_arg;
 #endif
 
 /****************************************************************************
@@ -122,6 +133,16 @@ static void board_spisd_cdwork(FAR void *arg)
 
   if (present && !g_mounted)
     {
+      /* Tell the MMC/SD driver first.  It re-runs the card identification
+       * it skipped while the slot was empty; mounting before that just
+       * fails against a driver that still believes there is no disk.
+       */
+
+      if (g_cd_callback != NULL)
+        {
+          g_cd_callback(g_cd_callback_arg);
+        }
+
       ret = nx_mount(SD_BLOCK, SD_MOUNT, "vfat", 0, NULL);
       if (ret >= 0)
         {
@@ -141,6 +162,12 @@ static void board_spisd_cdwork(FAR void *arg)
     {
       ret = nx_umount2(SD_MOUNT, MNT_FORCE);
       g_mounted = false;
+
+      if (g_cd_callback != NULL)
+        {
+          g_cd_callback(g_cd_callback_arg);
+        }
+
       syslog(LOG_INFO, "SD card removed, unmounted %s: %d\n", SD_MOUNT, ret);
     }
 }
@@ -226,9 +253,23 @@ int board_spisd_initialize(int minor, int bus)
 
   rp23xx_gpio_irq_attach(SD_CD_GPIO, RP23XX_GPIO_INTR_EDGE_LOW,
                          board_spisd_cdirq, NULL);
-  rp23xx_gpio_irq_attach(SD_CD_GPIO, RP23XX_GPIO_INTR_EDGE_HIGH,
-                         board_spisd_cdirq, NULL);
   rp23xx_gpio_enable_irq(SD_CD_GPIO);
+
+  /* A socket needs both edges and the GPIO layer only offers one.
+   *
+   * rp23xx_gpio_irq_attach() keeps a single mode per pin and
+   * rp23xx_gpio_enable_irq() clears all four bits before setting that one,
+   * so attaching twice leaves only whichever came last -- which is how this
+   * shipped seeing a card leave and never seeing one arrive.
+   *
+   * The dispatcher does not consult the mode; it calls the pin's handler
+   * for whatever is pending.  So adding the second edge's enable bit here
+   * is enough, and it must be a set rather than another enable_irq() call,
+   * which would clear the first.
+   */
+
+  setbits_reg32(0x1 << ((SD_CD_GPIO % 8) * 4 + RP23XX_GPIO_INTR_EDGE_HIGH),
+                RP23XX_IO_BANK0_PROC_INTE(SD_CD_GPIO, 0));
 #endif
 
   /* Mount filesystem */
@@ -258,6 +299,32 @@ int board_spisd_initialize(int minor, int bus)
 
   return OK;
 }
+
+/****************************************************************************
+ * Name: board_spisd_registercallback
+ *
+ * Description:
+ *   Called through SPI_REGISTERCALLBACK when the MMC/SD driver binds to the
+ *   slot.  Stores the callback for the card-detect handler to invoke.
+ *
+ ****************************************************************************/
+
+#if defined(CONFIG_SPI_CALLBACK) && defined(CONFIG_RP23XX_SPISD)
+int board_spisd_registercallback(spi_mediachange_t callback, FAR void *arg)
+{
+#ifdef HAVE_CARD_DETECT
+  g_cd_callback     = callback;
+  g_cd_callback_arg = arg;
+  return OK;
+#else
+  /* Nothing can ever call it without a card-detect pin, and saying so is
+   * better than accepting a registration that will never fire.
+   */
+
+  return -ENOSYS;
+#endif
+}
+#endif
 
 /****************************************************************************
  * Name: board_spisd_status
