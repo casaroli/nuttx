@@ -158,6 +158,25 @@ committed.
 setting.  Set it to your own country to get the channels your regulator
 allows.
 
+Included with it:
+
+============  ==========================================================
+``wapi``      scan, associate, and read signal strength
+``ifconfig``  interface state; ``renew`` asks DHCP again
+``ping``      ICMP
+``netdb``     ``netdb --host <name>`` resolves a name
+``netcat``    TCP in and out, and file transfer with ``<`` and ``>``
+``ntpcstart`` set the clock from the network; ``ntpcstatus`` shows the
+              samples it used, ``ntpcstop`` stops the daemon
+============  ==========================================================
+
+``/proc/net/wlan0`` carries the same state ``ifconfig`` prints, for a
+script that would rather read a file.
+
+The clock matters more here than on most boards: nothing on the PicoCalc
+keeps time across a power cycle, so without NTP every file written to the SD
+card is stamped from the epoch.
+
 nxterm
 ------
 
