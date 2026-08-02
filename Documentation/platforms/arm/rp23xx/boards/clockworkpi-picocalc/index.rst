@@ -118,6 +118,46 @@ lvglterm
 The ``lcd`` configuration plus LVGL and ``examples/lvglterm``: a terminal
 drawn with LVGL, driven by the keyboard.
 
+wifi
+----
+
+The ``nxterm`` configuration plus the CYW43439 on the Pico module: ``wlan0``
+in station mode, WAPI, a DHCP client, a DNS client and ``ping``.
+
+This configuration needs the CYW43439 firmware blob, which is not in the
+NuttX tree.  ``CONFIG_CYW43439_FIRMWARE_BIN_PATH`` defaults to a path under
+``${PICO_SDK_PATH}``, so set that in the environment before
+``configure.sh``:
+
+.. code:: console
+
+   $ export PICO_SDK_PATH=/path/to/pico-sdk
+   $ ./tools/configure.sh clockworkpi-picocalc:wifi
+
+That is why the radio is a configuration of its own rather than part of
+``nxterm`` -- the terminal builds with nothing but the ARM toolchain, and
+should keep doing so.
+
+**No credentials are stored.**  ``CONFIG_NETINIT_WAPI_SSID`` and
+``CONFIG_NETINIT_WAPI_PASSPHRASE`` are deliberately empty, so associate at
+runtime:
+
+.. code:: console
+
+   nsh> wapi mode wlan0 2
+   nsh> wapi psk wlan0 "my-passphrase" 3 2
+   nsh> wapi essid wlan0 my-ssid 1
+   nsh> renew wlan0
+   nsh> ifconfig
+
+Set them in the configuration instead only if you are content for a
+passphrase to sit in a defconfig, which is a file that tends to get
+committed.
+
+``CONFIG_IEEE80211_BROADCOM_DEFAULT_COUNTRY`` is ``"XX"``, the worldwide
+setting.  Set it to your own country to get the channels your regulator
+allows.
+
 nxterm
 ------
 
