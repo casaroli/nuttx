@@ -319,8 +319,18 @@ int nxterm_poll(FAR struct file *filep, FAR struct pollfd *fds, bool setup)
   FAR struct nxterm_state_s *priv;
   pollevent_t eventset;
   spinlock_t flags;
-  int ret;
+  int ret = OK;
   int i;
+
+  /* 'ret' is initialised because neither the setup nor the teardown path
+   * assigns it, and only the error paths did.  Returning a stack value from
+   * a successful setup makes poll() believe the setup failed -- so it never
+   * tears the registration down, and priv->fds[] is left pointing at a
+   * struct pollfd that goes out of scope with its caller.  The next
+   * poll_notify() then calls fds->cb through whatever is in that memory
+   * now.  That is a jump to a wild address, not a crash at the pointer, so
+   * it lands far from here.
+   */
 
   /* Some sanity checking */
 
