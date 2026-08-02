@@ -118,11 +118,14 @@ lvglterm
 The ``lcd`` configuration plus LVGL and ``examples/lvglterm``: a terminal
 drawn with LVGL, driven by the keyboard.
 
-wifi
+full
 ----
 
-The ``nxterm`` configuration plus the CYW43439 on the Pico module: ``wlan0``
-in station mode, WAPI, a DHCP client, a DNS client and ``ping``.
+Everything this port supports, in one image: the ``nxterm`` terminal, the
+keyboard, the battery gauge, audio, the microSD card with insertion and
+removal handling, the J703 GPIOs, ``vi``, ``zmodem``, ``reset``, and the
+CYW43439 with ``wlan0`` in station mode, WAPI, DHCP, DNS, ``ping``,
+``netcat``, ``netdb``, NTP and a Telnet daemon.
 
 This configuration needs the CYW43439 firmware blob, which is not in the
 NuttX tree.  ``CONFIG_CYW43439_FIRMWARE_BIN_PATH`` defaults to a path under
@@ -132,11 +135,16 @@ NuttX tree.  ``CONFIG_CYW43439_FIRMWARE_BIN_PATH`` defaults to a path under
 .. code:: console
 
    $ export PICO_SDK_PATH=/path/to/pico-sdk
-   $ ./tools/configure.sh clockworkpi-picocalc:wifi
+   $ ./tools/configure.sh clockworkpi-picocalc:full
 
-That is why the radio is a configuration of its own rather than part of
+That is why this is a configuration of its own rather than an addition to
 ``nxterm`` -- the terminal builds with nothing but the ARM toolchain, and
 should keep doing so.
+
+``telnetd`` is **not** started at boot.  ``CONFIG_NSH_DISABLE_TELNETSTART``
+separates the Telnet session entry point, which the daemon needs, from the
+automatic start that ``nsh_init()`` would otherwise perform.  Run ``telnetd``
+when a remote shell is wanted.
 
 **No credentials are stored.**  ``CONFIG_NETINIT_WAPI_SSID`` and
 ``CONFIG_NETINIT_WAPI_PASSPHRASE`` are deliberately empty, so associate at
