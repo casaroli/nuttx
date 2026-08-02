@@ -392,9 +392,15 @@ config NXTERM_MXCHARS
 	int "Max Characters on Display"
 	default 128
 	---help---
-		NxTerm needs to remember every character written to the console so
-		that it can redraw the window. This setting determines the size of some
-		internal memory allocations used to hold the character data. Default: 128.
+		Obsolete and no longer used.
+
+		NxTerm used to remember the characters written to it as a list of
+		positioned glyphs, and this setting bounded that list.  It now keeps a
+		character grid sized to the window and the font, which holds exactly
+		what fits on the display -- no more, and no fewer.  The grid is
+		typically smaller than the list it replaced, since a cell costs a
+		character code and an attribute rather than a glyph reference and a
+		pixel coordinate.
 
 config NXTERM_CACHESIZE
 	int "Font Cache Size"

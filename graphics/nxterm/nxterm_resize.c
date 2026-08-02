@@ -60,6 +60,8 @@
 int nxterm_resize(NXTERM handle, FAR const struct nxgl_size_s *size)
 {
   FAR struct nxterm_state_s *priv;
+  uint16_t oldrows;
+  uint16_t oldcols;
   int ret;
 
   DEBUGASSERT(handle != NULL && size != NULL);
@@ -77,14 +79,44 @@ int nxterm_resize(NXTERM handle, FAR const struct nxgl_size_s *size)
       return ret;
     }
 
-  /* Set the new window size.
-   * REVISIT:  Should other things be reset as well?
-   */
+  /* Set the new window size */
+
+  oldrows = priv->rows;
+  oldcols = priv->cols;
 
   priv->wndo.wsize.w = size->w;
   priv->wndo.wsize.h = size->h;
 
+  /* Resize the character grid to match */
+
+  ret = nxterm_gridalloc(priv);
+  if (ret < 0)
+    {
+      nxmutex_unlock(&priv->lock);
+      return ret;
+    }
+
+  /* A resize that did not change the number of cells changes nothing at
+   * all.  Saying so matters:  the screen is cleared below, and clearing it
+   * because a window was told its own size would throw away a terminal's
+   * contents for nothing.
+   */
+
+  if (priv->rows != oldrows || priv->cols != oldcols)
+    {
+      /* The contents are not carried over.  A terminal that changes size
+       * has no correct answer for where its old text belongs -- the lines
+       * it had been wrapping at are no longer where the margin is -- and
+       * every choice is a guess.  Starting clean is the one behaviour that
+       * cannot be subtly wrong.
+       */
+
+      nxterm_gridreset(priv);
+      nxterm_clear(priv);
+      nxterm_showcursor(priv);
+    }
+
   nxterm_flushdamage(priv);
   nxmutex_unlock(&priv->lock);
-  return true;
+  return OK;
 }

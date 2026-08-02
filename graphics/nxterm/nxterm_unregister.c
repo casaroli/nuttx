@@ -71,9 +71,18 @@ void nxterm_unregister(FAR struct nxterm_state_s *priv)
   nxsem_destroy(&priv->waitsem);
 #endif
 
-  /* Free the font cache */
+  /* Free the character grid */
+
+  nxterm_gridfree(priv);
+
+  /* Free the font caches */
 
   nxf_cache_disconnect(priv->fcache);
+
+  if (priv->rcache != NULL)
+    {
+      nxf_cache_disconnect(priv->rcache);
+    }
 
   /* Unregister the driver */
 

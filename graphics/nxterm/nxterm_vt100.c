@@ -26,268 +26,468 @@
 
 #include <nuttx/config.h>
 
-#include <string.h>
 #include <assert.h>
 
-#include <nuttx/vt100.h>
+#include <nuttx/ascii.h>
 
 #include "nxterm.h"
-
-/****************************************************************************
- * Private Types
- ****************************************************************************/
-
-typedef int (*seqhandler_t)(FAR struct nxterm_state_s *priv);
-
-struct vt100_sequence_s
-{
-  FAR const char *seq;
-  seqhandler_t handler;
-  uint8_t size;
-};
-
-/****************************************************************************
- * Private Function Prototypes
- ****************************************************************************/
-
-static int nxterm_erasetoeol(FAR struct nxterm_state_s *priv);
-static int nxterm_cursorleft(FAR struct nxterm_state_s *priv);
-static int nxterm_cursorright(FAR struct nxterm_state_s *priv);
-
-/****************************************************************************
- * Private Data
- ****************************************************************************/
-
-/* All recognized VT100 escape sequences.  Very little as present, this is
- * a placeholder for a future, more complete VT100 emulation.
- */
-
-/* <esc>[K erases to the end of the line. */
-
-static const char g_erasetoeol[] = VT100_CLEAREOL;
-
-/* <esc>[D and <esc>[C move the cursor one column left and right.
- *
- * A line editor needs all three: it redraws by returning to the margin,
- * erasing what was there, writing the line again and then walking the
- * cursor back to where the user is typing.  Without them the escape bytes
- * were emitted as text and "[D" appeared on screen.
- */
-
-/* Spelled out rather than taken from vt100.h, whose VT100_CURSORLF(n) form
- * carries a count parameter.  A line editor emits the bare three-byte
- * sequence, and that is what has to be matched here.
- */
-
-static const char g_cursorleft[]  =
-{
-  ASCII_ESC, '[', 'D'
-};
-
-static const char g_cursorright[] =
-{
-  ASCII_ESC, '[', 'C'
-};
-
-/* The list of all VT100 sequences supported by the emulation */
-
-static const struct vt100_sequence_s g_vt100sequences[] =
-{
-  {g_erasetoeol,  nxterm_erasetoeol,  sizeof(g_erasetoeol)},
-  {g_cursorleft,  nxterm_cursorleft,  sizeof(g_cursorleft)},
-  {g_cursorright, nxterm_cursorright, sizeof(g_cursorright)},
-  {NULL, NULL, 0}
-};
 
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
 
 /****************************************************************************
- * Name: nxterm_erasetoeol
+ * Name: nxterm_param
  *
  * Description:
- *   Handle the erase-to-eol VT100 escapte sequence
+ *   One numeric parameter of the sequence being processed.
  *
- * Input Parameters:
- *   priv - Driver data structure
- *
- * Returned Value:
- *   The index of the match in g_vt100sequences[]
+ *   A parameter that is absent or zero means "use the default", which is
+ *   how a VT100 spells it:  "ESC [ A", "ESC [ 0 A" and "ESC [ 1 A" all move
+ *   the cursor up one line.
  *
  ****************************************************************************/
 
-static int nxterm_erasetoeol(FAR struct nxterm_state_s *priv)
+static int nxterm_param(FAR struct nxterm_state_s *priv, int index,
+                        int defval)
 {
-  /* Glyphs are appended in order, so the ones at or right of the cursor on
-   * this line are exactly the trailing entries of the array.  Drop them from
-   * the back until one is on another line or left of the cursor.
-   *
-   * The cursor deliberately does not move: erase-to-end-of-line clears what
-   * is ahead of it and leaves it where it is, which is what makes the
-   * caller's subsequent rewrite land in the right place.
+  if (index >= (int)priv->nparams || priv->params[index] == 0)
+    {
+      return defval;
+    }
+
+  return (int)priv->params[index];
+}
+
+/****************************************************************************
+ * Name: nxterm_rawparam
+ *
+ * Description:
+ *   One numeric parameter, where zero is a value in its own right rather
+ *   than a request for the default.  Erasing and SGR are specified that
+ *   way:  in "ESC [ 0 J" the zero selects a mode.
+ *
+ ****************************************************************************/
+
+static int nxterm_rawparam(FAR struct nxterm_state_s *priv, int index,
+                           int defval)
+{
+  if (index >= (int)priv->nparams)
+    {
+      return defval;
+    }
+
+  return (int)priv->params[index];
+}
+
+/****************************************************************************
+ * Name: nxterm_sgr
+ *
+ * Description:
+ *   Select graphic rendition.
+ *
+ *   Reverse video is the only attribute that can be honoured, since a glyph
+ *   carries its colours from the cache it was rendered by and there is no
+ *   bold, italic or underlined font here.  Colour selection is accepted and
+ *   discarded for the same reason -- the window has one foreground and one
+ *   background.  Discarding is still the point: the parameters have to be
+ *   consumed, or they would be drawn as text.
+ *
+ ****************************************************************************/
+
+static void nxterm_sgr(FAR struct nxterm_state_s *priv)
+{
+  int nparams = priv->nparams > 0 ? (int)priv->nparams : 1;
+  int i;
+
+  for (i = 0; i < nparams; i++)
+    {
+      switch (nxterm_rawparam(priv, i, 0))
+        {
+          case 0:  /* All attributes off */
+            priv->attr = 0;
+            break;
+
+          case 7:  /* Reverse video on */
+            priv->attr |= NXTERM_ATTR_REVERSE;
+            break;
+
+          case 27: /* Reverse video off */
+            priv->attr &= ~NXTERM_ATTR_REVERSE;
+            break;
+
+          default:
+            break;
+        }
+    }
+}
+
+/****************************************************************************
+ * Name: nxterm_decstbm
+ *
+ * Description:
+ *   Set the scrolling region.
+ *
+ *   A region smaller than the display cannot be scrolled by moving the
+ *   display, so everything that touches it repaints instead.  Supporting it
+ *   at all matters because a program that sets a region and is then ignored
+ *   scrolls the whole screen when it meant to scroll part of one.
+ *
+ ****************************************************************************/
+
+static void nxterm_decstbm(FAR struct nxterm_state_s *priv)
+{
+  int top    = nxterm_param(priv, 0, 1) - 1;
+  int bottom = nxterm_param(priv, 1, (int)priv->rows) - 1;
+
+  if (top < 0)
+    {
+      top = 0;
+    }
+
+  if (bottom >= (int)priv->rows)
+    {
+      bottom = (int)priv->rows - 1;
+    }
+
+  /* A region has to have at least two lines to be scrollable.  An invalid
+   * one is ignored, which is what the specification asks for.
    */
 
-  while (priv->nchars > 0)
+  if (top >= bottom)
     {
-      FAR struct nxterm_bitmap_s *bm = &priv->bm[priv->nchars - 1];
+      return;
+    }
 
-      if (bm->pos.y != priv->fpos.y || bm->pos.x < priv->fpos.x)
+  priv->strow = (uint16_t)top;
+  priv->sbrow = (uint16_t)bottom;
+
+  /* Setting the region homes the cursor */
+
+  nxterm_home(priv);
+}
+
+/****************************************************************************
+ * Name: nxterm_setmode
+ *
+ * Description:
+ *   Set or reset a mode.  Only DECTCEM, which shows and hides the cursor,
+ *   changes anything here; a full-screen program uses it to keep the cursor
+ *   from flickering across the screen while it redraws.
+ *
+ ****************************************************************************/
+
+static void nxterm_setmode(FAR struct nxterm_state_s *priv, bool set)
+{
+  if (priv->vtprivate && nxterm_rawparam(priv, 0, 0) == 25)
+    {
+      if (!set)
         {
-          break;
+          nxterm_hidecursor(priv);
         }
 
-      nxterm_hidechar(priv, bm);
-      priv->nchars--;
+      priv->cvisible = set;
     }
-
-  return OK;
 }
 
 /****************************************************************************
- * Name: nxterm_cursorleft
+ * Name: nxterm_csidispatch
  *
  * Description:
- *   Move the cursor one column left, stopping at the left margin.
+ *   Act on a complete control sequence, whose final byte is 'final'.
  *
  ****************************************************************************/
 
-static int nxterm_cursorleft(FAR struct nxterm_state_s *priv)
+static void nxterm_csidispatch(FAR struct nxterm_state_s *priv, char final)
 {
-  if (priv->fpos.x >= priv->spwidth + priv->fwidth)
+  switch (final)
     {
-      priv->fpos.x -= priv->fwidth;
-    }
-  else
-    {
-      priv->fpos.x = priv->spwidth;
-    }
+      case 'A':  /* CUU:  cursor up */
+        nxterm_gotoxy(priv, (int)priv->crow - nxterm_param(priv, 0, 1),
+                      (int)priv->ccol);
+        break;
 
-  return OK;
+      case 'B':  /* CUD:  cursor down */
+        nxterm_gotoxy(priv, (int)priv->crow + nxterm_param(priv, 0, 1),
+                      (int)priv->ccol);
+        break;
+
+      case 'C':  /* CUF:  cursor forward */
+        nxterm_gotoxy(priv, (int)priv->crow,
+                      (int)priv->ccol + nxterm_param(priv, 0, 1));
+        break;
+
+      case 'D':  /* CUB:  cursor back */
+        nxterm_gotoxy(priv, (int)priv->crow,
+                      (int)priv->ccol - nxterm_param(priv, 0, 1));
+        break;
+
+      case 'E':  /* CNL:  cursor to the start of a following line */
+        nxterm_gotoxy(priv, (int)priv->crow + nxterm_param(priv, 0, 1), 0);
+        break;
+
+      case 'F':  /* CPL:  cursor to the start of a preceding line */
+        nxterm_gotoxy(priv, (int)priv->crow - nxterm_param(priv, 0, 1), 0);
+        break;
+
+      case 'G':  /* CHA:  cursor to an absolute column */
+      case '`':  /* HPA:  the same thing under another name */
+        nxterm_gotoxy(priv, (int)priv->crow, nxterm_param(priv, 0, 1) - 1);
+        break;
+
+      case 'd':  /* VPA:  cursor to an absolute row */
+        nxterm_gotoxy(priv, nxterm_param(priv, 0, 1) - 1, (int)priv->ccol);
+        break;
+
+      case 'H':  /* CUP:  cursor to an absolute position */
+      case 'f':  /* HVP:  the same thing under another name */
+        nxterm_gotoxy(priv, nxterm_param(priv, 0, 1) - 1,
+                      nxterm_param(priv, 1, 1) - 1);
+        break;
+
+      case 'J':  /* ED:  erase in display */
+        nxterm_erasedisplay(priv, nxterm_rawparam(priv, 0, 0));
+        break;
+
+      case 'K':  /* EL:  erase in line */
+        nxterm_eraseline(priv, nxterm_rawparam(priv, 0, 0));
+        break;
+
+      case 'L':  /* IL:  insert lines */
+        nxterm_insertlines(priv, nxterm_param(priv, 0, 1));
+        break;
+
+      case 'M':  /* DL:  delete lines */
+        nxterm_deletelines(priv, nxterm_param(priv, 0, 1));
+        break;
+
+      case '@':  /* ICH:  insert characters */
+        nxterm_insertchars(priv, nxterm_param(priv, 0, 1));
+        break;
+
+      case 'P':  /* DCH:  delete characters */
+        nxterm_deletechars(priv, nxterm_param(priv, 0, 1));
+        break;
+
+      case 'X':  /* ECH:  erase characters */
+        nxterm_erasechars(priv, nxterm_param(priv, 0, 1));
+        break;
+
+      case 'S':  /* SU:  scroll the region up */
+        nxterm_scroll(priv, nxterm_param(priv, 0, 1));
+        break;
+
+      case 'T':  /* SD:  scroll the region down */
+        nxterm_scrolldown(priv, nxterm_param(priv, 0, 1));
+        break;
+
+      case 'm':  /* SGR:  select graphic rendition */
+        nxterm_sgr(priv);
+        break;
+
+      case 'r':  /* DECSTBM:  set the scrolling region */
+        nxterm_decstbm(priv);
+        break;
+
+      case 'h':  /* SM/DECSET:  set a mode */
+        nxterm_setmode(priv, true);
+        break;
+
+      case 'l':  /* RM/DECRST:  reset a mode */
+        nxterm_setmode(priv, false);
+        break;
+
+      case 's':  /* Save the cursor (the ANSI.SYS spelling) */
+        priv->savedrow  = priv->crow;
+        priv->savedcol  = priv->ccol;
+        priv->savedattr = priv->attr;
+        break;
+
+      case 'u':  /* Restore the cursor (the ANSI.SYS spelling) */
+        priv->attr = priv->savedattr;
+        nxterm_gotoxy(priv, (int)priv->savedrow, (int)priv->savedcol);
+        break;
+
+      default:
+        /* Recognised as a sequence and discarded.  Consuming it is the
+         * point:  an unhandled sequence that fell through to the display
+         * would be drawn as its own text.
+         */
+
+        break;
+    }
 }
 
 /****************************************************************************
- * Name: nxterm_cursorright
+ * Name: nxterm_csi
  *
  * Description:
- *   Move the cursor one column right, stopping at the right margin.
+ *   Collect one byte of a control sequence.
  *
  ****************************************************************************/
 
-static int nxterm_cursorright(FAR struct nxterm_state_s *priv)
+static enum nxterm_vt100state_e nxterm_csi(FAR struct nxterm_state_s *priv,
+                                           char ch)
 {
-  if (priv->fpos.x + 2 * priv->fwidth <= priv->wndo.wsize.w)
+  /* A private sequence is marked by a single byte between the bracket and
+   * the parameters.
+   */
+
+  if (priv->nparams == 0 && (ch == '?' || ch == '>' || ch == '<' ||
+                             ch == '='))
     {
-      priv->fpos.x += priv->fwidth;
+      priv->vtprivate = true;
+      return VT100_CONSUMED;
     }
 
-  return OK;
-}
-
-/****************************************************************************
- * Name: nxterm_vt100part
- *
- * Description:
- *   Return the next entry that is a partial match to the sequence.
- *
- * Input Parameters:
- *   priv - Driver data structure
- *   seqsize - The number of bytes in the sequence
- *   startndx - The index to start searching
- *
- * Returned Value:
- *   A pointer to the matching sequence in g_vt100sequences[]
- *
- ****************************************************************************/
-
-FAR const struct vt100_sequence_s *
-nxterm_vt100part(FAR struct nxterm_state_s *priv, int seqsize)
-{
-  FAR const struct vt100_sequence_s *seq;
-  int ndx;
-
-  /* Search from the beginning of the sequence table */
-
-  for (ndx = 0; g_vt100sequences[ndx].seq; ndx++)
+  if (ch >= '0' && ch <= '9')
     {
-      /* Is this sequence big enough? */
-
-      seq = &g_vt100sequences[ndx];
-      if (seq->size >= seqsize)
+      if (priv->nparams == 0)
         {
-          /* Yes... are the first 'seqsize' bytes the same */
+          priv->nparams   = 1;
+          priv->params[0] = 0;
+        }
 
-          if (memcmp(seq->seq, priv->seq, seqsize) == 0)
+      if (priv->nparams <= VT100_MAX_PARAMS)
+        {
+          FAR uint16_t *param = &priv->params[priv->nparams - 1];
+
+          /* Saturate rather than wrap.  A parameter larger than the display
+           * is clamped by whatever acts on it, and a wrapped one would not
+           * be.
+           */
+
+          if (*param < 10000)
             {
-              /* Yes.. return the match */
-
-              return seq;
+              *param = *param * 10 + (uint16_t)(ch - '0');
             }
         }
-    }
-
-  return NULL;
-}
-
-/****************************************************************************
- * Name: nxterm_vt100seq
- *
- * Description:
- *   Determine if the new sequence is a part of a supported VT100 escape
- *   sequence.
- *
- * Input Parameters:
- *   priv - Driver data structure
- *   seqsize - The number of bytes in the sequence
- *
- * Returned Value:
- *   state - See enum nxterm_vt100state_e;
- *
- ****************************************************************************/
-
-static enum nxterm_vt100state_e nxterm_vt100seq(
-                                             FAR struct nxterm_state_s *priv,
-                                             int seqsize)
-{
-  FAR const struct vt100_sequence_s *seq;
-  enum nxterm_vt100state_e ret;
-
-  /* Is there any VT100 escape sequence that matches what we have
-   * buffered so far?
-   */
-
-  seq = nxterm_vt100part(priv, seqsize);
-  if (seq)
-    {
-      /* Yes.. if the size of that escape sequence is the same as what we
-       * have buffered, then we have an exact match.
-       */
-
-      if (seq->size == seqsize)
-        {
-          /* Process the VT100 sequence */
-
-          seq->handler(priv);
-          priv->nseq = 0;
-          return VT100_PROCESSED;
-        }
-
-      /* The 'seqsize' is still smaller than the potential match(es).  We
-       * will need to collect more characters before we can make a decision.
-       * Return an indication that we have consumed the character.
-       */
 
       return VT100_CONSUMED;
     }
 
-  /* We get here on a failure.  The buffer sequence is not part of any
-   * supported VT100 escape sequence.  If seqsize > 1 then we need to
-   * return a special value because we have to re-process the buffered
-   * data.
+  if (ch == ';')
+    {
+      if (priv->nparams == 0)
+        {
+          priv->nparams   = 1;
+          priv->params[0] = 0;
+        }
+
+      /* Parameters past the last slot are dropped rather than allowed to
+       * overwrite the ones already collected.  A sequence with more than
+       * VT100_MAX_PARAMS of them carries nothing this emulation reads.
+       */
+
+      if (priv->nparams < VT100_MAX_PARAMS)
+        {
+          priv->params[priv->nparams] = 0;
+          priv->nparams++;
+        }
+
+      return VT100_CONSUMED;
+    }
+
+  /* Intermediate bytes carry no information this emulation uses */
+
+  if ((unsigned char)ch >= 0x20 && (unsigned char)ch <= 0x2f)
+    {
+      return VT100_CONSUMED;
+    }
+
+  /* A final byte ends the sequence */
+
+  if ((unsigned char)ch >= 0x40 && (unsigned char)ch <= 0x7e)
+    {
+      nxterm_csidispatch(priv, ch);
+      priv->vtstate = VT100_STATE_NONE;
+      return VT100_PROCESSED;
+    }
+
+  /* Anything else is a control character that has arrived in the middle of
+   * a sequence.  Abandon the sequence and let the character be handled on
+   * its own:  a malformed sequence must not swallow the output that
+   * follows it.
    */
 
-  ret = seqsize > 1 ? VT100_ABORT : VT100_NOT_CONSUMED;
-  return ret;
+  priv->vtstate = VT100_STATE_NONE;
+  return VT100_NOT_CONSUMED;
+}
+
+/****************************************************************************
+ * Name: nxterm_escape
+ *
+ * Description:
+ *   Act on the byte after an escape, which says what kind of sequence this
+ *   is.
+ *
+ ****************************************************************************/
+
+static enum nxterm_vt100state_e
+nxterm_escape(FAR struct nxterm_state_s *priv, char ch)
+{
+  priv->vtstate = VT100_STATE_NONE;
+
+  switch (ch)
+    {
+      case '[':  /* CSI:  a control sequence with parameters follows */
+        priv->vtstate   = VT100_STATE_CSI;
+        priv->nparams   = 0;
+        priv->vtprivate = false;
+        return VT100_CONSUMED;
+
+      case '(':  /* Character set designation, whose argument is discarded */
+      case ')':
+      case '*':
+      case '+':
+      case '#':
+        priv->vtstate = VT100_STATE_DISCARD;
+        return VT100_CONSUMED;
+
+      case '7':  /* DECSC:  save the cursor */
+        priv->savedrow  = priv->crow;
+        priv->savedcol  = priv->ccol;
+        priv->savedattr = priv->attr;
+        break;
+
+      case '8':  /* DECRC:  restore the cursor */
+      case 'u':  /* Not a VT100 sequence, but termcurses ends its window
+                  * size probe with it and means DECRC by it.
+                  */
+        priv->attr = priv->savedattr;
+        nxterm_gotoxy(priv, (int)priv->savedrow, (int)priv->savedcol);
+        break;
+
+      case 'D':  /* IND:  index */
+        priv->wrap = false;
+        nxterm_index(priv);
+        break;
+
+      case 'M':  /* RI:  reverse index */
+        priv->wrap = false;
+        nxterm_revindex(priv);
+        break;
+
+      case 'E':  /* NEL:  next line */
+        priv->wrap = false;
+        priv->ccol = 0;
+        nxterm_index(priv);
+        break;
+
+      case 'c':  /* RIS:  reset to the initial state */
+        nxterm_gridreset(priv);
+        nxterm_clear(priv);
+        break;
+
+      default:
+        /* Everything else -- keypad modes among them -- is recognised as a
+         * two byte sequence and discarded.
+         */
+
+        break;
+    }
+
+  return VT100_PROCESSED;
 }
 
 /****************************************************************************
@@ -298,7 +498,7 @@ static enum nxterm_vt100state_e nxterm_vt100seq(
  * Name: nxterm_vt100
  *
  * Description:
- *   Test if the newly received byte is part of a VT100 escape sequence
+ *   Offer one byte of the output stream to the terminal emulation.
  *
  * Input Parameters:
  *   priv - Driver data structure
@@ -312,52 +512,32 @@ static enum nxterm_vt100state_e nxterm_vt100seq(
 enum nxterm_vt100state_e nxterm_vt100(FAR struct nxterm_state_s *priv,
                                       char ch)
 {
-  enum nxterm_vt100state_e ret;
-  int seqsize;
+  DEBUGASSERT(priv != NULL);
 
-  DEBUGASSERT(priv && priv->nseq < VT100_MAX_SEQUENCE);
-
-  /* If we have no buffered characters, then 'ch' must be the first character
-   * of an escape sequence.
-   */
-
-  if (priv->nseq < 1)
+  switch (priv->vtstate)
     {
-      /* The first character of an escape sequence must be an an escape
-       * character (duh).
-       */
-
-      if (ch != ASCII_ESC)
+      case VT100_STATE_NONE:
+      default:
         {
-          return VT100_NOT_CONSUMED;
+          if (ch != ASCII_ESC)
+            {
+              return VT100_NOT_CONSUMED;
+            }
+
+          priv->vtstate = VT100_STATE_ESC;
+          return VT100_CONSUMED;
         }
 
-      /* Add the escape character to the buffer but don't bother with any
-       * further checking.
-       */
+      case VT100_STATE_ESC:
+        return nxterm_escape(priv, ch);
 
-      priv->seq[0] = ASCII_ESC;
-      priv->nseq   = 1;
-      return VT100_CONSUMED;
+      case VT100_STATE_CSI:
+        return nxterm_csi(priv, ch);
+
+      case VT100_STATE_DISCARD:
+        {
+          priv->vtstate = VT100_STATE_NONE;
+          return VT100_PROCESSED;
+        }
     }
-
-  /* Temporarily add the next character to the buffer */
-
-  seqsize = priv->nseq;
-  priv->seq[seqsize] = ch;
-
-  /* Then check if this sequence is part of an a valid escape sequence */
-
-  seqsize++;
-  ret = nxterm_vt100seq(priv, seqsize);
-  if (ret == VT100_CONSUMED)
-    {
-      /* The newly added character is indeed part of a VT100 escape sequence
-       * (which is still incomplete).  Keep it in the buffer.
-       */
-
-      priv->nseq = seqsize;
-    }
-
-  return ret;
 }

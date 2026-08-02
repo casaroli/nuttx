@@ -30,6 +30,7 @@
 #include <nuttx/config.h>
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <termios.h>
 
 #include <nuttx/mutex.h>
@@ -45,11 +46,6 @@
  ****************************************************************************/
 
 /* NxTerm Definitions *******************************************************/
-
-/* Bitmap flags */
-
-#define BMFLAGS_NOGLYPH    (1 << 0) /* No glyph available, use space */
-#define BM_ISSPACE(bm)     (((bm)->flags & BMFLAGS_NOGLYPH) != 0)
 
 /* Device path formats */
 
@@ -73,9 +69,35 @@
 #  define NXTERM_HAVE_MOVE 1
 #endif
 
-/* VT100 escape sequence processing */
+/* Character cell attributes.
+ *
+ * Only reverse video is represented.  It is the one attribute that can be
+ * rendered without a second font: the glyph cache bakes the colours into
+ * every glyph it renders, so a reverse-video glyph is simply one taken from
+ * a second cache connected with the foreground and background swapped.
+ * Bold, underline and blink would each need a font that does not exist here
+ * and are accepted and discarded by the SGR handler.
+ */
 
-#define VT100_MAX_SEQUENCE 3
+#define NXTERM_ATTR_REVERSE (1 << 0)
+
+/* The width of a tab stop, in columns */
+
+#define NXTERM_TABSIZE     8
+
+/* VT100 escape sequence parsing.
+ *
+ * The parser is a state machine rather than a table of complete sequences:
+ * a CSI sequence carries a variable number of numeric parameters, so the
+ * set of byte strings to be recognised is unbounded.
+ */
+
+#define VT100_MAX_PARAMS   8   /* Numeric parameters retained per sequence */
+
+#define VT100_STATE_NONE    0  /* Not in an escape sequence */
+#define VT100_STATE_ESC     1  /* Saw ESC, waiting for the sequence type */
+#define VT100_STATE_CSI     2  /* Saw "ESC [", collecting parameters */
+#define VT100_STATE_DISCARD 3  /* Consuming and dropping one more byte */
 
 /* States of the escape sequence detector used to suppress the local echo
  * of escape sequences typed by the user.  Only the input side uses this;
@@ -96,10 +118,9 @@
 
 enum nxterm_vt100state_e
 {
-  VT100_NOT_CONSUMED = 0, /* Character is not part of a VT100 escape sequence */
-  VT100_CONSUMED,         /* Character was consumed as part of the VT100 escape processing */
-  VT100_PROCESSED,        /* The full VT100 escape sequence was processed */
-  VT100_ABORT             /* Invalid/unsupported character in buffered escape sequence */
+  VT100_NOT_CONSUMED = 0, /* Character is not part of an escape sequence */
+  VT100_CONSUMED,         /* Character was consumed, sequence incomplete */
+  VT100_PROCESSED         /* The full escape sequence was processed */
 };
 
 /* Describes on set of console window callbacks */
@@ -122,13 +143,18 @@ struct nxterm_operations_s
                 unsigned int stride);
 };
 
-/* Describes on character on the display */
+/* One character cell of the display.
+ *
+ * The terminal is a rows x cols array of these.  That is what lets a
+ * character be written *at* a position, replacing whatever was there, which
+ * is the whole of what a full-screen program needs and what an append-only
+ * list of glyphs cannot express.
+ */
 
-struct nxterm_bitmap_s
+struct nxterm_cell_s
 {
-  uint8_t code;                        /* Character code */
-  uint8_t flags;                       /* See BMFLAGS_* */
-  struct nxgl_point_s pos;             /* Character position */
+  uint8_t code;                              /* Character code, ' ' if blank */
+  uint8_t attr;                              /* See NXTERM_ATTR_* */
 };
 
 /* Describes the state of one NX console driver */
@@ -148,16 +174,35 @@ struct nxterm_state_s
 #endif
   uint8_t minor;                             /* Device minor number */
 
-  /* Text output support */
+  /* Font geometry.  The font is fixed width, which is what makes a cell
+   * address reducible to a pixel address by multiplication.
+   */
 
   uint8_t fheight;                           /* Max height of a font in pixels */
   uint8_t fwidth;                            /* Max width of a font in pixels */
-  uint8_t spwidth;                           /* The width of a space */
+  uint8_t lineheight;                        /* fheight + line separation */
 
-  uint16_t maxchars;                         /* Size of the bm[] array */
-  uint16_t nchars;                           /* Number of chars in the bm[] array */
+  /* The character grid */
 
-  struct nxgl_point_s fpos;                  /* Next display position */
+  uint16_t rows;                             /* Number of character rows */
+  uint16_t cols;                             /* Number of character columns */
+  FAR struct nxterm_cell_s *cells;           /* rows x cols cells */
+
+  /* Cursor and terminal state */
+
+  uint16_t crow;                             /* Cursor row */
+  uint16_t ccol;                             /* Cursor column */
+  uint16_t savedrow;                         /* Cursor row saved by DECSC */
+  uint16_t savedcol;                         /* Cursor column saved by DECSC */
+  uint8_t  savedattr;                        /* Attributes saved by DECSC */
+  uint16_t strow;                            /* Scrolling region, first row */
+  uint16_t sbrow;                            /* Scrolling region, last row */
+  uint8_t  attr;                             /* Attributes for new characters */
+  bool     wrap;                             /* Deferred wrap is pending */
+  bool     cvisible;                         /* Cursor is not hidden by DECTCEM */
+  bool     cshown;                           /* Cursor is drawn on the display */
+  uint16_t cdrawrow;                         /* Row the cursor is drawn at */
+  uint16_t cdrawcol;                         /* Column the cursor is drawn at */
 
   /* A redraw that arrived while the display lock was held.
    *
@@ -167,26 +212,26 @@ struct nxterm_state_s
    */
 
   struct nxgl_rect_s dmgrect;                /* Region still to be drawn */
-  bool dmgpending;                           /* dmgrect holds something */
+  bool     dmgpending;                       /* dmgrect holds something */
 
-  /* VT100 escape sequence processing */
+  /* VT100 escape sequence parsing */
 
-  char seq[VT100_MAX_SEQUENCE];              /* Buffered characters */
-  uint8_t nseq;                              /* Number of buffered characters */
+  uint8_t  vtstate;                          /* See VT100_STATE_* */
+  uint8_t  nparams;                          /* Number of parameters seen */
+  bool     vtprivate;                        /* Sequence began "ESC [ ?" */
+  uint16_t params[VT100_MAX_PARAMS];         /* The parameters themselves */
 
   /* Font cache data storage */
 
   FCACHE fcache;                             /* Font cache handle */
 
-  /* A second cache with the colours swapped, used to draw the character the
-   * cursor is sitting on.  That is what makes the cursor a block that the
-   * text shows through rather than one that hides it, and a cache is the
-   * only way to get it: glyphs are rendered with their colours baked in.
+  /* A second cache with the colours swapped, used for reverse video.  That
+   * is what draws the block cursor as something the text shows through
+   * rather than something that hides it, and a cache is the only way to get
+   * it: glyphs are rendered with their colours baked in.
    */
 
   FCACHE rcache;
-  struct nxterm_bitmap_s cursor;
-  struct nxterm_bitmap_s bm[CONFIG_NXTERM_MXCHARS];
 
   /* Keyboard input support */
 
@@ -248,6 +293,25 @@ struct nxterm_state_s
 extern const struct file_operations g_nxterm_drvrops;
 
 /****************************************************************************
+ * Inline Functions
+ ****************************************************************************/
+
+/****************************************************************************
+ * Name: nxterm_cellat
+ *
+ * Description:
+ *   The cell at a row and column.  Every access to the grid goes through
+ *   here, so there is one place that knows how it is laid out.
+ *
+ ****************************************************************************/
+
+static inline FAR struct nxterm_cell_s *
+nxterm_cellat(FAR struct nxterm_state_s *priv, int row, int col)
+{
+  return &priv->cells[(unsigned int)row * priv->cols + (unsigned int)col];
+}
+
+/****************************************************************************
  * Public Function Prototypes
  ****************************************************************************/
 
@@ -284,29 +348,49 @@ int nxterm_resize(NXTERM handle, FAR const struct nxgl_size_s *size);
 enum nxterm_vt100state_e nxterm_vt100(FAR struct nxterm_state_s *priv,
                                       char ch);
 
+/* Grid allocation and geometry */
+
+int nxterm_gridalloc(FAR struct nxterm_state_s *priv);
+void nxterm_gridfree(FAR struct nxterm_state_s *priv);
+void nxterm_gridreset(FAR struct nxterm_state_s *priv);
+
+/* Painting.  Cell contents are the only truth; these put what the grid says
+ * onto the glass.
+ */
+
+void nxterm_paintcell(FAR struct nxterm_state_s *priv, int row, int col,
+                      FAR const struct nxgl_rect_s *clip, bool fillbg);
+void nxterm_paintarea(FAR struct nxterm_state_s *priv,
+                      int row1, int col1, int row2, int col2,
+                      FAR const struct nxgl_rect_s *clip);
+
 /* Generic text display helpers */
 
 void nxterm_home(FAR struct nxterm_state_s *priv);
 void nxterm_clear(FAR struct nxterm_state_s *priv);
-void nxterm_newline(FAR struct nxterm_state_s *priv);
-FAR const
-struct nxterm_bitmap_s *nxterm_addchar(FAR struct nxterm_state_s *priv,
-                                       uint8_t ch);
-int nxterm_hidechar(FAR struct nxterm_state_s *priv,
-                    FAR const struct nxterm_bitmap_s *bm);
-int nxterm_backspace(FAR struct nxterm_state_s *priv);
-void nxterm_fillchar(FAR struct nxterm_state_s *priv,
-                     FAR const struct nxgl_rect_s *rect,
-                     FAR const struct nxterm_bitmap_s *bm);
+void nxterm_gotoxy(FAR struct nxterm_state_s *priv, int row, int col);
+void nxterm_blank(FAR struct nxterm_state_s *priv, int row,
+                  int col1, int col2);
+void nxterm_index(FAR struct nxterm_state_s *priv);
+void nxterm_revindex(FAR struct nxterm_state_s *priv);
 
 void nxterm_putc(FAR struct nxterm_state_s *priv, uint8_t ch);
-void nxterm_reversechar(FAR struct nxterm_state_s *priv,
-                        FAR const struct nxterm_bitmap_s *bm);
 void nxterm_showcursor(FAR struct nxterm_state_s *priv);
 void nxterm_hidecursor(FAR struct nxterm_state_s *priv);
 
+/* Editing operations used by the VT100 emulation */
+
+void nxterm_erasedisplay(FAR struct nxterm_state_s *priv, int mode);
+void nxterm_eraseline(FAR struct nxterm_state_s *priv, int mode);
+void nxterm_erasechars(FAR struct nxterm_state_s *priv, int nchars);
+void nxterm_insertchars(FAR struct nxterm_state_s *priv, int nchars);
+void nxterm_deletechars(FAR struct nxterm_state_s *priv, int nchars);
+void nxterm_insertlines(FAR struct nxterm_state_s *priv, int nlines);
+void nxterm_deletelines(FAR struct nxterm_state_s *priv, int nlines);
+
 /* Scrolling support */
 
-void nxterm_scroll(FAR struct nxterm_state_s *priv, int scrollheight);
+void nxterm_scroll(FAR struct nxterm_state_s *priv, int nlines);
+void nxterm_scrolldown(FAR struct nxterm_state_s *priv, int nlines);
 
 #endif /* __GRAPHICS_NXTERM_NXTERM_H */

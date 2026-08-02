@@ -250,72 +250,15 @@ static ssize_t nxterm_write(FAR struct file *filep, FAR const char *buffer,
 
       ch = *buffer++;
 
-      /* Check if this character is part of a VT100 escape sequence */
+      /* Offer it to the terminal emulation first.  What it does not claim
+       * is text to be drawn.
+       */
 
-      do
+      state = nxterm_vt100(priv, ch);
+      if (state == VT100_NOT_CONSUMED)
         {
-          /* Is the character part of a VT100 escape sequence? */
-
-          state = nxterm_vt100(priv, ch);
-          switch (state)
-            {
-              /* Character is not part of a VT100 escape sequence (and no
-               * characters are buffer.
-               */
-
-              default:
-              case VT100_NOT_CONSUMED:
-                {
-                  /* We can output the character to the window */
-
-                  nxterm_putc(priv, (uint8_t)ch);
-                }
-              break;
-
-            /* The full VT100 escape sequence was processed (and the new
-             * character was consumed)
-             */
-
-            case VT100_PROCESSED:
-
-            /* Character was consumed as part of the VT100 escape processing
-             * (but the escape sequence is still incomplete.
-             */
-
-            case VT100_CONSUMED:
-              {
-                /* Do nothing... the VT100 logic owns the character */
-              }
-              break;
-
-            /* Invalid/unsupported character in escape sequence */
-
-            case VT100_ABORT:
-              {
-                int i;
-
-                /* Add the first unhandled character to the window */
-
-                nxterm_putc(priv, (uint8_t)priv->seq[0]);
-
-                /* Move all buffer characters down one */
-
-                for (i = 1; i < priv->nseq; i++)
-                  {
-                    priv->seq[i - 1] = priv->seq[i];
-                  }
-
-                priv->nseq--;
-
-                /* Then loop again and check if what remains is part of a
-                 * VT100 escape sequence.  We could speed this up by
-                 * checking if priv->seq[0] == ASCII_ESC.
-                 */
-              }
-              break;
-            }
+          nxterm_putc(priv, (uint8_t)ch);
         }
-      while (state == VT100_ABORT);
     }
 
   /* Show the cursor at its new position */

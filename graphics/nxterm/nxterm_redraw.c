@@ -46,17 +46,30 @@
  * Name: nxterm_dodraw
  *
  * Description:
- *   Draw a rectangular region again.  The caller must hold priv->lock.
+ *   Draw the cells a rectangle covers.  The caller must hold priv->lock.
+ *
+ *   The grid is the whole of what the terminal remembers, so a redraw is
+ *   simply the cells the damaged rectangle covers, drawn again.  The cursor
+ *   comes back with them:  it is an attribute of the cell it sits on rather
+ *   than a separate object, so nothing here has to know about it.
  *
  ****************************************************************************/
 
 static void nxterm_dodraw(FAR struct nxterm_state_s *priv,
                           FAR const struct nxgl_rect_s *rect)
 {
+  int row1;
+  int row2;
+  int col1;
+  int col2;
+  int row;
+  int col;
   int ret;
-  int i;
 
-  /* Fill the rectangular region with the window background color */
+  /* Fill the rectangular region with the window background color.  This
+   * covers the whole of it, including any strip beyond the last row or
+   * column that no cell describes.
+   */
 
   ret = priv->ops->fill(priv, rect, priv->wndo.wcolor);
   if (ret < 0)
@@ -64,13 +77,48 @@ static void nxterm_dodraw(FAR struct nxterm_state_s *priv,
       gerr("ERROR: fill failed: %d\n", get_errno());
     }
 
-  /* Then redraw each character on the display (Only the characters within
-   * the rectangle will actually be redrawn).
+  if (priv->cells == NULL)
+    {
+      return;
+    }
+
+  /* The cells the damaged rectangle touches */
+
+  row1 = rect->pt1.y / priv->lineheight;
+  row2 = rect->pt2.y / priv->lineheight;
+  col1 = rect->pt1.x / priv->fwidth;
+  col2 = rect->pt2.x / priv->fwidth;
+
+  if (row1 < 0)
+    {
+      row1 = 0;
+    }
+
+  if (col1 < 0)
+    {
+      col1 = 0;
+    }
+
+  if (row2 >= (int)priv->rows)
+    {
+      row2 = (int)priv->rows - 1;
+    }
+
+  if (col2 >= (int)priv->cols)
+    {
+      col2 = (int)priv->cols - 1;
+    }
+
+  /* The background has just been laid down, so only the glyphs are left to
+   * draw.
    */
 
-  for (i = 0; i < priv->nchars; i++)
+  for (row = row1; row <= row2; row++)
     {
-      nxterm_fillchar(priv, rect, &priv->bm[i]);
+      for (col = col1; col <= col2; col++)
+        {
+          nxterm_paintcell(priv, row, col, rect, false);
+        }
     }
 }
 

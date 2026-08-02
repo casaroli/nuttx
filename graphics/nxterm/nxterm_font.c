@@ -31,8 +31,6 @@
 #include <errno.h>
 #include <nuttx/debug.h>
 
-#include <nuttx/kmalloc.h>
-
 #include "nxterm.h"
 
 /****************************************************************************
@@ -40,86 +38,48 @@
  ****************************************************************************/
 
 /****************************************************************************
- * Name: nxterm_fontsize
+ * Name: nxterm_effattr
+ *
+ * Description:
+ *   The attributes a cell is to be drawn with, which is what the cell holds
+ *   except where the cursor is sitting on it.
+ *
+ *   Carrying the cursor here rather than as a separate object is what makes
+ *   a redraw arriving from the NX server -- which knows nothing about a
+ *   cursor -- put the block back where it belongs.
+ *
  ****************************************************************************/
 
-static int nxterm_fontsize(FAR struct nxterm_state_s *priv, uint8_t ch,
-                           FAR struct nxgl_size_s *size)
+static uint8_t nxterm_effattr(FAR struct nxterm_state_s *priv,
+                              int row, int col)
 {
-  FAR const struct nx_fontbitmap_s *fbm;
-  NXHANDLE hfont;
+  uint8_t attr = nxterm_cellat(priv, row, col)->attr;
 
-  /* Get the handle of the font managed by the font cache */
-
-  hfont = nxf_cache_getfonthandle(priv->fcache);
-  DEBUGASSERT(hfont != NULL);
-
-  /* Does the character code map to a font? */
-
-  fbm = nxf_getbitmap(hfont, ch);
-  if (fbm)
+  if (priv->cshown && row == (int)priv->cdrawrow &&
+      col == (int)priv->cdrawcol)
     {
-      /* Yes.. return the font size */
-
-      size->w = fbm->metric.width + fbm->metric.xoffset;
-      size->h = fbm->metric.height + fbm->metric.yoffset;
-      return OK;
+      attr ^= NXTERM_ATTR_REVERSE;
     }
 
-  return -ENOENT;
+  return attr;
 }
 
 /****************************************************************************
- * Name: nxterm_fillspace
+ * Name: nxterm_cellbounds
+ *
+ * Description:
+ *   The pixel rectangle covered by a run of cells on one row.
+ *
  ****************************************************************************/
 
-static void nxterm_fillspace(FAR struct nxterm_state_s *priv,
-                             FAR const struct nxgl_rect_s *rect,
-                             FAR const struct nxterm_bitmap_s *bm)
+static void nxterm_cellbounds(FAR struct nxterm_state_s *priv,
+                              int row, int col1, int col2,
+                              FAR struct nxgl_rect_s *rect)
 {
-#if 0 /* Not necessary now, but perhaps in the future with VT100 support. */
-  struct nxgl_rect_s bounds;
-  struct nxgl_rect_s intersection;
-  int ret;
-
-  /* Construct a bounding box for the glyph */
-
-  bounds.pt1.x = bm->pos.x;
-  bounds.pt1.y = bm->pos.y;
-  bounds.pt2.x = bm->pos.x + priv->spwidth - 1;
-  bounds.pt2.y = bm->pos.y + priv->fheight - 1;
-
-# /* Should this also be clipped to a region in the window? */
-
-  if (rect != NULL)
-    {
-      /* Get the intersection of the redraw region and the character bitmap */
-
-      nxgl_rectintersect(&intersection, rect, &bounds);
-    }
-  else
-    {
-      /* The intersection is the whole glyph */
-
-      nxgl_rectcopy(&intersection, &bounds);
-    }
-
-  /* Check for empty intersections */
-
-  if (!nxgl_nullrect(&intersection))
-    {
-      /* Fill the bitmap region with the background color, erasing the
-       * character from the display.  NOTE:  This region might actually
-       * be obscured... NX will handle that case.
-       */
-
-      ret = priv->ops->fill(priv, &intersection, priv->wndo.wcolor);
-      if (ret < 0)
-        {
-          gerr("ERROR: fill() method failed: %d\n", ret);
-        }
-    }
-#endif
+  rect->pt1.x = (nxgl_coord_t)(col1 * priv->fwidth);
+  rect->pt1.y = (nxgl_coord_t)(row * priv->lineheight);
+  rect->pt2.x = (nxgl_coord_t)((col2 + 1) * priv->fwidth - 1);
+  rect->pt2.y = (nxgl_coord_t)((row + 1) * priv->lineheight - 1);
 }
 
 /****************************************************************************
@@ -127,311 +87,309 @@ static void nxterm_fillspace(FAR struct nxterm_state_s *priv,
  ****************************************************************************/
 
 /****************************************************************************
- * Name: nxterm_addchar
+ * Name: nxterm_paintcell
  *
  * Description:
- *   This is part of the nxterm_putc logic.  It creates and positions a
- *   the character and renders (or reuses) a glyph for font.
+ *   Draw one cell of the grid.
+ *
+ *   'fillbg' says whether the cell's background has to be laid down first.
+ *   It can be skipped when the caller knows the cell already stands on the
+ *   window background -- either because it has just filled a larger region
+ *   containing this cell, or because the cell being overwritten was blank.
+ *   That is not a micro-optimisation: skipping it is what keeps ordinary
+ *   typing at one drawing operation per character, which is what it cost
+ *   before there was a grid at all.
+ *
+ *   A cell in reverse video is always filled, since its background is not
+ *   the window background.
+ *
+ * Input Parameters:
+ *   priv   - Driver state
+ *   row    - The cell row
+ *   col    - The cell column
+ *   clip   - Restrict drawing to this rectangle, or NULL for no clipping
+ *   fillbg - Lay down the cell background before the glyph
  *
  ****************************************************************************/
 
-FAR const struct nxterm_bitmap_s *
-  nxterm_addchar(FAR struct nxterm_state_s *priv, uint8_t ch)
+void nxterm_paintcell(FAR struct nxterm_state_s *priv, int row, int col,
+                      FAR const struct nxgl_rect_s *clip, bool fillbg)
 {
-  FAR struct nxterm_bitmap_s *bm = NULL;
   FAR const struct nxfonts_glyph_s *glyph;
-
-  /* Is there space for another character on the display? */
-
-  if (priv->nchars < priv->maxchars)
-    {
-      /* Yes, setup the bitmap information */
-
-      bm        = &priv->bm[priv->nchars];
-      bm->code  = ch;
-      bm->flags = 0;
-      bm->pos.x = priv->fpos.x;
-      bm->pos.y = priv->fpos.y;
-
-      /* Find (or create) the matching glyph */
-
-      glyph = nxf_cache_getglyph(priv->fcache, ch);
-      if (!glyph)
-        {
-          /* No, there is no font for this code.
-           * Just mark this as a space.
-           */
-
-          bm->flags |= BMFLAGS_NOGLYPH;
-
-          /* Set up the next character position */
-
-          priv->fpos.x += priv->spwidth;
-        }
-      else
-        {
-          /* Set up the next character position */
-
-          priv->fpos.x += glyph->width;
-        }
-
-      /* Success.. increment nchars to retain this character */
-
-      priv->nchars++;
-    }
-
-  return bm;
-}
-
-/****************************************************************************
- * Name: nxterm_hidechar
- *
- * Description:
- *   Erase a character from the window.
- *
- ****************************************************************************/
-
-int nxterm_hidechar(FAR struct nxterm_state_s *priv,
-                    FAR const struct nxterm_bitmap_s *bm)
-{
+  FAR struct nxterm_cell_s *cell;
   struct nxgl_rect_s bounds;
-  struct nxgl_size_s fsize;
+  struct nxgl_rect_s rect;
+  bool reverse;
+  uint8_t attr;
   int ret;
 
-  /* Get the size of the font glyph.  If nxterm_fontsize, then the
-   * character will have been rendered as a space, and no display
-   * modification is required (not an error).
-   */
+  DEBUGASSERT(row >= 0 && row < (int)priv->rows);
+  DEBUGASSERT(col >= 0 && col < (int)priv->cols);
 
-  ret = nxterm_fontsize(priv, bm->code, &fsize);
-  if (ret < 0)
+  cell    = nxterm_cellat(priv, row, col);
+  attr    = nxterm_effattr(priv, row, col);
+  reverse = (attr & NXTERM_ATTR_REVERSE) != 0;
+
+  nxterm_cellbounds(priv, row, col, col, &bounds);
+
+  if (clip != NULL)
     {
-      /* It was rendered as a space. */
-
-      return OK;
+      nxgl_rectintersect(&rect, clip, &bounds);
+      if (nxgl_nullrect(&rect))
+        {
+          return;
+        }
+    }
+  else
+    {
+      nxgl_rectcopy(&rect, &bounds);
     }
 
-  /* Construct a bounding box for the glyph */
+  /* Lay down the background where one is needed */
 
-  bounds.pt1.x = bm->pos.x;
-  bounds.pt1.y = bm->pos.y;
-  bounds.pt2.x = bm->pos.x + fsize.w - 1;
-  bounds.pt2.y = bm->pos.y + fsize.h - 1;
+  if (reverse)
+    {
+      ret = priv->ops->fill(priv, &rect, priv->wndo.fcolor);
+      if (ret < 0)
+        {
+          gerr("ERROR: fill failed: %d\n", get_errno());
+        }
+    }
+  else if (fillbg)
+    {
+      ret = priv->ops->fill(priv, &rect, priv->wndo.wcolor);
+      if (ret < 0)
+        {
+          gerr("ERROR: fill failed: %d\n", get_errno());
+        }
+    }
 
-  /* Fill the bitmap region with the background color, erasing the
-   * character from the display.  NOTE:  This region might actually
-   * be obscured... NX will handle that case.
+  /* A blank cell is the background and nothing else */
+
+  if (cell->code == ' ')
+    {
+      return;
+    }
+
+  /* Find (or render) the glyph.  The colours are baked into it, so reverse
+   * video comes from the second cache rather than from anything done here.
    */
 
-  return priv->ops->fill(priv, &bounds, priv->wndo.wcolor);
+  glyph = nxf_cache_getglyph(reverse ? priv->rcache : priv->fcache,
+                             cell->code);
+  if (glyph == NULL)
+    {
+      /* There is no bitmap for this code.  It has already been drawn as a
+       * blank cell, which is what a missing glyph should look like.
+       */
+
+      return;
+    }
+
+  /* The glyph may be narrower or shorter than the cell.  Clip to what it
+   * actually covers so the rest of the cell keeps the background just
+   * drawn.
+   */
+
+  bounds.pt2.x = bounds.pt1.x + glyph->width - 1;
+  bounds.pt2.y = bounds.pt1.y + glyph->height - 1;
+
+  if (clip != NULL)
+    {
+      nxgl_rectintersect(&rect, clip, &bounds);
+    }
+  else
+    {
+      nxgl_rectcopy(&rect, &bounds);
+    }
+
+  if (!nxgl_nullrect(&rect))
+    {
+      FAR const void *src = (FAR const void *)glyph->bitmap;
+
+      ret = priv->ops->bitmap(priv, &rect, &src, &bounds.pt1,
+                              (unsigned int)glyph->stride);
+      if (ret < 0)
+        {
+          gerr("ERROR: bitmap failed: %d\n", get_errno());
+        }
+    }
 }
 
 /****************************************************************************
- * Name: nxterm_backspace
+ * Name: nxterm_paintarea
  *
  * Description:
- *   Remove the last character from the window.
+ *   Draw a rectangular range of cells, inclusive of both corners.
+ *
+ *   The background of the whole range is laid down in one operation and the
+ *   glyphs are then drawn over it, which costs one fill however many cells
+ *   are involved.
+ *
+ * Input Parameters:
+ *   priv - Driver state
+ *   row1, col1 - The first cell of the range
+ *   row2, col2 - The last cell of the range
+ *   clip - Restrict drawing to this rectangle, or NULL for no clipping
  *
  ****************************************************************************/
 
-int nxterm_backspace(FAR struct nxterm_state_s *priv)
+void nxterm_paintarea(FAR struct nxterm_state_s *priv,
+                      int row1, int col1, int row2, int col2,
+                      FAR const struct nxgl_rect_s *clip)
 {
-  FAR struct nxterm_bitmap_s *bm;
-  int ndx;
-  int ret = -ENOENT;
+  struct nxgl_rect_s bounds;
+  struct nxgl_rect_s rect;
+  int row;
+  int col;
+  int ret;
 
-  /* Is there a character on the display? */
-
-  if (priv->nchars > 0)
+  if (row1 < 0)
     {
-      /* Yes.. Get the index to the last bitmap on the display */
-
-      ndx = priv->nchars - 1;
-      bm  = &priv->bm[ndx];
-
-      /* Erase the character from the display */
-
-      ret = nxterm_hidechar(priv, bm);
-
-      /* The current position to the location where the last character was */
-
-      priv->fpos.x = bm->pos.x;
-      priv->fpos.y = bm->pos.y;
-
-      /* Decrement nchars to discard this character */
-
-      priv->nchars = ndx;
+      row1 = 0;
     }
 
-  return ret;
+  if (col1 < 0)
+    {
+      col1 = 0;
+    }
+
+  if (row2 >= (int)priv->rows)
+    {
+      row2 = (int)priv->rows - 1;
+    }
+
+  if (col2 >= (int)priv->cols)
+    {
+      col2 = (int)priv->cols - 1;
+    }
+
+  if (row1 > row2 || col1 > col2)
+    {
+      return;
+    }
+
+  /* The bounding box of the whole range */
+
+  nxterm_cellbounds(priv, row1, col1, col2, &bounds);
+  bounds.pt2.y = (nxgl_coord_t)((row2 + 1) * priv->lineheight - 1);
+
+  if (clip != NULL)
+    {
+      nxgl_rectintersect(&rect, clip, &bounds);
+      if (nxgl_nullrect(&rect))
+        {
+          return;
+        }
+    }
+  else
+    {
+      nxgl_rectcopy(&rect, &bounds);
+    }
+
+  ret = priv->ops->fill(priv, &rect, priv->wndo.wcolor);
+  if (ret < 0)
+    {
+      gerr("ERROR: fill failed: %d\n", get_errno());
+    }
+
+  /* Then the glyphs, on a background that has already been laid down */
+
+  for (row = row1; row <= row2; row++)
+    {
+      for (col = col1; col <= col2; col++)
+        {
+          nxterm_paintcell(priv, row, col, &rect, false);
+        }
+    }
+}
+
+/****************************************************************************
+ * Name: nxterm_blank
+ *
+ * Description:
+ *   Return a run of cells on one row to blank, in the grid only.  The
+ *   caller is responsible for painting what it has changed.
+ *
+ ****************************************************************************/
+
+void nxterm_blank(FAR struct nxterm_state_s *priv, int row,
+                  int col1, int col2)
+{
+  FAR struct nxterm_cell_s *cell;
+  int col;
+
+  if (row < 0 || row >= (int)priv->rows)
+    {
+      return;
+    }
+
+  if (col1 < 0)
+    {
+      col1 = 0;
+    }
+
+  if (col2 >= (int)priv->cols)
+    {
+      col2 = (int)priv->cols - 1;
+    }
+
+  for (col = col1; col <= col2; col++)
+    {
+      cell       = nxterm_cellat(priv, row, col);
+      cell->code = ' ';
+      cell->attr = 0;
+    }
 }
 
 /****************************************************************************
  * Name: nxterm_home
  *
  * Description:
- *   Set the next character position to the top-left corner of the display.
+ *   Set the cursor to the top-left corner of the display.
  *
  ****************************************************************************/
 
 void nxterm_home(FAR struct nxterm_state_s *priv)
 {
-  /* The first character is one space from the left */
-
-  priv->fpos.x = priv->spwidth;
-
-  /* And CONFIG_NXTERM_LINESEPARATION lines from the top */
-
-  priv->fpos.y = CONFIG_NXTERM_LINESEPARATION;
+  nxterm_gotoxy(priv, 0, 0);
 }
 
 /****************************************************************************
- * Name: nxterm_newline
+ * Name: nxterm_gotoxy
  *
  * Description:
- *   Set the next character position to the beginning of the next line.
+ *   Move the cursor to an absolute position, clamped to the display.  This
+ *   is the operation the whole grid exists for.
  *
  ****************************************************************************/
 
-void nxterm_newline(FAR struct nxterm_state_s *priv)
+void nxterm_gotoxy(FAR struct nxterm_state_s *priv, int row, int col)
 {
-  /* Carriage return: The first character is one space from the left */
+  if (row < 0)
+    {
+      row = 0;
+    }
+  else if (row >= (int)priv->rows)
+    {
+      row = (int)priv->rows - 1;
+    }
 
-  priv->fpos.x = priv->spwidth;
+  if (col < 0)
+    {
+      col = 0;
+    }
+  else if (col >= (int)priv->cols)
+    {
+      col = (int)priv->cols - 1;
+    }
 
-  /* Linefeed: Down the max font height + CONFIG_NXTERM_LINESEPARATION */
+  priv->crow = (uint16_t)row;
+  priv->ccol = (uint16_t)col;
 
-  priv->fpos.y += (priv->fheight + CONFIG_NXTERM_LINESEPARATION);
-}
-
-/****************************************************************************
- * Name: nxterm_fillchar
- *
- * Description:
- *   This implements the character display.  It is part of the nxterm_putc
- *   operation but may also be used when redrawing an existing display.
- *
- ****************************************************************************/
-
-static void nxterm_renderchar(FAR struct nxterm_state_s *priv,
-                              FAR const struct nxgl_rect_s *rect,
-                              FAR const struct nxterm_bitmap_s *bm,
-                              bool reverse)
-{
-  FAR const struct nxfonts_glyph_s *glyph;
-  struct nxgl_rect_s bounds;
-  struct nxgl_rect_s intersection;
-  struct nxgl_size_s fsize;
-  int ret;
-
-  /* Handle the special case of spaces which have no glyph bitmap.  In
-   * reverse video the cell has already been filled, so there is nothing a
-   * space could add.
+  /* Any deliberate cursor movement cancels a wrap that had not happened
+   * yet.
    */
 
-  if (BM_ISSPACE(bm))
-    {
-      if (!reverse)
-        {
-          nxterm_fillspace(priv, rect, bm);
-        }
-
-      return;
-    }
-
-  /* Get the size of the font glyph (which may not have been created yet) */
-
-  ret = nxterm_fontsize(priv, bm->code, &fsize);
-  if (ret < 0)
-    {
-      /* This would mean that there is no bitmap for the character code and
-       * that the font would be rendered as a space.  But this case should
-       * never happen here because the BM_ISSPACE() should have already
-       * found all such cases.
-       */
-
-      return;
-    }
-
-  /* Construct a bounding box for the glyph */
-
-  bounds.pt1.x = bm->pos.x;
-  bounds.pt1.y = bm->pos.y;
-  bounds.pt2.x = bm->pos.x + fsize.w - 1;
-  bounds.pt2.y = bm->pos.y + fsize.h - 1;
-
-  /* Should this also be clipped to a region in the window? */
-
-  if (rect != NULL)
-    {
-      /* Get the intersection of the redraw region and the character bitmap */
-
-      nxgl_rectintersect(&intersection, rect, &bounds);
-    }
-  else
-    {
-      /* The intersection is the whole glyph */
-
-      nxgl_rectcopy(&intersection, &bounds);
-    }
-
-  /* Check for empty intersections */
-
-  if (!nxgl_nullrect(&intersection))
-    {
-      FAR const void *src;
-
-      /* Find (or create) the glyph that goes with this font */
-
-      glyph = nxf_cache_getglyph(reverse ? priv->rcache : priv->fcache,
-                                 bm->code);
-      if (!glyph)
-        {
-          /* Shouldn't happen */
-
-          return;
-        }
-
-      /* Blit the font bitmap into the window */
-
-      src = (FAR const void *)glyph->bitmap;
-      ret = priv->ops->bitmap(priv, &intersection, &src,
-                              &bm->pos, (unsigned int)glyph->stride);
-      DEBUGASSERT(ret >= 0);
-    }
-}
-
-/****************************************************************************
- * Name: nxterm_fillchar
- *
- * Description:
- *   Render a character at its recorded position.
- *
- ****************************************************************************/
-
-void nxterm_fillchar(FAR struct nxterm_state_s *priv,
-                     FAR const struct nxgl_rect_s *rect,
-                     FAR const struct nxterm_bitmap_s *bm)
-{
-  nxterm_renderchar(priv, rect, bm, false);
-}
-
-/****************************************************************************
- * Name: nxterm_reversechar
- *
- * Description:
- *   Render a character in reverse video, for the cell the cursor occupies.
- *
- *   Falls back to doing nothing if there is no reverse-video cache, which
- *   leaves a plain block cursor rather than an unreadable one.
- *
- ****************************************************************************/
-
-void nxterm_reversechar(FAR struct nxterm_state_s *priv,
-                        FAR const struct nxterm_bitmap_s *bm)
-{
-  if (priv->rcache != NULL)
-    {
-      nxterm_renderchar(priv, NULL, bm, true);
-    }
+  priv->wrap = false;
 }
