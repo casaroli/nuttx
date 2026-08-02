@@ -26,6 +26,7 @@
 
 #include <errno.h>
 #include <syslog.h>
+#include <nuttx/signal.h>
 
 #include <nuttx/debug.h>
 #include <nuttx/mmcsd.h>
@@ -51,6 +52,13 @@
 
 #define SD_BLOCK  "/dev/mmcsd0"
 #define SD_MOUNT  "/mnt/sd0"
+
+/* How many times to ask the card to identify itself after it appears, and
+ * how long to wait between attempts.
+ */
+
+#define SD_INIT_TRIES     6
+#define SD_INIT_RETRY_MS  150
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -133,17 +141,35 @@ static void board_spisd_cdwork(FAR void *arg)
 
   if (present && !g_mounted)
     {
+      int tries;
+
       /* Tell the MMC/SD driver first.  It re-runs the card identification
        * it skipped while the slot was empty; mounting before that just
        * fails against a driver that still believes there is no disk.
+       *
+       * More than once, because a card that has just been pushed in is not
+       * necessarily ready to answer.  The contacts are still settling and
+       * the card's own power-on ramp is allowed to take up to 250ms, which
+       * is longer than any debounce worth having.  Identification failing
+       * on the first attempt is normal; failing on all of them is not.
        */
 
-      if (g_cd_callback != NULL)
+      for (tries = 0; tries < SD_INIT_TRIES; tries++)
         {
-          g_cd_callback(g_cd_callback_arg);
+          if (g_cd_callback != NULL)
+            {
+              g_cd_callback(g_cd_callback_arg);
+            }
+
+          ret = nx_mount(SD_BLOCK, SD_MOUNT, "vfat", 0, NULL);
+          if (ret != -ENODEV)
+            {
+              break;
+            }
+
+          nxsig_usleep(SD_INIT_RETRY_MS * 1000);
         }
 
-      ret = nx_mount(SD_BLOCK, SD_MOUNT, "vfat", 0, NULL);
       if (ret >= 0)
         {
           g_mounted = true;

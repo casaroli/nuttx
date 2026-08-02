@@ -843,12 +843,17 @@ config RP23XX_SPISD_CD_ACTIVE_LOW
 
 config RP23XX_SPISD_CD_DEBOUNCE_MS
 	int "Card detect debounce (ms)"
-	default 100
+	default 300
 	depends on RP23XX_SPISD_CD_GPIO >= 0
 	---help---
-		How long to wait after a card-detect edge before believing it.  The
-		switch bounces, and a card being pushed in crosses the contact
-		several times before it seats.
+		How long to wait after a card-detect edge before believing it.
+
+		The switch bounces, and a card being pushed in crosses the contact
+		several times before it seats: with this too short the driver is
+		asked to identify a card that is still arriving, sees the contact
+		open again, and reports no card present.  It recovers, because a
+		later edge starts the work again, but the log fills with failures
+		that were never faults.
 
 endif # SPISD Configuration
 
