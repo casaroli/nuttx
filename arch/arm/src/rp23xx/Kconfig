@@ -813,6 +813,43 @@ config RP23XX_SPISD_SPI_CH
 	---help---
 		Select spi channel number to use spi sd card.
 
+config RP23XX_SPISD_CD_GPIO
+	int "Card detect GPIO (-1 for none)"
+	default -1
+	range -1 47
+	---help---
+		GPIO carrying the socket's card-detect switch, or -1 if the board
+		does not bring one out.
+
+		Without it board_spisd_status() has to claim a card is always
+		present, which is what it did for every RP23XX board: the MMC/SD
+		driver then believes a card is in the slot whether or not one is,
+		and an empty socket looks like a broken card rather than an empty
+		socket.
+
+		Nearly every microSD socket has the switch.  It is normally closed
+		to ground when a card is inserted and open otherwise, so the pin
+		reads low with a card and is held high by a pull-up without one;
+		see RP23XX_SPISD_CD_ACTIVE_LOW if the board wires it the other way.
+
+config RP23XX_SPISD_CD_ACTIVE_LOW
+	bool "Card detect is active low"
+	default y
+	depends on RP23XX_SPISD_CD_GPIO >= 0
+	---help---
+		The card-detect pin reads low when a card is present.  This is the
+		usual wiring, with a pull-up holding the pin high when the socket
+		is empty.
+
+config RP23XX_SPISD_CD_DEBOUNCE_MS
+	int "Card detect debounce (ms)"
+	default 100
+	depends on RP23XX_SPISD_CD_GPIO >= 0
+	---help---
+		How long to wait after a card-detect edge before believing it.  The
+		switch bounces, and a card being pushed in crosses the contact
+		several times before it seats.
+
 endif # SPISD Configuration
 
 #####################################################################
