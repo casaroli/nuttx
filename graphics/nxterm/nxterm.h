@@ -331,6 +331,13 @@ void nxterm_unregister(FAR struct nxterm_state_s *priv);
 #ifdef CONFIG_NXTERM_NXKBDIN
 ssize_t nxterm_read(FAR struct file *filep, FAR char *buffer, size_t len);
 int nxterm_poll(FAR struct file *filep, FAR struct pollfd *fds, bool setup);
+
+/* Queue characters as though they had been typed.  Used to answer the
+ * device status report, whose reply a terminal delivers on its input side.
+ */
+
+void nxterm_inject(FAR struct nxterm_state_s *priv,
+                   FAR const char *buffer, size_t buflen);
 #endif
 
 /* IOCTL handlers */

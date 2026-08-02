@@ -278,10 +278,36 @@ static ssize_t nxterm_write(FAR struct file *filep, FAR const char *buffer,
 
 static int nxterm_ioctl(FAR struct file *filep, int cmd, unsigned long arg)
 {
-#ifdef CONFIG_NXTERM_NXKBDIN
   FAR struct nxterm_state_s *priv;
+#ifdef CONFIG_NXTERM_NXKBDIN
   FAR struct termios *termiosp;
+#endif
 
+  /* The window size is answered whether or not this terminal has its own
+   * keyboard input.  It is how a full-screen program learns the size of the
+   * grid:  termcurses asks for it first and only falls back to the cursor
+   * position report if the ioctl is refused.
+   */
+
+  if (cmd == TIOCGWINSZ)
+    {
+      FAR struct winsize *winsz = (FAR struct winsize *)((uintptr_t)arg);
+
+      if (winsz == NULL)
+        {
+          return -EINVAL;
+        }
+
+      priv = (FAR struct nxterm_state_s *)filep->f_priv;
+
+      winsz->ws_row    = priv->rows;
+      winsz->ws_col    = priv->cols;
+      winsz->ws_xpixel = priv->wndo.wsize.w;
+      winsz->ws_ypixel = priv->wndo.wsize.h;
+      return OK;
+    }
+
+#ifdef CONFIG_NXTERM_NXKBDIN
   /* Handle the terminal attribute commands here rather than in
    * nxterm_ioctl_tap():  unlike the NXTERM commands, these apply to one
    * particular terminal and so need the driver context that only the

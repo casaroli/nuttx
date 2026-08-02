@@ -26,6 +26,7 @@
 
 #include <nuttx/config.h>
 
+#include <stdio.h>
 #include <assert.h>
 
 #include <nuttx/ascii.h>
@@ -168,6 +169,49 @@ static void nxterm_decstbm(FAR struct nxterm_state_s *priv)
 }
 
 /****************************************************************************
+ * Name: nxterm_dsr
+ *
+ * Description:
+ *   Device status report.  The answer is delivered on the input side, which
+ *   is where a real terminal would put it:  the program that asked reads it
+ *   back from the same descriptor it types on.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_NXTERM_NXKBDIN
+static void nxterm_dsr(FAR struct nxterm_state_s *priv)
+{
+  char reply[16];
+  int len;
+
+  switch (nxterm_rawparam(priv, 0, 0))
+    {
+      case 5:  /* Report terminal status:  always "no malfunction" */
+        {
+          len = snprintf(reply, sizeof(reply), "%c[0n", ASCII_ESC);
+        }
+        break;
+
+      case 6:  /* Report cursor position, in one-based coordinates */
+        {
+          len = snprintf(reply, sizeof(reply), "%c[%u;%uR", ASCII_ESC,
+                         (unsigned int)priv->crow + 1,
+                         (unsigned int)priv->ccol + 1);
+        }
+        break;
+
+      default:
+        return;
+    }
+
+  if (len > 0 && len < (int)sizeof(reply))
+    {
+      nxterm_inject(priv, reply, (size_t)len);
+    }
+}
+#endif
+
+/****************************************************************************
  * Name: nxterm_setmode
  *
  * Description:
@@ -296,6 +340,14 @@ static void nxterm_csidispatch(FAR struct nxterm_state_s *priv, char final)
       case 'l':  /* RM/DECRST:  reset a mode */
         nxterm_setmode(priv, false);
         break;
+
+#ifdef CONFIG_NXTERM_NXKBDIN
+      case 'n':  /* DSR:  device status report.  Answered only where this
+                  * terminal has an input side to answer on.
+                  */
+        nxterm_dsr(priv);
+        break;
+#endif
 
       case 's':  /* Save the cursor (the ANSI.SYS spelling) */
         priv->savedrow  = priv->crow;

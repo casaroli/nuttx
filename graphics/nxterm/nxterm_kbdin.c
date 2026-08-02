@@ -151,6 +151,72 @@ static void nxterm_echo(FAR struct nxterm_state_s *priv, char ch)
  ****************************************************************************/
 
 /****************************************************************************
+ * Name: nxterm_inject
+ *
+ * Description:
+ *   Queue characters as though they had been typed.
+ *
+ *   This is how the terminal answers a question about itself.  A device
+ *   status report is requested by writing an escape sequence and answered
+ *   on the input side, because that is where the asking program is
+ *   listening -- it reads the reply from the same descriptor it reads
+ *   keystrokes from.
+ *
+ *   Called with priv->lock held, from the write path.  That is safe: the
+ *   keyboard ring is guarded by the spinlock and nothing that holds the
+ *   spinlock ever reaches for priv->lock, so the two cannot be taken in
+ *   opposing orders.
+ *
+ *   The reply is not echoed, even with ECHO set:  nxterm_echo() swallows
+ *   escape sequences, which is exactly what this is.
+ *
+ ****************************************************************************/
+
+void nxterm_inject(FAR struct nxterm_state_s *priv,
+                   FAR const char *buffer, size_t buflen)
+{
+  irqstate_t flags;
+  uint8_t nwaiters;
+  size_t nwritten;
+  int nexthead;
+
+  flags = spin_lock_irqsave_nopreempt(&priv->spinlock);
+
+  for (nwritten = 0; nwritten < buflen; nwritten++)
+    {
+      nexthead = priv->head + 1;
+      if (nexthead >= CONFIG_NXTERM_KBDBUFSIZE)
+        {
+          nexthead = 0;
+        }
+
+      if (nexthead == priv->tail)
+        {
+          gerr("ERROR: No room for the terminal reply\n");
+          break;
+        }
+
+      priv->rxbuffer[priv->head] = (uint8_t)buffer[nwritten];
+      priv->head = nexthead;
+    }
+
+  nwaiters = priv->nwaiters;
+  spin_unlock_irqrestore_nopreempt(&priv->spinlock, flags);
+
+  if (nwritten > 0)
+    {
+      int i;
+
+      nxterm_pollnotify(priv, POLLIN);
+
+      for (i = 0; i < nwaiters; i++)
+        {
+          nxsem_post(&priv->waitsem);
+        }
+    }
+}
+
+/****************************************************************************
  * Name: nxterm_read
  *
  * Description:
