@@ -65,9 +65,34 @@
 
 /* GPIO definitions *********************************************************/
 
-#define BOARD_NGPIOOUT          1
+/* The J703 debug header, which is the only expansion this board has:
+ *
+ *   J703-2  GP2    J703-5  GP5     J703-1  3V3_OUT
+ *   J703-3  GP3    J703-6  GP21    J703-8  GND
+ *   J703-4  GP4    J703-7  GP28
+ *
+ * GP2-GP5 and GP21 are the mainboard's ESP-PSRAM64H, which this port does
+ * not use -- the Pimoroni module carries its own QSPI PSRAM on GP47.  GP28
+ * is the one pin on the module that nothing else claims.  Registering them
+ * here therefore forecloses ever using that memory, which is a trade worth
+ * making for an expansion header and worth knowing about.
+ *
+ * The outputs are what RP2350-E9 wants anyway: a driven pad does not leak.
+ * The two inputs carry pull-ups for the same reason -- an unconnected pad
+ * left floating costs ~120uA, which is more than the whole sleep budget.
+ * See src/rp23xx_pinpark.c.
+ */
+
+#define BOARD_NGPIOOUT          4
 #define BOARD_NGPIOIN           1
 #define BOARD_NGPIOINT          1
+
+#define GPIO_OUT1               2    /* J703-2 */
+#define GPIO_OUT2               3    /* J703-3 */
+#define GPIO_OUT3               4    /* J703-4 */
+#define GPIO_OUT4               5    /* J703-5 */
+#define GPIO_IN1                21   /* J703-6 */
+#define GPIO_INT1               28   /* J703-7, the only unclaimed pin */
 
 /* LED definitions **********************************************************/
 

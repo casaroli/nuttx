@@ -41,24 +41,14 @@
 
 #if defined(CONFIG_DEV_GPIO) && !defined(CONFIG_GPIO_LOWER_HALF)
 
-/* Output pins.
- *
- * There is no onboard LED on an RP2350 pin on this board -- it hangs off the
- * CYW43439 -- so this is just a free header pin.  Note that GPIO 23, 24, 25
- * and 29 are wired to the wireless chip and must not be used here.
+/* The pins come from include/board.h, which is where the J703 header is
+ * described.  They were hardcoded here, and wrongly:  GPIO 6 is the
+ * keyboard co-processor's I2C SDA and GPIO 14 is the panel's Data/Command
+ * line, so registering them handed two pins that already have owners to a
+ * driver that would reconfigure them as SIO.
  */
 
-#define GPIO_OUT1     2
-
-/* Input pins.
- */
-
-#define GPIO_IN1      6
-
-/* Interrupt pins.
- */
-
-#define GPIO_IRQPIN1  14
+#define GPIO_IRQPIN1  GPIO_INT1
 
 /****************************************************************************
  * Private Types
@@ -113,7 +103,7 @@ static const struct gpio_operations_s gpout_ops =
 
 static const uint32_t g_gpiooutputs[BOARD_NGPIOOUT] =
 {
-  GPIO_OUT1
+  GPIO_OUT1, GPIO_OUT2, GPIO_OUT3, GPIO_OUT4
 };
 
 static struct rp23xxgpio_dev_s g_gpout[BOARD_NGPIOOUT];

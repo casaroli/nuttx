@@ -60,16 +60,24 @@
  * clock lines.  That part is redundant here -- the Pimoroni module carries
  * its own memory-mapped QSPI PSRAM on GP47 -- and driving the bus low is
  * safe because its chip select (GP20) is held high by R302.
+ *
+ * With CONFIG_DEV_GPIO the same pins are the J703 expansion header and the
+ * GPIO driver owns them instead.  It parks them just as effectively: its
+ * outputs are driven and its inputs carry pull-ups, which is what E9 needs.
+ * Parking them here as well would be harmless but would say, wrongly, that
+ * nothing else claims them.
  */
 
+#ifndef CONFIG_DEV_GPIO
 static const uint8_t g_park_drive_low[] =
 {
-  GPIO_PICOCALC_MBRAM_SIO0,     /* GP2  */
-  GPIO_PICOCALC_MBRAM_SIO1,     /* GP3  */
-  GPIO_PICOCALC_MBRAM_SIO2,     /* GP4  */
-  GPIO_PICOCALC_MBRAM_SIO3,     /* GP5  */
-  GPIO_PICOCALC_MBRAM_SCK,      /* GP21 */
+  GPIO_PICOCALC_MBRAM_SIO0,     /* GP2,  J703-2 */
+  GPIO_PICOCALC_MBRAM_SIO1,     /* GP3,  J703-3 */
+  GPIO_PICOCALC_MBRAM_SIO2,     /* GP4,  J703-4 */
+  GPIO_PICOCALC_MBRAM_SIO3,     /* GP5,  J703-5 */
+  GPIO_PICOCALC_MBRAM_SCK,      /* GP21, J703-6 */
 };
+#endif
 
 /* Input buffer disabled.  Either an external pull already defines the level,
  * or the pin is not routed anywhere on this module.
@@ -118,6 +126,7 @@ void picocalc_pin_park(void)
 {
   uint32_t i;
 
+#ifndef CONFIG_DEV_GPIO
   for (i = 0; i < sizeof(g_park_drive_low); i++)
     {
       uint32_t gpio = g_park_drive_low[i];
@@ -126,6 +135,7 @@ void picocalc_pin_park(void)
       rp23xx_gpio_setdir(gpio, true);
       rp23xx_gpio_put(gpio, false);
     }
+#endif
 
   for (i = 0; i < sizeof(g_park_clear_ie); i++)
     {
