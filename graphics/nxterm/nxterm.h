@@ -159,6 +159,16 @@ struct nxterm_state_s
 
   struct nxgl_point_s fpos;                  /* Next display position */
 
+  /* A redraw that arrived while the display lock was held.
+   *
+   * Guarded by the spinlock rather than by priv->lock, because the whole
+   * point of it is to be recorded without waiting for priv->lock.  See
+   * nxterm_redraw().
+   */
+
+  struct nxgl_rect_s dmgrect;                /* Region still to be drawn */
+  bool dmgpending;                           /* dmgrect holds something */
+
   /* VT100 escape sequence processing */
 
   char seq[VT100_MAX_SEQUENCE];              /* Buffered characters */
@@ -263,6 +273,7 @@ int nxterm_poll(FAR struct file *filep, FAR struct pollfd *fds, bool setup);
 
 void nxterm_redraw(NXTERM handle, FAR const struct nxgl_rect_s *rect,
                    bool more);
+void nxterm_flushdamage(FAR struct nxterm_state_s *priv);
 #ifdef CONFIG_NXTERM_NXKBDIN
 void nxterm_kbdin(NXTERM handle, FAR const uint8_t *buffer, uint8_t buflen);
 #endif

@@ -293,6 +293,7 @@ ssize_t nxterm_read(FAR struct file *filep, FAR char *buffer, size_t len)
             }
 
           nxterm_showcursor(priv);
+          nxterm_flushdamage(priv);
           nxmutex_unlock(&priv->lock);
         }
     }

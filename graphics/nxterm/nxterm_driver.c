@@ -321,6 +321,10 @@ static ssize_t nxterm_write(FAR struct file *filep, FAR const char *buffer,
   /* Show the cursor at its new position */
 
   nxterm_showcursor(priv);
+
+  /* Serve any redraw that arrived while this write held the lock */
+
+  nxterm_flushdamage(priv);
   nxmutex_unlock(&priv->lock);
   return (ssize_t)buflen;
 }

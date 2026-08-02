@@ -84,6 +84,7 @@ int nxterm_resize(NXTERM handle, FAR const struct nxgl_size_s *size)
   priv->wndo.wsize.w = size->w;
   priv->wndo.wsize.h = size->h;
 
+  nxterm_flushdamage(priv);
   nxmutex_unlock(&priv->lock);
   return true;
 }
