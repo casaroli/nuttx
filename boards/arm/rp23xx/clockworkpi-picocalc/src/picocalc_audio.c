@@ -51,7 +51,10 @@
 #include <debug.h>
 #include <errno.h>
 
+#include <nuttx/audio/audio.h>
+
 #include "rp23xx_pwmdev.h"
+#include "rp23xx_pwm_audio.h"
 #include "rp23xx_pico.h"
 #include "picocalc_audio.h"
 #include "picocalc_coproc.h"
@@ -89,6 +92,37 @@ int picocalc_audio_initialize(void)
       pwmerr("ERROR: Failed to register the audio PWM: %d\n", ret);
       return ret;
     }
+
+#ifdef CONFIG_RP23XX_PWM_AUDIO
+  /* And a PCM device on the same slice, registered as /dev/audio/pcm0.
+   *
+   * Both can exist because only one of them may *own* the slice at a time:
+   * whichever is opened first claims it and the other is refused with
+   * EBUSY until it closes.  Keeping the plain PWM device is deliberate --
+   * "pwm -f 440 -t 3" is the one command known to have made this board make
+   * a sound, and it is the test to fall back on when PCM is silent.
+   */
+
+    {
+      FAR struct audio_lowerhalf_s *lower;
+
+      lower = rp23xx_pwm_audio_initialize(PICOCALC_AUDIO_PWM_SLICE,
+                                          GPIO_PICOCALC_PWM_L,
+                                          GPIO_PICOCALC_PWM_R);
+      if (lower == NULL)
+        {
+          auderr("ERROR: Failed to create the PCM device\n");
+        }
+      else
+        {
+          ret = audio_register("pcm0", lower);
+          if (ret < 0)
+            {
+              auderr("ERROR: Failed to register /dev/audio/pcm0: %d\n", ret);
+            }
+        }
+    }
+#endif
 
   /* Ask the co-processor to enable the amplifiers when nothing is in the
    * socket, and to drop them when something is.
