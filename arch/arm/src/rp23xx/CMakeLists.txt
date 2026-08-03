@@ -56,6 +56,10 @@ if(CONFIG_RP23XX_PWM)
   list(APPEND SRCS rp23xx_pwm.c)
 endif()
 
+if(CONFIG_RP23XX_PWM_AUDIO)
+  list(APPEND SRCS rp23xx_pwm_audio.c)
+endif()
+
 if(CONFIG_RP23XX_TIMER)
   list(APPEND SRCS rp23xx_timer.c)
 endif()

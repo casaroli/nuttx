@@ -38,6 +38,14 @@
 
 #define RP23XX_DMA_NCHANNELS    16
 
+/* TREQ selector for one of the four DMA pacing timers.  A timer asserts at
+ * (X / Y) * sys_clk, which is how a transfer is paced at a rate the
+ * peripheral itself has no request signal for -- an audio sample clock,
+ * for one.
+ */
+
+#define RP23XX_DMA_TREQ_TIMER(n)                (0x3b + (n))
+
 /* DMA data size ************************************************************/
 
 #define RP23XX_DMA_SIZE_BYTE                    0

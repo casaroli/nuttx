@@ -356,6 +356,60 @@ config RP23XX_PWM
 
 if RP23XX_PWM
 
+config RP23XX_PWM_AUDIO
+	bool "PWM audio output"
+	default n
+	depends on RP23XX_PWM && AUDIO
+	---help---
+		A PCM output device built from a PWM slice and a DMA channel.  The
+		slice runs far above the audio band and the DMA rewrites its compare
+		register once per sample, paced by one of the DMA's fractional
+		timers; what reaches the pin is the average, which an RC filter on
+		the board turns back into a waveform.
+
+		Both channels of a slice share a counter and therefore a compare
+		register, so a stereo sample is a single 32-bit write and stereo
+		costs no more than mono.  The two pins must be the two channels of
+		the same slice.
+
+		This and the plain PWM device cannot drive the same slice at once.
+		Whichever is opened first owns it; the other is refused with EBUSY
+		until it is closed.
+
+if RP23XX_PWM_AUDIO
+
+config RP23XX_PWM_AUDIO_DMA_TIMER
+	int "DMA pacing timer"
+	default 0
+	range 0 3
+	---help---
+		Which of the four DMA fractional timers generates the sample clock.
+		Pick one nothing else is using.
+
+config RP23XX_PWM_AUDIO_BUFSAMPLES
+	int "Samples per DMA buffer"
+	default 512
+	range 64 4096
+	---help---
+		Frames of converted audio per buffer, of which two are allocated.
+		Each frame is four bytes, so the default costs 4 KB and holds about
+		12 ms at 44.1 kHz.  Larger buffers tolerate more scheduling latency;
+		smaller ones respond to a stop sooner.
+
+config RP23XX_PWM_AUDIO_PRIORITY
+	int "Conversion thread priority"
+	default 200
+	---help---
+		The thread that converts queued audio into compare values.  It has
+		to keep ahead of the DMA, so it belongs above ordinary work but
+		below drivers that must not be delayed.
+
+config RP23XX_PWM_AUDIO_STACKSIZE
+	int "Conversion thread stack size"
+	default 1536
+
+endif # RP23XX_PWM_AUDIO
+
 config RP23XX_PWM_MULTICHAN
 	bool "Support RP23XX Multi-Channel PWM"
 	default y
