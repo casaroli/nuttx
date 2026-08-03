@@ -264,9 +264,74 @@
 #define DT_ARM_PREEMPTMAP        0x70000002
 #define DT_ARM_RESERVED2         0x70000003
 
+/* Loader state the FDPIC relocations need: the object's data base, and the
+ * descriptor pool cursor, which must survive from one relocation to the
+ * next.  It arrives through the arch_data channel.
+ */
+
+/* The relocations that only an FDPIC object may use.  Seeing one in an
+ * object whose OS/ABI byte does not say FDPIC means the marker was lost.
+ */
+
+#define ARCH_ELF_RELOC_ISFDPIC(t)                    \
+  ((t) == R_ARM_FUNCDESC || (t) == R_ARM_FUNCDESC_VALUE)
+
+#define ARCH_ELFDATA             1
+
+#define ARCH_ELFDATA_INIT(d, l)          \
+  do                                     \
+    {                                    \
+      (d)->fdpic    = (l)->fdpic;        \
+      (d)->gotbase  = (l)->gotbase;      \
+      (d)->descpool = (FAR struct arm_fdpic_desc_s *)(l)->descpool; \
+      (d)->ndesc    = (l)->ndesc;        \
+      (d)->usedesc  = (l)->usedesc;      \
+    }                                    \
+  while (0)
+
+#define ARCH_ELFDATA_FINI(d, l)          \
+  do                                     \
+    {                                    \
+      (l)->usedesc = (d)->usedesc;       \
+    }                                    \
+  while (0)
+
 /****************************************************************************
  * Public Types
  ****************************************************************************/
+
+#ifndef __ASSEMBLY__
+
+/* A function descriptor: what an FDPIC function pointer is.  The callee is
+ * entered with got in the PIC base register.
+ */
+
+struct arm_fdpic_desc_s
+{
+  uintptr_t entry;         /* Address of the code */
+  uintptr_t got;           /* Data base to install before branching */
+};
+
+struct arch_elfdata_s
+{
+  uint8_t   fdpic;         /* The object is an FDPIC one */
+  uintptr_t gotbase;       /* DT_PLTGOT: this object's data base */
+  uint16_t  ndesc;         /* Capacity, in descriptors */
+  uint16_t  usedesc;       /* Next free slot */
+
+  /* The pool the descriptors are taken from */
+
+  FAR struct arm_fdpic_desc_s *descpool;
+
+  uint8_t   pltrel;        /* Relocation comes from DT_JMPREL, so the word
+                            * it overwrites is a lazy binding stub and not
+                            * an addend
+                            */
+};
+
+typedef struct arch_elfdata_s arch_elfdata_t;
+
+#endif /* __ASSEMBLY__ */
 
 typedef struct __EIT_entry
 {

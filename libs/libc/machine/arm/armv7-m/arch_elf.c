@@ -175,6 +175,97 @@ int up_relocate(const Elf32_Rel *rel, const Elf32_Sym *sym, uintptr_t addr,
         }
         break;
 
+      case R_ARM_FUNCDESC_VALUE:
+        {
+          /* The target is a descriptor: entry point and data base.  The
+           * addend sits in the word that becomes the entry point and
+           * carries the Thumb bit, so it must be kept.  The base written is
+           * this object's own, which is what makes a callback work.
+           */
+
+          FAR struct arm_fdpic_desc_s *desc =
+            (FAR struct arm_fdpic_desc_s *)addr;
+          FAR arch_elfdata_t *data = (FAR arch_elfdata_t *)arch_data;
+
+          if (data == NULL)
+            {
+              berr("ERROR: FUNCDESC_VALUE without loader state\n");
+              return -EINVAL;
+            }
+
+          /* A descriptor only means anything in an FDPIC object.  An object
+           * that carries these relocations without saying it is FDPIC cannot
+           * be run: nothing would install its data base.
+           */
+
+          if (!data->fdpic)
+            {
+              berr("ERROR: FUNCDESC_VALUE in a non-FDPIC object\n");
+              return -ENOEXEC;
+            }
+
+          binfo("Performing FUNCDESC_VALUE link "
+                "at addr=%08" PRIxPTR " to sym=%p st_value=%08" PRIx32 "\n",
+                addr, sym, sym->st_value);
+
+          if (data->pltrel)
+            {
+              /* A lazy descriptor holds its PLT stub address, not an
+               * addend.  Overwrite it, do not add to it.
+               */
+
+              desc->entry = sym->st_value;
+            }
+          else
+            {
+              desc->entry = sym->st_value + desc->entry;
+            }
+
+          desc->got = data->gotbase;
+        }
+        break;
+
+      case R_ARM_FUNCDESC:
+        {
+          /* A pointer to a descriptor, which the loader has to supply.
+           * Carve one out of the pool reserved behind the writable segment
+           * and store its address.
+           */
+
+          FAR struct arm_fdpic_desc_s *desc;
+          FAR arch_elfdata_t *data = (FAR arch_elfdata_t *)arch_data;
+
+          if (data == NULL)
+            {
+              berr("ERROR: FUNCDESC without loader state\n");
+              return -EINVAL;
+            }
+
+          if (!data->fdpic)
+            {
+              berr("ERROR: FUNCDESC in a non-FDPIC object\n");
+              return -ENOEXEC;
+            }
+
+          if (data->usedesc >= data->ndesc)
+            {
+              berr("ERROR: Out of function descriptors\n");
+              return -ENOMEM;
+            }
+
+          desc = data->descpool + data->usedesc++;
+
+          binfo("Performing FUNCDESC link "
+                "at addr=%08" PRIxPTR " to sym=%p st_value=%08" PRIx32 "\n",
+                addr, sym, sym->st_value);
+
+          desc->entry = sym->st_value + *(uint32_t *)addr;
+          desc->got   = data->gotbase;
+
+          *(uint32_t *)addr = (uint32_t)(uintptr_t)desc;
+        }
+        break;
+
       case R_ARM_ABS32:
       case R_ARM_TARGET1:  /* New ABI:  TARGET1 always treated as ABS32 */
         {
