@@ -87,6 +87,25 @@
 #define PWM_AUDIO_NBUFFERS  2
 #define PWM_AUDIO_NSAMPLES  CONFIG_RP23XX_PWM_AUDIO_BUFSAMPLES
 
+/* How many buffers the upper half may keep in flight.
+ *
+ * This is what the player asks for with AUDIOIOC_GETBUFFERINFO, and it sets
+ * how much audio is queued ahead of the hardware.  It has to cover the
+ * worst case for refilling one, which here means a read from a microSD card
+ * over SPI while the CPU is also converting samples.  Two shallow buffers
+ * starve audibly -- half a second of sound, half a second of silence.
+ */
+
+#define PWM_AUDIO_NAPBS     8
+
+/* Size of each buffer handed to the player, in bytes.  Kept independent of
+ * the conversion buffers above:  those want to be long, to make the gap
+ * between them a small fraction of the time they cover, while these only
+ * need to be numerous enough to ride out a card read.
+ */
+
+#define PWM_AUDIO_APBSIZE   4096
+
 /* How long the mid-scale ramp takes at either end of a stream */
 
 #define PWM_AUDIO_RAMPMS    8
@@ -354,6 +373,34 @@ static inline uint32_t pwm_audio_pack(FAR struct pwm_audio_dev_s *priv,
 }
 
 /****************************************************************************
+ * Name: pwm_audio_giveback
+ *
+ * Description:
+ *   Return spent buffers to the upper half.
+ *
+ *   MUST be called with priv->lock released.  The upper half's callback
+ *   runs a long way -- it posts to the client's message queue and can
+ *   re-enter this driver -- and calling it from under the lock is how a
+ *   driver deadlocks against its own client.
+ *
+ ****************************************************************************/
+
+static void pwm_audio_giveback(FAR struct pwm_audio_dev_s *priv,
+                               FAR struct dq_queue_s *doneq)
+{
+  FAR struct ap_buffer_s *apb;
+
+  while ((apb = (FAR struct ap_buffer_s *)dq_remfirst(doneq)) != NULL)
+    {
+#ifdef CONFIG_AUDIO_MULTI_SESSION
+      priv->dev.upper(priv->dev.priv, AUDIO_CALLBACK_DEQUEUE, apb, OK, NULL);
+#else
+      priv->dev.upper(priv->dev.priv, AUDIO_CALLBACK_DEQUEUE, apb, OK);
+#endif
+    }
+}
+
+/****************************************************************************
  * Name: pwm_audio_fill
  *
  * Description:
@@ -369,7 +416,8 @@ static inline uint32_t pwm_audio_pack(FAR struct pwm_audio_dev_s *priv,
  ****************************************************************************/
 
 static unsigned int pwm_audio_fill(FAR struct pwm_audio_dev_s *priv,
-                                   FAR struct pwm_audio_buf_s *buf)
+                                   FAR struct pwm_audio_buf_s *buf,
+                                   FAR struct dq_queue_s *doneq)
 {
   unsigned int nsamples = 0;
   unsigned int framesz;
@@ -395,12 +443,11 @@ static unsigned int pwm_audio_fill(FAR struct pwm_audio_dev_s *priv,
 
           dq_remfirst(&priv->pendq);
 
-#ifdef CONFIG_AUDIO_MULTI_SESSION
-          priv->dev.upper(priv->dev.priv, AUDIO_CALLBACK_DEQUEUE, apb, OK,
-                          NULL);
-#else
-          priv->dev.upper(priv->dev.priv, AUDIO_CALLBACK_DEQUEUE, apb, OK);
-#endif
+          /* Do not hand it back from here.  The upper half is called with
+           * priv->lock released -- see pwm_audio_giveback().
+           */
+
+          dq_addlast(&apb->dq_entry, doneq);
           continue;
         }
 
@@ -470,7 +517,6 @@ static void pwm_audio_dmacallback(DMA_HANDLE handle, uint8_t status,
                                   FAR void *arg)
 {
   FAR struct pwm_audio_dev_s *priv = (FAR struct pwm_audio_dev_s *)arg;
-  unsigned int next;
 
   if (!priv->streaming)
     {
@@ -480,21 +526,18 @@ static void pwm_audio_dmacallback(DMA_HANDLE handle, uint8_t status,
   priv->buf[priv->playing].state    = PWM_AUDIO_BUF_FREE;
   priv->buf[priv->playing].nsamples = 0;
 
-  next = (priv->playing + 1) % PWM_AUDIO_NBUFFERS;
-
-  if (priv->buf[next].state == PWM_AUDIO_BUF_READY)
-    {
-      pwm_audio_startbuf(priv, next);
-    }
-  else
-    {
-      /* Nothing prepared in time.  Hold the last level rather than letting
-       * the compare register keep the final sample of the buffer just
-       * finished, which would be an arbitrary DC offset.
-       */
-
-      pwm_audio_setcc(priv, (PWM_AUDIO_MID << 16) | PWM_AUDIO_MID);
-    }
+  /* The next buffer is deliberately NOT started from here.
+   *
+   * rp23xx_dmac_interrupt() clears dmach->callback *after* invoking it, so
+   * anything this callback registers -- which is what rp23xx_dmastart()
+   * does -- is wiped the moment it returns.  Re-arming from inside the
+   * callback therefore plays exactly one more buffer and then goes deaf,
+   * which sounds like a single slightly-too-long click.
+   *
+   * So only the state is updated here and the filling thread is woken; it
+   * starts the next buffer in thread context, where the registration
+   * survives.  That also keeps DMA setup out of interrupt context.
+   */
 
   nxsem_post(&priv->wake);
 }
@@ -511,7 +554,17 @@ static void pwm_audio_startbuf(FAR struct pwm_audio_dev_s *priv,
 
   config.dreq   = RP23XX_DMA_TREQ_TIMER(CONFIG_RP23XX_PWM_AUDIO_DMA_TIMER);
   config.size   = RP23XX_DMA_SIZE_WORD;
-  config.noincr = true;
+
+  /* 'noincr' is about the *memory* address, not the peripheral one.
+   *
+   * rp23xx_txdmasetup() never increments the write address -- a transmit
+   * always targets one register -- so this only decides whether the read
+   * walks the buffer.  It must, or the DMA re-reads the first sample
+   * forever and the compare register holds one value: a constant duty,
+   * which is DC and therefore silence.
+   */
+
+  config.noincr = false;
 
   priv->playing = index;
   buf->state    = PWM_AUDIO_BUF_PLAYING;
@@ -540,8 +593,12 @@ static int pwm_audio_worker(int argc, FAR char *argv[])
 
   while (!priv->terminate)
     {
+      struct dq_queue_s doneq;
+      bool complete = false;
+
       nxsem_wait_uninterruptible(&priv->wake);
 
+      dq_init(&doneq);
       nxmutex_lock(&priv->lock);
 
       if (!priv->streaming)
@@ -553,7 +610,7 @@ static int pwm_audio_worker(int argc, FAR char *argv[])
       for (i = 0; i < PWM_AUDIO_NBUFFERS; i++)
         {
           if (priv->buf[i].state == PWM_AUDIO_BUF_FREE &&
-              pwm_audio_fill(priv, &priv->buf[i]) > 0)
+              pwm_audio_fill(priv, &priv->buf[i], &doneq) > 0)
             {
               priv->buf[i].state = PWM_AUDIO_BUF_READY;
             }
@@ -576,19 +633,28 @@ static int pwm_audio_worker(int argc, FAR char *argv[])
 
           if (i == PWM_AUDIO_NBUFFERS && dq_empty(&priv->pendq))
             {
-              /* Out of audio and out of buffers:  the stream has ended */
+              /* Out of audio and out of buffers:  the stream has ended.
+               * Reported below, with the lock released.
+               */
 
-#ifdef CONFIG_AUDIO_MULTI_SESSION
-              priv->dev.upper(priv->dev.priv, AUDIO_CALLBACK_COMPLETE,
-                              NULL, OK, NULL);
-#else
-              priv->dev.upper(priv->dev.priv, AUDIO_CALLBACK_COMPLETE,
-                              NULL, OK);
-#endif
+              complete = true;
             }
         }
 
       nxmutex_unlock(&priv->lock);
+
+      pwm_audio_giveback(priv, &doneq);
+
+      if (complete)
+        {
+#ifdef CONFIG_AUDIO_MULTI_SESSION
+          priv->dev.upper(priv->dev.priv, AUDIO_CALLBACK_COMPLETE,
+                          NULL, OK, NULL);
+#else
+          priv->dev.upper(priv->dev.priv, AUDIO_CALLBACK_COMPLETE,
+                          NULL, OK);
+#endif
+        }
     }
 
   return 0;
@@ -872,6 +938,7 @@ static int pwm_audio_stop(FAR struct audio_lowerhalf_s *dev)
 {
   FAR struct pwm_audio_dev_s *priv = (FAR struct pwm_audio_dev_s *)dev;
   FAR struct ap_buffer_s *apb;
+  struct dq_queue_s doneq;
 
   nxmutex_lock(&priv->lock);
 
@@ -879,21 +946,23 @@ static int pwm_audio_stop(FAR struct audio_lowerhalf_s *dev)
   rp23xx_dmastop(priv->dma);
   pwm_audio_hwstop(priv);
 
-  /* Give back anything still queued, or the upper half waits forever */
+  /* Take anything still queued off the list now, but hand it back after
+   * the lock is released -- see pwm_audio_giveback().
+   */
+
+  dq_init(&doneq);
 
   while ((apb = (FAR struct ap_buffer_s *)dq_remfirst(&priv->pendq)) != NULL)
     {
-#ifdef CONFIG_AUDIO_MULTI_SESSION
-      priv->dev.upper(priv->dev.priv, AUDIO_CALLBACK_DEQUEUE, apb, OK, NULL);
-#else
-      priv->dev.upper(priv->dev.priv, AUDIO_CALLBACK_DEQUEUE, apb, OK);
-#endif
+      dq_addlast(&apb->dq_entry, &doneq);
     }
 
   priv->buf[0].state = PWM_AUDIO_BUF_FREE;
   priv->buf[1].state = PWM_AUDIO_BUF_FREE;
 
   nxmutex_unlock(&priv->lock);
+
+  pwm_audio_giveback(priv, &doneq);
   return OK;
 }
 
@@ -983,19 +1052,34 @@ static int pwm_audio_cancel(FAR struct audio_lowerhalf_s *dev,
 static int pwm_audio_ioctl(FAR struct audio_lowerhalf_s *dev, int cmd,
                            unsigned long arg)
 {
+  FAR struct ap_buffer_info_s *bufinfo;
   int ret = -ENOTTY;
 
-#ifdef CONFIG_AUDIO_DRIVER_SPECIFIC_BUFFERS
-  FAR struct ap_buffer_info_s *bufinfo;
-
-  if (cmd == AUDIOIOC_GETBUFFERINFO)
+  switch (cmd)
     {
-      bufinfo              = (FAR struct ap_buffer_info_s *)arg;
-      bufinfo->buffer_size = CONFIG_RP23XX_PWM_AUDIO_BUFSAMPLES * 4;
-      bufinfo->nbuffers    = PWM_AUDIO_NBUFFERS;
-      ret                  = OK;
+      /* Report the buffer geometry.
+       *
+       * Answered whether or not CONFIG_AUDIO_DRIVER_SPECIFIC_BUFFERS is
+       * set, and that is not optional:  the upper half takes its idea of
+       * how many buffers may exist from the answer to this, and refusing
+       * it leaves that count at zero.  Every allocation then succeeds
+       * while allocating nothing, and a player reports only that it
+       * "could not allocate buffer 0" -- which says nothing about the
+       * ioctl that actually declined.
+       */
+
+      case AUDIOIOC_GETBUFFERINFO:
+        {
+          bufinfo              = (FAR struct ap_buffer_info_s *)arg;
+          bufinfo->buffer_size = PWM_AUDIO_APBSIZE;
+          bufinfo->nbuffers    = PWM_AUDIO_NAPBS;
+          ret                  = OK;
+        }
+        break;
+
+      default:
+        break;
     }
-#endif
 
   return ret;
 }
