@@ -113,6 +113,50 @@ struct rp23xx_pwm_lowerhalf_s *rp23xx_pwm_initialize(int      port,
 
 int rp23xx_pwm_uninitialize(struct pwm_lowerhalf_s *dev);
 
+/****************************************************************************
+ * Name: rp23xx_pwm_claim
+ *
+ * Description:
+ *   Take exclusive ownership of one PWM slice.
+ *
+ *   A slice has one counter, one wrap value and one compare register shared
+ *   by its two channels, so two drivers cannot program it for different
+ *   purposes at the same time.  On boards where an audio device and a plain
+ *   PWM device are wired to the same slice -- which is what makes stereo
+ *   possible, since both channels must share a counter -- this is what
+ *   keeps them from silently fighting over it.
+ *
+ *   Claiming is not the same as configuring.  It says only that a driver
+ *   intends to program this slice and that nothing else may until it lets
+ *   go.
+ *
+ * Input Parameters:
+ *   slice - The slice number, 0 to 11
+ *   owner - A short name used in the message when the claim is refused.
+ *           Not retained.
+ *
+ * Returned Value:
+ *   Zero on success; -EBUSY if the slice is already owned, -EINVAL if the
+ *   slice number is out of range.
+ *
+ ****************************************************************************/
+
+int rp23xx_pwm_claim(unsigned int slice, const char *owner);
+
+/****************************************************************************
+ * Name: rp23xx_pwm_release
+ *
+ * Description:
+ *   Give up a slice claimed with rp23xx_pwm_claim().  Releasing a slice
+ *   that was never claimed is harmless.
+ *
+ * Input Parameters:
+ *   slice - The slice number, 0 to 11
+ *
+ ****************************************************************************/
+
+void rp23xx_pwm_release(unsigned int slice);
+
 #undef EXTERN
 #if defined(__cplusplus)
 }

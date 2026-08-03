@@ -38,10 +38,28 @@
 
 #include <nuttx/debug.h>
 #include <nuttx/irq.h>
+#include <nuttx/spinlock.h>
 #include <nuttx/timers/pwm.h>
 #include <arch/board/board.h>
 #include "rp23xx_gpio.h"
 #include "rp23xx_pwm.h"
+
+/****************************************************************************
+ * Pre-processor Definitions
+ ****************************************************************************/
+
+/* The RP2350 has twelve PWM slices, each with two channels */
+
+#define RP23XX_PWM_SLICES  12
+
+/****************************************************************************
+ * Private Data
+ ****************************************************************************/
+
+/* Which slices are spoken for.  See rp23xx_pwm_claim(). */
+
+static uint32_t   g_pwm_claimed;
+static spinlock_t g_pwm_claim_lock = SP_UNLOCKED;
 
 /****************************************************************************
  * Local Function Prototypes
@@ -186,6 +204,66 @@ int rp23xx_pwm_uninitialize(struct pwm_lowerhalf_s *dev)
  ****************************************************************************/
 
 /****************************************************************************
+ * Name: rp23xx_pwm_claim
+ *
+ * Description:
+ *   Take exclusive ownership of one PWM slice.  See rp23xx_pwm.h.
+ *
+ ****************************************************************************/
+
+int rp23xx_pwm_claim(unsigned int slice, const char *owner)
+{
+  irqstate_t flags;
+  int ret = OK;
+
+  if (slice >= RP23XX_PWM_SLICES)
+    {
+      return -EINVAL;
+    }
+
+  flags = spin_lock_irqsave(&g_pwm_claim_lock);
+
+  if ((g_pwm_claimed & (1u << slice)) != 0)
+    {
+      ret = -EBUSY;
+    }
+  else
+    {
+      g_pwm_claimed |= 1u << slice;
+    }
+
+  spin_unlock_irqrestore(&g_pwm_claim_lock, flags);
+
+  if (ret < 0)
+    {
+      pwmerr("ERROR: %s: PWM slice %u is already in use\n",
+             owner != NULL ? owner : "?", slice);
+    }
+
+  return ret;
+}
+
+/****************************************************************************
+ * Name: rp23xx_pwm_release
+ *
+ * Description:
+ *   Give up a slice claimed with rp23xx_pwm_claim().  See rp23xx_pwm.h.
+ *
+ ****************************************************************************/
+
+void rp23xx_pwm_release(unsigned int slice)
+{
+  irqstate_t flags;
+
+  if (slice < RP23XX_PWM_SLICES)
+    {
+      flags = spin_lock_irqsave(&g_pwm_claim_lock);
+      g_pwm_claimed &= ~(1u << slice);
+      spin_unlock_irqrestore(&g_pwm_claim_lock, flags);
+    }
+}
+
+/****************************************************************************
  * Name: pwm_setup
  *
  * Description:
@@ -204,6 +282,18 @@ int rp23xx_pwm_uninitialize(struct pwm_lowerhalf_s *dev)
 int pwm_setup(struct pwm_lowerhalf_s  * dev)
 {
   struct rp23xx_pwm_lowerhalf_s *priv = (struct rp23xx_pwm_lowerhalf_s *)dev;
+  int ret;
+
+  /* Take the slice.  Another driver may be wired to the same one -- an
+   * audio device sharing it is what lets both channels share a counter --
+   * and only one of us may program it.
+   */
+
+  ret = rp23xx_pwm_claim(priv->num, "pwm");
+  if (ret < 0)
+    {
+      return ret;
+    }
 
 #if defined(CONFIG_PWM_NCHANNELS) && CONFIG_PWM_NCHANNELS == 2
   pwminfo("PWM%d pin_a %d pin_b %d\n",
@@ -255,6 +345,8 @@ int pwm_shutdown (struct pwm_lowerhalf_s  * dev)
   /* Stop timer */
 
   pwm_stop(dev);
+
+  rp23xx_pwm_release(priv->num);
 
   /* Force the GPIO pins to the appropriate idle state */
 
