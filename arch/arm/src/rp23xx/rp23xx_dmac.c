@@ -103,6 +103,8 @@ static struct dma_channel_s g_dmach[RP23XX_DMA_NCHANNELS];
 static int rp23xx_dmac_interrupt(int irq, void *context, void *arg)
 {
   struct dma_channel_s *dmach;
+  dma_callback_t callback;
+  void *cbarg;
   int result = OK;
   unsigned int ch;
   uint32_t stat;
@@ -130,15 +132,29 @@ static int rp23xx_dmac_interrupt(int irq, void *context, void *arg)
 
       dmach = &g_dmach[ch];
 
+      /* Take the registration away before invoking it, not afterwards.
+       *
+       * Clearing it afterwards silently undoes anything the callback
+       * registered for itself, which is exactly what a continuously
+       * running channel has to do to keep going:  it transfers one more
+       * block and then goes deaf, with no error anywhere.  Lifting the
+       * callback out first leaves the one-shot behaviour unchanged for
+       * every existing user -- none of them re-register from inside the
+       * call -- while letting one that does re-arm survive.
+       */
+
+      callback = dmach->callback;
+      cbarg    = dmach->arg;
+
+      dmach->callback = NULL;
+      dmach->arg      = NULL;
+
       /* Call the DMA completion callback */
 
-      if (dmach->callback)
+      if (callback)
         {
-          dmach->callback((DMA_HANDLE)dmach, result, dmach->arg);
-          dmach->callback = NULL;
+          callback((DMA_HANDLE)dmach, result, cbarg);
         }
-
-      dmach->arg = NULL;
     }
 
   return OK;
