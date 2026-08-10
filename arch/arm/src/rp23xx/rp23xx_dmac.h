@@ -272,6 +272,22 @@ uint32_t rp23xx_dma_ctrl_blk_ctrl(DMA_HANDLE  control,
 void rp23xx_dmastart(DMA_HANDLE handle, dma_callback_t callback, void *arg);
 
 /****************************************************************************
+ * Name: rp23xx_dmacallback
+ *
+ * Description:
+ *   Register the completion callback without starting the channel, for a
+ *   channel that is started by another channel's CHAIN_TO rather than by
+ *   software.  See rp23xx_dmastart(), which does both at once.
+ *
+ * Assumptions:
+ *   - DMA handle allocated by rp23xx_dmachannel()
+ *
+ ****************************************************************************/
+
+void rp23xx_dmacallback(DMA_HANDLE handle, dma_callback_t callback,
+                        void *arg);
+
+/****************************************************************************
  * Name: rp23xx_dmastop
  *
  * Description:

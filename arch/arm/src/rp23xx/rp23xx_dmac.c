@@ -580,6 +580,34 @@ void rp23xx_dmastart(DMA_HANDLE handle, dma_callback_t callback, void *arg)
 }
 
 /****************************************************************************
+ * Name: rp23xx_dmacallback
+ *
+ * Description:
+ *   Register the completion callback without starting the channel.
+ *
+ *   rp23xx_dmastart() does two things at once:  it records the callback and
+ *   it sets EN on the trigger register, which starts the transfer.  A
+ *   channel that is started by hardware instead -- by another channel's
+ *   CHAIN_TO -- must be armed through a non-trigger alias and still needs
+ *   its callback put back after each interrupt.  This does that half alone.
+ *
+ * Assumptions:
+ *   - DMA handle allocated by rp23xx_dmachannel()
+ *
+ ****************************************************************************/
+
+void rp23xx_dmacallback(DMA_HANDLE handle, dma_callback_t callback,
+                        void *arg)
+{
+  struct dma_channel_s *dmach = (struct dma_channel_s *)handle;
+
+  DEBUGASSERT(dmach && dmach->inuse);
+
+  dmach->callback = callback;
+  dmach->arg      = arg;
+}
+
+/****************************************************************************
  * Name: rp23xx_dmastop
  *
  * Description:
