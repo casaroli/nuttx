@@ -408,6 +408,26 @@ config RP23XX_PWM_AUDIO_STACKSIZE
 	int "Conversion thread stack size"
 	default 1536
 
+config RP23XX_PWM_AUDIO_STATS
+	bool "Collect playback statistics"
+	default n
+	---help---
+		Record how close the output came to running dry, and how long the
+		conversion thread took to answer.  The interesting number is the
+		low-water mark of occupancy -- how much audio was still unplayed
+		each time a buffer ended -- because that is what a buffer has to
+		be large enough to cover, and it is a property of the producer
+		rather than of this driver.
+
+		The counters live in one static structure, g_pwm_audio_stats,
+		which carries a magic number and the sample rate so that a
+		debugger can find it and make sense of it while a stream is
+		running.  They are also written to the syslog when the stream
+		stops.
+
+		Costs one 32-bit timer read per buffer and a subtraction; it is
+		meant to be safe to leave on, but it is not on by default.
+
 endif # RP23XX_PWM_AUDIO
 
 config RP23XX_PWM_MULTICHAN

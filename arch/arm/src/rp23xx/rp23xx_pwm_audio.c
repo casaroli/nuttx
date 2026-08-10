@@ -32,6 +32,7 @@
 #include <string.h>
 #include <errno.h>
 #include <assert.h>
+#include <syslog.h>
 #include <debug.h>
 
 #include <nuttx/kmalloc.h>
@@ -49,6 +50,8 @@
 #include "rp23xx_pwm_audio.h"
 #include "hardware/rp23xx_pwm.h"
 #include "hardware/rp23xx_dma.h"
+#include "hardware/rp23xx_memorymap.h"
+#include "hardware/rp23xx_timer.h"
 
 #ifdef CONFIG_RP23XX_PWM_AUDIO
 
@@ -80,12 +83,28 @@
 
 #define PWM_AUDIO_SHIFT     (16 - PWM_AUDIO_BITS)
 
-/* Two buffers of converted samples, so one can be filled while the other is
- * being played.  A single buffer leaves a gap at every boundary.
+/* Two halves of one buffer, each with its own DMA channel, each channel's
+ * CHAIN_TO pointing at the other.
+ *
+ * This is what makes the output continuous.  Both channels are armed and
+ * only the first is ever triggered by software; when one finishes, the
+ * hardware starts the other in the same cycle, with nothing in between for
+ * software to be late for.  Driving one channel and restarting it from a
+ * thread -- which is what this did before -- leaves the output dead from
+ * the completion interrupt until the thread runs, and that was measured at
+ * 1.1 ms mean and 1.2 ms worst against a 93 ms buffer:  a gap at every
+ * boundary, ten times a second, which is what it sounded like.
+ *
+ * The interrupt at the end of each half is still there and is still what
+ * paces the refill; it just no longer has the output waiting on it.
  */
 
 #define PWM_AUDIO_NBUFFERS  2
 #define PWM_AUDIO_NSAMPLES  CONFIG_RP23XX_PWM_AUDIO_BUFSAMPLES
+
+/* Silence, as one compare register write:  both channels at mid-scale */
+
+#define PWM_AUDIO_MIDPAIR   ((PWM_AUDIO_MID << 16) | PWM_AUDIO_MID)
 
 /* How many buffers the upper half may keep in flight.
  *
@@ -139,8 +158,15 @@ struct pwm_audio_dev_s
   int           pin_a;                    /* Left channel GPIO */
   int           pin_b;                    /* Right channel GPIO, or -1 */
 
-  DMA_HANDLE    dma;                      /* Channel feeding the compare */
-  uintptr_t     ccaddr;                   /* Address of that compare */
+  /* One DMA channel per half, their numbers kept alongside because
+   * CHAIN_TO needs a number and the allocator only returns a handle.
+   */
+
+  DMA_HANDLE    dma[PWM_AUDIO_NBUFFERS];
+  unsigned int  dmach[PWM_AUDIO_NBUFFERS];
+
+  FAR uint32_t *ring;                     /* Both halves, one allocation */
+  uintptr_t     ccaddr;                   /* Address of the compare */
 
   mutex_t       lock;                     /* Guards the queue and state */
   sem_t         wake;                     /* Wakes the filling thread */
@@ -157,8 +183,72 @@ struct pwm_audio_dev_s
   bool          streaming;                /* Between start and stop */
   bool          terminate;                /* Tell the thread to go away */
   bool          claimed;                  /* Slice ownership is held */
+  bool          completed;                /* The end of stream was reported */
   int           threadid;                 /* Filling thread, or 0 */
+
+#ifdef CONFIG_RP23XX_PWM_AUDIO_STATS
+  uint32_t      pendframes;               /* Frames queued but unconverted */
+  uint32_t      donetime;                 /* When a buffer ended */
+  bool          donevalid;                /* ...and whether that is a time */
+  bool          doneready;                /* Was the next one ready then? */
+  bool          draining;                 /* The last buffer has been given */
+#endif
 };
+
+#ifdef CONFIG_RP23XX_PWM_AUDIO_STATS
+
+/* Everything measured about one stream.
+ *
+ * Static, and carrying its own magic number and sample rate, so that a
+ * debugger can find it in the symbol table and read it while the stream is
+ * still running -- which matters, because halting the CPU to look at it is
+ * itself the kind of stall being measured.
+ *
+ * Every field is 32 bits.  The sums are in microseconds and would take
+ * about seventy minutes of *accumulated* latency to wrap, which no
+ * plausible run reaches.
+ */
+
+#define PWM_AUDIO_STATS_MAGIC 0x50415331   /* "PAS1" */
+
+struct pwm_audio_stats_s
+{
+  uint32_t magic;          /* PWM_AUDIO_STATS_MAGIC once a stream has run */
+  uint32_t samprate;       /* Frames per second, to read the rest in time */
+  uint32_t nchannels;
+  uint32_t bufframes;      /* PWM_AUDIO_NSAMPLES */
+
+  uint32_t completions;    /* Buffers the DMA finished */
+  uint32_t measured;       /* ...of which came before the stream ran out */
+  uint32_t starved;        /* ...of which found nothing ready to follow */
+
+  uint32_t occmin;         /* Low-water mark of unplayed audio, in frames */
+  uint32_t occlast;        /* The most recent reading of the same */
+
+  /* How long the thread took to put fresh audio into a half after being
+   * told the half was free, in microseconds.
+   *
+   * This is margin, not dead air:  the other half is playing throughout,
+   * started by the hardware.  It matters against the half-period, which is
+   * how long there is before the chain comes back round.
+   */
+
+  uint32_t refilln;
+  uint32_t refillmax;
+  uint32_t refillsum;
+
+  uint32_t starvemax;      /* The same, when nothing was waiting */
+  uint32_t starvesum;
+
+  uint32_t filln;          /* Buffers converted */
+  uint32_t fillmax;        /* Longest conversion, us */
+  uint32_t fillsum;
+  uint32_t fillframes;     /* Frames converted, for a per-frame cost */
+};
+
+static struct pwm_audio_stats_s g_pwm_audio_stats;
+
+#endif /* CONFIG_RP23XX_PWM_AUDIO_STATS */
 
 /****************************************************************************
  * Private Function Prototypes
@@ -227,6 +317,276 @@ static const struct audio_ops_s g_pwm_audio_ops =
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
+
+#ifdef CONFIG_RP23XX_PWM_AUDIO_STATS
+
+/****************************************************************************
+ * Name: pwm_audio_now
+ *
+ * Description:
+ *   The always-on microsecond counter, read without side effects.
+ *
+ *   TIMERAWL is the unlatched low word:  reading it does not latch the high
+ *   word the way TIMELR does, so it is safe from an interrupt and from a
+ *   thread at the same time.  It wraps every 71 minutes, which unsigned
+ *   subtraction of two readings survives as long as they are closer
+ *   together than that.
+ *
+ ****************************************************************************/
+
+static inline uint32_t pwm_audio_now(void)
+{
+  return getreg32(RP23XX_TIMER0_BASE + RP23XX_TIMER_TIMERAWL_OFFSET);
+}
+
+/****************************************************************************
+ * Name: pwm_audio_statsreset
+ *
+ * Description:
+ *   Begin a fresh measurement.  Called from start(), where the sample rate
+ *   is finally known.
+ *
+ ****************************************************************************/
+
+static void pwm_audio_statsreset(FAR struct pwm_audio_dev_s *priv)
+{
+  memset(&g_pwm_audio_stats, 0, sizeof(g_pwm_audio_stats));
+
+  g_pwm_audio_stats.magic     = PWM_AUDIO_STATS_MAGIC;
+  g_pwm_audio_stats.samprate  = priv->samprate;
+  g_pwm_audio_stats.nchannels = priv->nchannels;
+  g_pwm_audio_stats.bufframes = PWM_AUDIO_NSAMPLES;
+
+  g_pwm_audio_stats.occmin    = UINT32_MAX;
+
+  /* priv->pendframes is deliberately left alone.  A player enqueues before
+   * it starts -- that is the whole point of queuing ahead -- so zeroing it
+   * here would discard exactly the head start being measured.  It is
+   * maintained by enqueue, fill and cancel, and cleared by stop.
+   */
+
+  priv->donetime  = 0;
+  priv->donevalid = false;
+  priv->doneready = false;
+  priv->draining  = false;
+}
+
+/****************************************************************************
+ * Name: pwm_audio_statsdone
+ *
+ * Description:
+ *   A buffer has just finished.  Record how much audio was still unplayed
+ *   at that instant and start the clock on whatever comes next.
+ *
+ *   Runs in interrupt context, so it does nothing but read a few words and
+ *   subtract.  The values it reads are single aligned words written by the
+ *   thread, so a torn read is not possible; a stale one is, and does not
+ *   matter for a low-water mark.
+ *
+ ****************************************************************************/
+
+static void pwm_audio_statsdone(FAR struct pwm_audio_dev_s *priv)
+{
+  uint32_t occ = priv->pendframes;
+  unsigned int i;
+
+  g_pwm_audio_stats.completions++;
+
+  /* Once the producer has handed over its last buffer the queue is meant to
+   * empty:  occupancy falls to zero and the final completion finds nothing
+   * to follow it.  That is the stream ending rather than the producer
+   * failing, and counting it makes the low-water mark read zero for every
+   * run that plays to the end -- which is to say, useless.
+   */
+
+  if (priv->draining)
+    {
+      priv->donevalid = false;
+      return;
+    }
+
+  g_pwm_audio_stats.measured++;
+
+  /* Occupancy is everything the DMA could still play without the producer
+   * doing anything more:  converted frames waiting in the other buffers,
+   * plus the frames queued behind them.  The buffer that just ended holds
+   * nothing by definition, which is what makes this the margin rather than
+   * a snapshot -- when it reaches zero the output has stopped.
+   */
+
+  /* Whether a converted buffer is ready right now is also what separates
+   * the driver's own gap -- the thread being woken and rearming the DMA --
+   * from the producer having failed to keep up.  They need different fixes
+   * and they are indistinguishable once averaged together.
+   */
+
+  priv->doneready = false;
+
+  for (i = 0; i < PWM_AUDIO_NBUFFERS; i++)
+    {
+      if (i != priv->playing && priv->buf[i].state == PWM_AUDIO_BUF_READY)
+        {
+          occ += priv->buf[i].nsamples;
+          priv->doneready = true;
+        }
+    }
+
+  g_pwm_audio_stats.occlast = occ;
+
+  if (occ < g_pwm_audio_stats.occmin)
+    {
+      g_pwm_audio_stats.occmin = occ;
+    }
+
+  if (!priv->doneready)
+    {
+      g_pwm_audio_stats.starved++;
+    }
+
+  /* A separate flag rather than a reserved value.  Forcing the timestamp
+   * away from zero -- with "| 1" -- rounds it *up*, so a rearm that takes
+   * no whole microsecond subtracts to -1 and reports 4294967295 us.
+   */
+
+  priv->donetime  = pwm_audio_now();
+  priv->donevalid = true;
+}
+
+/****************************************************************************
+ * Name: pwm_audio_statsstart
+ *
+ * Description:
+ *   The DMA has been pointed at the next buffer.  Close out the interval
+ *   that pwm_audio_statsdone() opened.
+ *
+ ****************************************************************************/
+
+static void pwm_audio_statsstart(FAR struct pwm_audio_dev_s *priv)
+{
+  uint32_t elapsed;
+
+  if (!priv->donevalid)
+    {
+      /* The first buffer of a stream follows no completion */
+
+      return;
+    }
+
+  elapsed = pwm_audio_now() - priv->donetime;
+  priv->donevalid = false;
+
+  if (priv->doneready)
+    {
+      g_pwm_audio_stats.refilln++;
+      g_pwm_audio_stats.refillsum += elapsed;
+
+      if (elapsed > g_pwm_audio_stats.refillmax)
+        {
+          g_pwm_audio_stats.refillmax = elapsed;
+        }
+    }
+  else
+    {
+      g_pwm_audio_stats.starvesum += elapsed;
+
+      if (elapsed > g_pwm_audio_stats.starvemax)
+        {
+          g_pwm_audio_stats.starvemax = elapsed;
+        }
+    }
+}
+
+/****************************************************************************
+ * Name: pwm_audio_statsfill
+ *
+ * Description:
+ *   Record what one call to pwm_audio_fill() cost.  This is the only CPU
+ *   work in the audio path that scales with the sample rate, and it has
+ *   never been measured.
+ *
+ ****************************************************************************/
+
+static void pwm_audio_statsfill(uint32_t elapsed, unsigned int frames)
+{
+  if (frames == 0)
+    {
+      return;
+    }
+
+  g_pwm_audio_stats.filln++;
+  g_pwm_audio_stats.fillsum    += elapsed;
+  g_pwm_audio_stats.fillframes += frames;
+
+  if (elapsed > g_pwm_audio_stats.fillmax)
+    {
+      g_pwm_audio_stats.fillmax = elapsed;
+    }
+}
+
+/****************************************************************************
+ * Name: pwm_audio_statsdump
+ *
+ * Description:
+ *   Write the measurement to the syslog.  Everything is integer arithmetic
+ *   because a floating point printf is not configured in here.
+ *
+ ****************************************************************************/
+
+static void pwm_audio_statsdump(void)
+{
+  FAR struct pwm_audio_stats_s *s = &g_pwm_audio_stats;
+  uint32_t rate = s->samprate ? s->samprate : 1;
+
+  if (s->completions == 0)
+    {
+      return;
+    }
+
+  syslog(LOG_INFO,
+         "pwm_audio: %" PRIu32 " buffers of %" PRIu32 " frames "
+         "(%" PRIu32 " ms each) at %" PRIu32 " Hz, %" PRIu32 " measured\n",
+         s->completions, s->bufframes, s->bufframes * 1000 / rate, rate,
+         s->measured);
+
+  if (s->measured == 0)
+    {
+      syslog(LOG_INFO, "pwm_audio: too short to measure occupancy\n");
+    }
+  else
+    {
+      syslog(LOG_INFO,
+             "pwm_audio: occupancy low-water %" PRIu32 " frames = %" PRIu32
+             " ms, last %" PRIu32 "\n",
+             s->occmin, s->occmin * 1000 / rate, s->occlast);
+    }
+
+  syslog(LOG_INFO,
+         "pwm_audio: refill n=%" PRIu32 " max %" PRIu32 " us mean %" PRIu32
+         " us (of %" PRIu32 " ms available)\n",
+         s->refilln, s->refillmax,
+         s->refilln ? s->refillsum / s->refilln : 0,
+         s->bufframes * 1000 / rate);
+
+  syslog(LOG_INFO,
+         "pwm_audio: starve n=%" PRIu32 " max %" PRIu32 " us mean %" PRIu32
+         " us\n",
+         s->starved, s->starvemax,
+         s->starved ? s->starvesum / s->starved : 0);
+
+  syslog(LOG_INFO,
+         "pwm_audio: convert n=%" PRIu32 " max %" PRIu32 " us mean %" PRIu32
+         " us, %" PRIu32 " ns/frame\n",
+         s->filln, s->fillmax, s->filln ? s->fillsum / s->filln : 0,
+         s->fillframes ? s->fillsum * 1000 / s->fillframes : 0);
+}
+
+#else
+#  define pwm_audio_statsreset(p)
+#  define pwm_audio_statsdone(p)
+#  define pwm_audio_statsstart(p)
+#  define pwm_audio_statsfill(e, f)
+#  define pwm_audio_statsdump()
+#endif /* CONFIG_RP23XX_PWM_AUDIO_STATS */
 
 /****************************************************************************
  * Name: pwm_audio_pacing
@@ -483,33 +843,101 @@ static unsigned int pwm_audio_fill(FAR struct pwm_audio_dev_s *priv,
 
       nsamples      += avail;
       apb->curbyte  += avail * framesz;
+
+#ifdef CONFIG_RP23XX_PWM_AUDIO_STATS
+      priv->pendframes -= avail;
+#endif
     }
 
   buf->nsamples = nsamples;
   return nsamples;
 }
 
+static void pwm_audio_dmacallback(DMA_HANDLE handle, uint8_t status,
+                                  FAR void *arg);
+
 /****************************************************************************
- * Name: pwm_audio_startbuf
+ * Name: pwm_audio_dmactrl
  *
  * Description:
- *   Point the DMA at a buffer and let it run.  Called with priv->lock held,
- *   or from the DMA callback where the channel is idle by definition.
+ *   The control word for one half's channel.
+ *
+ *   CHAIN_TO names the *other* channel, which is the whole mechanism:  when
+ *   this one runs out, the hardware starts that one immediately.
  *
  ****************************************************************************/
 
-static void pwm_audio_startbuf(FAR struct pwm_audio_dev_s *priv,
-                               unsigned int index);
+static uint32_t pwm_audio_dmactrl(FAR struct pwm_audio_dev_s *priv,
+                                  unsigned int index)
+{
+  unsigned int other = index ^ 1;
+
+  /* INCR_WRITE stays clear:  the compare register is a single address.
+   * INCR_READ must be set, or the DMA re-reads one sample forever, which
+   * is a constant duty cycle -- DC, and therefore silence.
+   */
+
+  return RP23XX_DMA_CTRL_TRIG_EN |
+         RP23XX_DMA_CTRL_TRIG_DATA_SIZE_SIZE_WORD |
+         RP23XX_DMA_CTRL_TRIG_INCR_READ |
+         (priv->dmach[other] << RP23XX_DMA_CTRL_TRIG_CHAIN_TO_SHIFT) |
+         (RP23XX_DMA_TREQ_TIMER(CONFIG_RP23XX_PWM_AUDIO_DMA_TIMER) <<
+          RP23XX_DMA_CTRL_TRIG_TREQ_SEL_SHIFT);
+}
+
+/****************************************************************************
+ * Name: pwm_audio_arm
+ *
+ * Description:
+ *   Load one half's channel and leave it waiting to be chained to.
+ *
+ *   The control word goes to AL1_CTRL rather than CTRL_TRIG.  Writing
+ *   CTRL_TRIG would start the transfer there and then; writing the alias
+ *   arms the channel and leaves the other channel's CHAIN_TO as the only
+ *   thing that can start it.  That is what keeps the two halves in step
+ *   instead of both running at once.
+ *
+ *   Always the full half:  a partly filled half would leave the chain with
+ *   a shorter transfer than the audio it represents.  The filling thread
+ *   pads with mid-scale instead.
+ *
+ ****************************************************************************/
+
+static void pwm_audio_arm(FAR struct pwm_audio_dev_s *priv,
+                          unsigned int index)
+{
+  unsigned int ch = priv->dmach[index];
+
+  putreg32((uintptr_t)priv->buf[index].samples, RP23XX_DMA_READ_ADDR(ch));
+  putreg32(priv->ccaddr, RP23XX_DMA_WRITE_ADDR(ch));
+  putreg32(PWM_AUDIO_NSAMPLES, RP23XX_DMA_TRANS_COUNT(ch));
+  putreg32(pwm_audio_dmactrl(priv, index), RP23XX_DMA_AL1_CTRL(ch));
+
+  /* The shared interrupt handler takes the callback away on every call, so
+   * it has to be put back each time.  rp23xx_dmastart() would do that but
+   * would also trigger the channel, which is exactly what must not happen
+   * here.
+   */
+
+  rp23xx_dmacallback(priv->dma[index], pwm_audio_dmacallback, priv);
+}
 
 /****************************************************************************
  * Name: pwm_audio_dmacallback
  *
  * Description:
- *   One buffer has been played.  Hand the other to the DMA if it is ready
- *   and wake the filling thread for the one just released.
+ *   One half has been played and the other is already running, started by
+ *   the hardware.  Re-arm this one straight away so the chain always has a
+ *   loaded target, and wake the thread to put fresh audio in it.
  *
- *   This runs in interrupt context, so it does no conversion of its own --
- *   that is the thread's job.
+ *   Re-arming from here is safe now that rp23xx_dmac_interrupt() clears the
+ *   callback *before* invoking it.  It is also necessary:  a channel left
+ *   with a zero transfer count would be chained to anyway, and would
+ *   complete instantly and chain onwards, which is an interrupt storm
+ *   rather than a silence.
+ *
+ *   The half is not being read while this runs -- the other half is -- so
+ *   the thread has a whole half-period to refill it.
  *
  ****************************************************************************/
 
@@ -517,61 +945,84 @@ static void pwm_audio_dmacallback(DMA_HANDLE handle, uint8_t status,
                                   FAR void *arg)
 {
   FAR struct pwm_audio_dev_s *priv = (FAR struct pwm_audio_dev_s *)arg;
+  unsigned int index;
 
   if (!priv->streaming)
     {
       return;
     }
 
-  priv->buf[priv->playing].state    = PWM_AUDIO_BUF_FREE;
-  priv->buf[priv->playing].nsamples = 0;
+  index = (handle == priv->dma[0]) ? 0 : 1;
 
-  /* The next buffer is deliberately NOT started from here.
-   *
-   * rp23xx_dmac_interrupt() clears dmach->callback *after* invoking it, so
-   * anything this callback registers -- which is what rp23xx_dmastart()
-   * does -- is wiped the moment it returns.  Re-arming from inside the
-   * callback therefore plays exactly one more buffer and then goes deaf,
-   * which sounds like a single slightly-too-long click.
-   *
-   * So only the state is updated here and the filling thread is woken; it
-   * starts the next buffer in thread context, where the registration
-   * survives.  That also keeps DMA setup out of interrupt context.
-   */
+  /* Measured while priv->playing still names the half that just ended */
+
+  priv->playing = index;
+  pwm_audio_statsdone(priv);
+
+  priv->buf[index].state    = PWM_AUDIO_BUF_FREE;
+  priv->buf[index].nsamples = 0;
+
+  pwm_audio_arm(priv, index);
 
   nxsem_post(&priv->wake);
 }
 
 /****************************************************************************
- * Name: pwm_audio_startbuf
+ * Name: pwm_audio_dmago
+ *
+ * Description:
+ *   Arm both halves and set the pair running.  Only half zero is triggered;
+ *   from then on each half is started by the other finishing.
+ *
  ****************************************************************************/
 
-static void pwm_audio_startbuf(FAR struct pwm_audio_dev_s *priv,
-                               unsigned int index)
+static void pwm_audio_dmago(FAR struct pwm_audio_dev_s *priv)
 {
-  FAR struct pwm_audio_buf_s *buf = &priv->buf[index];
-  dma_config_t config;
+  unsigned int i;
 
-  config.dreq   = RP23XX_DMA_TREQ_TIMER(CONFIG_RP23XX_PWM_AUDIO_DMA_TIMER);
-  config.size   = RP23XX_DMA_SIZE_WORD;
+  for (i = 0; i < PWM_AUDIO_NBUFFERS; i++)
+    {
+      pwm_audio_arm(priv, i);
+    }
 
-  /* 'noincr' is about the *memory* address, not the peripheral one.
-   *
-   * rp23xx_txdmasetup() never increments the write address -- a transmit
-   * always targets one register -- so this only decides whether the read
-   * walks the buffer.  It must, or the DMA re-reads the first sample
-   * forever and the compare register holds one value: a constant duty,
-   * which is DC and therefore silence.
+  priv->playing = 0;
+
+  /* MULTI_CHAN_TRIGGER starts a channel without rewriting its control
+   * word, which matters because writing CTRL_TRIG here would also be the
+   * moment the chain configuration took effect.
    */
 
-  config.noincr = false;
+  putreg32(1 << priv->dmach[0], RP23XX_DMA_MULTI_CHAN_TRIGGER);
+}
 
-  priv->playing = index;
-  buf->state    = PWM_AUDIO_BUF_PLAYING;
+/****************************************************************************
+ * Name: pwm_audio_dmahalt
+ ****************************************************************************/
 
-  rp23xx_txdmasetup(priv->dma, priv->ccaddr, (uintptr_t)buf->samples,
-                    buf->nsamples * sizeof(uint32_t), config);
-  rp23xx_dmastart(priv->dma, pwm_audio_dmacallback, priv);
+static void pwm_audio_dmahalt(FAR struct pwm_audio_dev_s *priv)
+{
+  unsigned int i;
+
+  for (i = 0; i < PWM_AUDIO_NBUFFERS; i++)
+    {
+      /* Point each channel's CHAIN_TO at itself and clear EN, both through
+       * the non-trigger alias, before aborting anything.
+       *
+       * Aborting a channel still chained to the other one triggers that
+       * other one on the way out, which restarts the pair -- so the halt
+       * has to break the ring first.  CHAIN_TO disabled means "equal to
+       * this channel", not zero:  writing a plain 0 would leave channel
+       * one chained to channel zero.
+       */
+
+      putreg32(priv->dmach[i] << RP23XX_DMA_CTRL_TRIG_CHAIN_TO_SHIFT,
+               RP23XX_DMA_AL1_CTRL(priv->dmach[i]));
+    }
+
+  for (i = 0; i < PWM_AUDIO_NBUFFERS; i++)
+    {
+      rp23xx_dmastop(priv->dma[i]);
+    }
 }
 
 /****************************************************************************
@@ -609,34 +1060,58 @@ static int pwm_audio_worker(int argc, FAR char *argv[])
 
       for (i = 0; i < PWM_AUDIO_NBUFFERS; i++)
         {
-          if (priv->buf[i].state == PWM_AUDIO_BUF_FREE &&
-              pwm_audio_fill(priv, &priv->buf[i], &doneq) > 0)
-            {
-              priv->buf[i].state = PWM_AUDIO_BUF_READY;
-            }
-        }
+          unsigned int nfilled;
+          unsigned int k;
+#ifdef CONFIG_RP23XX_PWM_AUDIO_STATS
+          uint32_t started;
+#endif
 
-      /* If nothing is playing, start whatever is ready.  This is both the
-       * first start and the recovery from having run dry.
-       */
-
-      if (priv->buf[priv->playing].state != PWM_AUDIO_BUF_PLAYING)
-        {
-          for (i = 0; i < PWM_AUDIO_NBUFFERS; i++)
+          if (priv->buf[i].state != PWM_AUDIO_BUF_FREE)
             {
-              if (priv->buf[i].state == PWM_AUDIO_BUF_READY)
-                {
-                  pwm_audio_startbuf(priv, i);
-                  break;
-                }
+              continue;
             }
 
-          if (i == PWM_AUDIO_NBUFFERS && dq_empty(&priv->pendq))
+#ifdef CONFIG_RP23XX_PWM_AUDIO_STATS
+          started = pwm_audio_now();
+#endif
+
+          nfilled = pwm_audio_fill(priv, &priv->buf[i], &doneq);
+
+          /* Whatever is not audio has to be silence.
+           *
+           * The DMA plays this half either way -- it never stops between
+           * start and stop -- so a short fill would otherwise replay the
+           * tail of what was there before, which is a periodic buzz and a
+           * good deal worse than a dropout.  Silence is mid-scale, not
+           * zero:  the output is AC coupled.
+           */
+
+          for (k = nfilled; k < PWM_AUDIO_NSAMPLES; k++)
             {
-              /* Out of audio and out of buffers:  the stream has ended.
-               * Reported below, with the lock released.
+              priv->buf[i].samples[k] = PWM_AUDIO_MIDPAIR;
+            }
+
+#ifdef CONFIG_RP23XX_PWM_AUDIO_STATS
+          pwm_audio_statsfill(pwm_audio_now() - started, nfilled);
+#endif
+
+          priv->buf[i].state = PWM_AUDIO_BUF_READY;
+
+          /* The half is loaded and the chain will reach it on its own.
+           * This is where the refill deadline was met, so it is where the
+           * margin against the half-period is worth measuring.
+           */
+
+          pwm_audio_statsstart(priv);
+
+          if (nfilled == 0 && dq_empty(&priv->pendq) && !priv->completed)
+            {
+              /* Out of audio:  the stream has ended.  The DMA keeps
+               * running on silence -- stopping it is the client's call,
+               * and a sink that shuts down between tracks would click.
                */
 
+              priv->completed = true;
               complete = true;
             }
         }
@@ -873,6 +1348,8 @@ static int pwm_audio_start(FAR struct audio_lowerhalf_s *dev)
   FAR struct pwm_audio_dev_s *priv = (FAR struct pwm_audio_dev_s *)dev;
   FAR char *argv[2];
   char arg1[32];
+  unsigned int i;
+  unsigned int k;
   int ret;
 
   ret = nxmutex_lock(&priv->lock);
@@ -890,9 +1367,32 @@ static int pwm_audio_start(FAR struct audio_lowerhalf_s *dev)
   pwm_audio_hwstart(priv);
 
   priv->streaming = true;
+  priv->completed = false;
   priv->playing   = 0;
-  priv->buf[0].state = PWM_AUDIO_BUF_FREE;
-  priv->buf[1].state = PWM_AUDIO_BUF_FREE;
+
+  /* Both halves start as silence, so that whatever the first chain reaches
+   * is mid-scale rather than the contents of a fresh allocation.
+   */
+
+  for (i = 0; i < PWM_AUDIO_NBUFFERS; i++)
+    {
+      for (k = 0; k < PWM_AUDIO_NSAMPLES; k++)
+        {
+          priv->buf[i].samples[k] = PWM_AUDIO_MIDPAIR;
+        }
+
+      priv->buf[i].nsamples = 0;
+      priv->buf[i].state    = PWM_AUDIO_BUF_FREE;
+    }
+
+  pwm_audio_statsreset(priv);
+
+  /* Set the pair running now, before anything has been converted.  It
+   * plays silence until the thread catches up, which is what a sink does;
+   * waiting for audio would put the gap back at the start of every stream.
+   */
+
+  pwm_audio_dmago(priv);
 
   if (priv->threadid <= 0)
     {
@@ -943,7 +1443,7 @@ static int pwm_audio_stop(FAR struct audio_lowerhalf_s *dev)
   nxmutex_lock(&priv->lock);
 
   priv->streaming = false;
-  rp23xx_dmastop(priv->dma);
+  pwm_audio_dmahalt(priv);
   pwm_audio_hwstop(priv);
 
   /* Take anything still queued off the list now, but hand it back after
@@ -960,9 +1460,15 @@ static int pwm_audio_stop(FAR struct audio_lowerhalf_s *dev)
   priv->buf[0].state = PWM_AUDIO_BUF_FREE;
   priv->buf[1].state = PWM_AUDIO_BUF_FREE;
 
+#ifdef CONFIG_RP23XX_PWM_AUDIO_STATS
+  priv->pendframes = 0;
+#endif
+
   nxmutex_unlock(&priv->lock);
 
   pwm_audio_giveback(priv, &doneq);
+
+  pwm_audio_statsdump();
   return OK;
 }
 
@@ -980,8 +1486,8 @@ static int pwm_audio_pause(FAR struct audio_lowerhalf_s *dev)
   FAR struct pwm_audio_dev_s *priv = (FAR struct pwm_audio_dev_s *)dev;
 
   nxmutex_lock(&priv->lock);
-  rp23xx_dmastop(priv->dma);
-  pwm_audio_setcc(priv, (PWM_AUDIO_MID << 16) | PWM_AUDIO_MID);
+  pwm_audio_dmahalt(priv);
+  pwm_audio_setcc(priv, PWM_AUDIO_MIDPAIR);
   nxmutex_unlock(&priv->lock);
 
   return OK;
@@ -999,6 +1505,19 @@ static int pwm_audio_resume(FAR struct audio_lowerhalf_s *dev)
 #endif
 {
   FAR struct pwm_audio_dev_s *priv = (FAR struct pwm_audio_dev_s *)dev;
+
+  nxmutex_lock(&priv->lock);
+
+  if (priv->streaming)
+    {
+      /* Both channels were disarmed by pause, so the chain has to be set
+       * going again rather than merely woken.
+       */
+
+      pwm_audio_dmago(priv);
+    }
+
+  nxmutex_unlock(&priv->lock);
 
   nxsem_post(&priv->wake);
   return OK;
@@ -1023,6 +1542,15 @@ static int pwm_audio_enqueue(FAR struct audio_lowerhalf_s *dev,
   apb->curbyte = 0;
   dq_addlast(&apb->dq_entry, &priv->pendq);
 
+#ifdef CONFIG_RP23XX_PWM_AUDIO_STATS
+  priv->pendframes += apb->nbytes / (priv->nchannels * sizeof(int16_t));
+
+  if ((apb->flags & AUDIO_APB_FINAL) != 0)
+    {
+      priv->draining = true;
+    }
+#endif
+
   nxmutex_unlock(&priv->lock);
 
   nxsem_post(&priv->wake);
@@ -1040,6 +1568,12 @@ static int pwm_audio_cancel(FAR struct audio_lowerhalf_s *dev,
 
   nxmutex_lock(&priv->lock);
   dq_rem(&apb->dq_entry, &priv->pendq);
+
+#ifdef CONFIG_RP23XX_PWM_AUDIO_STATS
+  priv->pendframes -= (apb->nbytes - apb->curbyte) /
+                      (priv->nchannels * sizeof(int16_t));
+#endif
+
   nxmutex_unlock(&priv->lock);
 
   return OK;
@@ -1126,6 +1660,7 @@ static int pwm_audio_reserve(FAR struct audio_lowerhalf_s *dev)
 #endif
 {
   FAR struct pwm_audio_dev_s *priv = (FAR struct pwm_audio_dev_s *)dev;
+  unsigned int i;
   int ret;
 
   ret = nxmutex_lock(&priv->lock);
@@ -1147,12 +1682,32 @@ static int pwm_audio_reserve(FAR struct audio_lowerhalf_s *dev)
       return ret;
     }
 
-  priv->dma = rp23xx_dmachannel();
-  if (priv->dma == NULL)
+  /* Two channels, and both are needed:  one alone cannot be chained to
+   * anything and the output stops between halves.
+   */
+
+  for (i = 0; i < PWM_AUDIO_NBUFFERS; i++)
     {
-      rp23xx_pwm_release(priv->slice);
-      nxmutex_unlock(&priv->lock);
-      return -EBUSY;
+      priv->dma[i] = rp23xx_dmachannel();
+      if (priv->dma[i] == NULL)
+        {
+          while (i-- > 0)
+            {
+              rp23xx_dmafree(priv->dma[i]);
+              priv->dma[i] = NULL;
+            }
+
+          rp23xx_pwm_release(priv->slice);
+          nxmutex_unlock(&priv->lock);
+          return -EBUSY;
+        }
+
+      /* CHAIN_TO takes a channel number, and the allocator only hands back
+       * an opaque handle.  The register base recovers it.
+       */
+
+      priv->dmach[i] = (rp23xx_dma_register(priv->dma[i], 0) -
+                        RP23XX_DMA_BASE) / 0x40;
     }
 
   priv->claimed = true;
@@ -1180,6 +1735,7 @@ static int pwm_audio_release(FAR struct audio_lowerhalf_s *dev)
 #endif
 {
   FAR struct pwm_audio_dev_s *priv = (FAR struct pwm_audio_dev_s *)dev;
+  unsigned int i;
 
   pwm_audio_shutdown(dev);
 
@@ -1187,10 +1743,13 @@ static int pwm_audio_release(FAR struct audio_lowerhalf_s *dev)
 
   if (priv->claimed)
     {
-      if (priv->dma != NULL)
+      for (i = 0; i < PWM_AUDIO_NBUFFERS; i++)
         {
-          rp23xx_dmafree(priv->dma);
-          priv->dma = NULL;
+          if (priv->dma[i] != NULL)
+            {
+              rp23xx_dmafree(priv->dma[i]);
+              priv->dma[i] = NULL;
+            }
         }
 
       rp23xx_pwm_release(priv->slice);
@@ -1236,31 +1795,29 @@ rp23xx_pwm_audio_initialize(unsigned int slice, int pin_a, int pin_b)
   nxsem_init(&priv->wake, 0, 0);
   dq_init(&priv->pendq);
 
+  /* One allocation for both halves, so that the two DMA channels walk a
+   * single contiguous region and the play position is meaningful across
+   * the pair rather than only within a half.
+   */
+
+  priv->ring = kmm_malloc(PWM_AUDIO_NBUFFERS * PWM_AUDIO_NSAMPLES *
+                          sizeof(uint32_t));
+  if (priv->ring == NULL)
+    {
+      auderr("ERROR: cannot allocate the sample buffers\n");
+      nxmutex_destroy(&priv->lock);
+      nxsem_destroy(&priv->wake);
+      kmm_free(priv);
+      return NULL;
+    }
+
   for (i = 0; i < PWM_AUDIO_NBUFFERS; i++)
     {
-      priv->buf[i].samples = kmm_malloc(PWM_AUDIO_NSAMPLES *
-                                        sizeof(uint32_t));
-      if (priv->buf[i].samples == NULL)
-        {
-          auderr("ERROR: cannot allocate the sample buffers\n");
-          goto errout;
-        }
-
-      priv->buf[i].state = PWM_AUDIO_BUF_FREE;
+      priv->buf[i].samples = priv->ring + i * PWM_AUDIO_NSAMPLES;
+      priv->buf[i].state   = PWM_AUDIO_BUF_FREE;
     }
 
   return &priv->dev;
-
-errout:
-  for (i = 0; i < PWM_AUDIO_NBUFFERS; i++)
-    {
-      kmm_free(priv->buf[i].samples);
-    }
-
-  nxmutex_destroy(&priv->lock);
-  nxsem_destroy(&priv->wake);
-  kmm_free(priv);
-  return NULL;
 }
 
 #endif /* CONFIG_RP23XX_PWM_AUDIO */
