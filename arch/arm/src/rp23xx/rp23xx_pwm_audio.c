@@ -40,6 +40,7 @@
 #include <nuttx/semaphore.h>
 #include <nuttx/kthread.h>
 #include <nuttx/audio/audio.h>
+#include <nuttx/audio/pwm_audio.h>
 
 #include <arch/board/board.h>
 
@@ -1610,6 +1611,31 @@ static int pwm_audio_ioctl(FAR struct audio_lowerhalf_s *dev, int cmd,
           ret                  = OK;
         }
         break;
+
+#ifdef CONFIG_RP23XX_PWM_AUDIO_STATS
+      /* Let the producer see how the output is coping.
+       *
+       * Without this the only way to read these counters is a debugger,
+       * and halting the CPU stops the refill thread -- which manufactures
+       * exactly the underruns the counters are there to report.
+       */
+
+      case AUDIOIOC_PWMAUDIOSTATUS:
+        {
+          FAR struct pwm_audio_status_s *status =
+            (FAR struct pwm_audio_status_s *)arg;
+
+          status->samprate  = g_pwm_audio_stats.samprate;
+          status->bufframes = g_pwm_audio_stats.bufframes;
+          status->buffers   = g_pwm_audio_stats.completions;
+          status->underruns = g_pwm_audio_stats.starved;
+          status->occupancy = g_pwm_audio_stats.occlast;
+          status->occlow    = g_pwm_audio_stats.occmin;
+          status->refillmax = g_pwm_audio_stats.refillmax;
+          ret               = OK;
+        }
+        break;
+#endif
 
       default:
         break;
