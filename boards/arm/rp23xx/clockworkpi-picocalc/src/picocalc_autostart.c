@@ -140,6 +140,17 @@ static int autostart_task(int argc, FAR char *argv[])
       return EXIT_FAILURE;
     }
 
+#ifdef CONFIG_SYSTEM_USBSH
+  /* A second shell on the USB port, if one is built.
+   *
+   * Not having it is not a failure:  the panel is the terminal this board
+   * is for, and the USB session is a convenience for whoever is developing
+   * on it.  It comes last so that nothing it does can delay the panel.
+   */
+
+  start_builtin("usbsh");
+#endif
+
   return EXIT_SUCCESS;
 }
 
