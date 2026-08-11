@@ -1,0 +1,25 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+if ARCH_BOARD_RASPBERRYPI_5B
+
+config RPI5B_DEBUG_BOOT
+	bool "Raspberry Pi 5 bootloader debug output"
+	default n
+	---help---
+		Ask the firmware to print its own diagnostics on the debug UART
+		before it hands over.  Useful when the board says nothing at all,
+		because it separates "the firmware never loaded us" from "we loaded
+		and then died".
+
+config RPI5B_ENABLE_JTAG
+	bool "Route JTAG/SWD to the GPIO header"
+	default n
+	---help---
+		Put enable_jtag_gpio=1 in config.txt, which muxes JTAG and SWD onto
+		GPIO22 to GPIO27.  This does not touch the 3-pin debug UART
+		connector, so a debugger and the console can be used together.
+
+endif # ARCH_BOARD_RASPBERRYPI_5B

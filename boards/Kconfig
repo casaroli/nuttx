@@ -2207,6 +2207,12 @@ config ARCH_BOARD_RASPBERRYPI_4B
 	---help---
 		This is a port to the Raspberry Pi Model 4B.
 
+config ARCH_BOARD_RASPBERRYPI_5B
+	bool "Raspberry Pi 5"
+	depends on ARCH_CHIP_BCM2712
+	---help---
+		This is a port to the Raspberry Pi 5.
+
 config ARCH_BOARD_PIMORONI_TINY2040
 	bool "Pimoroni Tiny2040 board"
 	depends on ARCH_CHIP_RP2040
@@ -3959,6 +3965,7 @@ config ARCH_BOARD
 	default "xiao-ra4m1"                   if ARCH_BOARD_XIAO_RA4M1
 	default "raspberrypi-pico"             if ARCH_BOARD_RASPBERRYPI_PICO
 	default "raspberrypi-4b"               if ARCH_BOARD_RASPBERRYPI_4B
+	default "raspberrypi-5b"               if ARCH_BOARD_RASPBERRYPI_5B
 	default "raspberrypi-pico-w"           if ARCH_BOARD_RASPBERRYPI_PICO_W
 	default "pimoroni-tiny2040"            if ARCH_BOARD_PIMORONI_TINY2040
 	default "adafruit-feather-rp2040"      if ARCH_BOARD_ADAFRUIT_FEATHER_RP2040
@@ -4482,6 +4489,10 @@ source "boards/arm/rp2040/raspberrypi-pico/Kconfig"
 endif
 if ARCH_BOARD_RASPBERRYPI_4B
 source "boards/arm64/bcm2711/raspberrypi-4b/Kconfig"
+endif
+
+if ARCH_BOARD_RASPBERRYPI_5B
+source "boards/arm64/bcm2712/raspberrypi-5b/Kconfig"
 endif
 if ARCH_BOARD_RASPBERRYPI_PICO_W
 source "boards/arm/rp2040/raspberrypi-pico-w/Kconfig"

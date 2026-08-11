@@ -1,0 +1,12 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+if ARCH_CHIP_BCM2712
+
+# The BCM2712 memory map is stated in arch/arm64/include/bcm2712/chip.h
+# rather than here, because the addresses are fixed by the silicon and are
+# not something a board can usefully change.
+
+endif # ARCH_CHIP_BCM2712

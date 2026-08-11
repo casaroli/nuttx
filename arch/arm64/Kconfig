@@ -170,6 +170,19 @@ config ARCH_CHIP_BCM2711
 	---help---
 		Broadcom BCM2711 quad-core ARM Cortex A72
 
+config ARCH_CHIP_BCM2712
+	bool "Broadcom BCM2712"
+	select ARCH_CORTEX_A76
+	select ARCH_HAVE_ADDRENV
+	select ARCH_HAVE_IRQTRIGGER
+	select ARCH_NEED_ADDRENV_MAPPING
+	select ARCH_USE_MMU # Required for up_testset
+	select ARMV8A_HAVE_GICv2
+	select ARCH_HAVE_IRQPRIO
+	---help---
+		Broadcom BCM2712 quad-core ARM Cortex A76, as used on the
+		Raspberry Pi 5.
+
 config ARCH_CHIP_SUNXI
 	bool "Allwinner sunxi 64-bit SoC Family"
 	select ARCH_HAVE_ADDRENV
@@ -361,6 +374,18 @@ config ARCH_CORTEX_A72
 	select ARCH_HAVE_TESTSET
 	select ARM64_HAVE_NEON
 
+config ARCH_CORTEX_A76
+	bool
+	default n
+	select ARCH_ARMV8A
+	select ARCH_HAVE_TRUSTZONE
+	select ARCH_DCACHE
+	select ARCH_ICACHE
+	select ARCH_HAVE_MMU
+	select ARCH_HAVE_FPU
+	select ARCH_HAVE_TESTSET
+	select ARM64_HAVE_NEON
+
 config ARCH_CORTEX_R82
 	bool
 	default n
@@ -407,6 +432,7 @@ config ARCH_CHIP
 	default "imx8"      if ARCH_CHIP_IMX8
 	default "imx9"      if ARCH_CHIP_IMX9
 	default "bcm2711"   if ARCH_CHIP_BCM2711
+	default "bcm2712"   if ARCH_CHIP_BCM2712
 
 config ARM64_HAVE_PSCI
 	bool "ARM PCSI (Power State Coordination Interface) Support"
@@ -446,7 +472,7 @@ config ARM64_DECODEFIQ
 
 config ARM64_GIC_VERSION
 	int "GIC version"
-	default 2 if ARCH_CHIP_A64 || ARCH_CHIP_BCM2711
+	default 2 if ARCH_CHIP_A64 || ARCH_CHIP_BCM2711 || ARCH_CHIP_BCM2712
 	default 3
 	range 2 4
 	---help---
@@ -583,6 +609,7 @@ endif
 
 if ARCH_CHIP_BCM2711
 source "arch/arm64/src/bcm2711/Kconfig"
+source "arch/arm64/src/bcm2712/Kconfig"
 endif
 
 endif # ARCH_ARM64
