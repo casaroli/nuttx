@@ -34,6 +34,10 @@
 #include <nuttx/irq.h>
 #include <nuttx/sched.h>
 
+#if defined(CONFIG_FDPIC) && defined(CONFIG_SIG_EVTHREAD)
+#  include <nuttx/fdpic.h>
+#endif
+
 #include "sched/sched.h"
 #include "mqueue/mqueue.h"
 
@@ -156,6 +160,17 @@ int mq_notify(mqd_t mqdes, FAR const struct sigevent *notification)
                  sizeof(struct sigevent));
 
           msgq->ntpid = rtcb->pid;
+
+#if defined(CONFIG_FDPIC) && defined(CONFIG_SIG_EVTHREAD)
+          /* Capture the module's data base while this runs in its
+           * context.  The callback fires later on a worker that has none.
+           */
+
+          msgq->ntwork.got =
+            (fdpic_base() != 0 &&
+             (notification->sigev_notify & SIGEV_THREAD) != 0) ?
+            fdpic_base() : 0;
+#endif
         }
     }
 

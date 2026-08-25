@@ -34,6 +34,10 @@
 
 #include <nuttx/signal.h>
 
+#ifdef CONFIG_FDPIC
+#  include <nuttx/fdpic.h>
+#endif
+
 #include "sched/sched.h"
 #include "signal/signal.h"
 
@@ -70,7 +74,22 @@ static void nxsig_notification_worker(FAR void *arg)
 
   /* Perform the callback */
 
-  work->func(work->value);
+#ifdef CONFIG_FDPIC
+  /* The worker does not carry the module's data base.  Install the base
+   * captured at registration around the call.  A zero base means the
+   * callback is not a module's.
+   */
+
+  if (work->got != 0)
+    {
+      fdpic_invoke((uintptr_t)work->value.sival_ptr, (uintptr_t)work->func,
+                   work->got);
+    }
+  else
+#endif
+    {
+      work->func(work->value);
+    }
 }
 
 #endif /* CONFIG_SIG_EVTHREAD */
@@ -156,6 +175,19 @@ int nxsig_notification(pid_t pid, FAR struct sigevent *event,
 
       work->value = event->sigev_value;
       work->func  = event->sigev_notify_function;
+
+#ifdef CONFIG_FDPIC
+      /* work->got was set at registration, in the module's context, which
+       * this is not.  Reading the descriptor needs no base; the worker
+       * installs it around the call.
+       */
+
+      if (work->got != 0)
+        {
+          work->func = (sigev_notify_function_t)
+            ((FAR struct fdpic_desc_s *)event->sigev_notify_function)->entry;
+        }
+#endif
 
       /* Then queue the work */
 
