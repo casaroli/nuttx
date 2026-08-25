@@ -318,15 +318,15 @@ struct arch_elfdata_s
   uintptr_t gotbase;       /* DT_PLTGOT: this object's data base */
   uint16_t  ndesc;         /* Capacity, in descriptors */
   uint16_t  usedesc;       /* Next free slot */
-
-  /* The pool the descriptors are taken from */
-
-  FAR struct arm_fdpic_desc_s *descpool;
-
+  uint8_t   symisdesc;     /* Symbol value is a descriptor, not code */
   uint8_t   pltrel;        /* Relocation comes from DT_JMPREL, so the word
                             * it overwrites is a lazy binding stub and not
                             * an addend
                             */
+
+  /* The pool the descriptors are taken from */
+
+  FAR struct arm_fdpic_desc_s *descpool;
 };
 
 typedef struct arch_elfdata_s arch_elfdata_t;
