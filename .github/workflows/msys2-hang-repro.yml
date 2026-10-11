@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [configure, setconfig, setconfig2, echo]
+        mode: [configure, configure2, configure3]
     defaults:
       run:
         shell: msys2 {0}
@@ -18,7 +18,7 @@ jobs:
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MSYS
-          update: false
+          update: true
           cache: false
           install: >-
             base-devel
@@ -86,12 +86,12 @@ jobs:
           EOS
           sed -i 's/^          //' /tmp/one.cmake
           cp /tmp/one.cmake ./one.cmake
-          case $MODE in configure) limit=240 ;; *) limit=120 ;; esac
+          case $MODE in configure*) limit=600 ;; *) limit=120 ;; esac
           hangs=0; n=0; t0=$(date +%s)
           while [ $(($(date +%s) - t0)) -lt 6000 ]; do
             n=$((n + 1))
             start=$(date +%s)
-            if [ $MODE = configure ]; then
+            if [ ${MODE%[23]} = configure ]; then
               rm -rf build
               cmake -B build -DBOARD_CONFIG=nucleo-l152re/nsh -DNXTMPDIR=OFF -GNinja > /tmp/out 2> /tmp/err &
             else
@@ -115,7 +115,7 @@ jobs:
             else
               wait $pid
               ret=$?
-              if [ $((n % 25)) -eq 1 ] || [ $MODE = configure ]; then
+              if [ $((n % 25)) -eq 1 ] || [ ${MODE%[23]} = configure ]; then
                 echo "iteration $n: exit $ret after $(($(date +%s) - start)) s $(tail -1 /tmp/out | cut -c1-80)"
               fi
             fi
