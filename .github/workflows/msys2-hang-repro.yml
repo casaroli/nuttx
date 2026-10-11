@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [1, 2, 3, 4]
+        mode: [configure, setconfig, setconfig2, echo]
     defaults:
       run:
         shell: msys2 {0}
@@ -64,36 +64,60 @@ jobs:
           python3 --version; pacman -Q msys2-runtime cmake python
           command -v setconfig olddefconfig
 
-      - name: Configure in a loop
+      - name: Repeat until it hangs
+        env:
+          MODE: ${{ matrix.mode }}
         run: |
+          set +e
           cd sources/nuttx
-          hangs=0
-          for i in $(seq 1 80); do
-            rm -rf build
+          cp boards/arm/stm32l1/nucleo-l152re/configs/nsh/defconfig /tmp/kconfig.cfg
+          cat > /tmp/one.cmake <<'EOS'
+          if(MODE STREQUAL "echo")
+            execute_process(COMMAND python3 -c "print('x' * 100)"
+                            OUTPUT_VARIABLE o ERROR_VARIABLE e RESULT_VARIABLE r)
+          else()
+            set(ENV{KCONFIG_CONFIG} /tmp/kconfig.cfg)
+            execute_process(COMMAND setconfig HOST_WINDOWS=y WINDOWS_MSYS=y
+                                    --kconfig ${CMAKE_CURRENT_LIST_DIR}/Kconfig
+                            OUTPUT_VARIABLE o ERROR_VARIABLE e RESULT_VARIABLE r
+                            WORKING_DIRECTORY ${NUTTX})
+          endif()
+          message("r=${r}")
+          EOS
+          sed -i 's/^          //' /tmp/one.cmake
+          cp /tmp/one.cmake ./one.cmake
+          case $MODE in configure) limit=240 ;; *) limit=120 ;; esac
+          hangs=0; n=0; t0=$(date +%s)
+          while [ $(($(date +%s) - t0)) -lt 6000 ]; do
+            n=$((n + 1))
             start=$(date +%s)
-            cmake -B build -DBOARD_CONFIG=nucleo-l152re/nsh -DNXTMPDIR=OFF -GNinja > /tmp/cfg.out 2> /tmp/cfg.err &
+            if [ $MODE = configure ]; then
+              rm -rf build
+              cmake -B build -DBOARD_CONFIG=nucleo-l152re/nsh -DNXTMPDIR=OFF -GNinja > /tmp/out 2> /tmp/err &
+            else
+              cmake -DMODE=${MODE%2} -DNUTTX=$PWD -P one.cmake > /tmp/out 2> /tmp/err &
+            fi
             pid=$!
-            while kill -0 $pid 2> /dev/null && [ $(($(date +%s) - start)) -lt 240 ]; do
-              sleep 2
+            while kill -0 $pid 2> /dev/null && [ $(($(date +%s) - start)) -lt $limit ]; do
+              sleep 1
             done
             if kill -0 $pid 2> /dev/null; then
               hangs=$((hangs + 1))
-              echo "::group::HANG $hangs in iteration $i: cmake pid $pid, winpid $(cat /proc/$pid/winpid)"
-              echo "--- last output"; tail -5 /tmp/cfg.out; tail -5 /tmp/cfg.err
+              echo "::group::HANG $hangs in iteration $n: cmake pid $pid, winpid $(cat /proc/$pid/winpid)"
+              echo "--- last output"; tail -5 /tmp/out; tail -5 /tmp/err
               echo "--- ps"; ps -ef
               echo "--- fds"; ls -l /proc/$pid/fd
-              echo "--- status"; cat /proc/$pid/status
               echo "--- gdb"
               gdb -batch -nx -ex "set pagination off" -ex "info threads" -ex "thread apply all bt" -p $pid 2>&1 | head -300
               echo "::endgroup::"
               kill -9 $pid
-              if [ $hangs -ge 3 ]; then
-                break
-              fi
+              [ $hangs -ge 3 ] && break
             else
               wait $pid
               ret=$?
-              echo "iteration $i: exit $ret after $(($(date +%s) - start)) s: $(grep -a -o -m1 'TOOLS_DIR path is.*\|CMake Error at [^ ]*' /tmp/cfg.out /tmp/cfg.err | head -1)"
+              if [ $((n % 25)) -eq 1 ] || [ $MODE = configure ]; then
+                echo "iteration $n: exit $ret after $(($(date +%s) - start)) s $(tail -1 /tmp/out | cut -c1-80)"
+              fi
             fi
           done
-          echo "hangs: $hangs"
+          echo "mode $MODE: $n iterations, $hangs hangs"
