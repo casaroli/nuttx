@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [configure, configure2, configure3]
+        mode: [configure, configure2, configure-trace]
     defaults:
       run:
         shell: msys2 {0}
@@ -58,6 +58,12 @@ jobs:
           path: sources/apps
           fetch-depth: 1
 
+      - name: Sysinternals Handle
+        run: |
+          curl -sSL -o /tmp/Handle.zip https://download.sysinternals.com/files/Handle.zip
+          mkdir -p /tmp/handle && unzip -o -q /tmp/Handle.zip -d /tmp/handle
+          /tmp/handle/handle64.exe -accepteula -nobanner -p bash | head -5
+
       - name: Versions
         run: |
           uname -a; cmake --version | head -1; ninja --version
@@ -87,11 +93,16 @@ jobs:
           sed -i 's/^          //' /tmp/one.cmake
           cp /tmp/one.cmake ./one.cmake
           case $MODE in configure*) limit=600 ;; *) limit=120 ;; esac
+          export DEBUGINFOD_URLS=https://debuginfod.msys2.org
+          H=/tmp/handle/handle64.exe
           hangs=0; n=0; t0=$(date +%s)
           while [ $(($(date +%s) - t0)) -lt 6000 ]; do
             n=$((n + 1))
             start=$(date +%s)
-            if [ ${MODE%[23]} = configure ]; then
+            if [ $MODE = configure-trace ]; then
+              rm -rf build /tmp/trace.json
+              cmake -B build -DBOARD_CONFIG=nucleo-l152re/nsh -DNXTMPDIR=OFF -GNinja --trace-expand --trace-format=json-v1 --trace-redirect=/tmp/trace.json > /tmp/out 2> /tmp/err &
+            elif [ ${MODE%[23]} = configure ]; then
               rm -rf build
               cmake -B build -DBOARD_CONFIG=nucleo-l152re/nsh -DNXTMPDIR=OFF -GNinja > /tmp/out 2> /tmp/err &
             else
@@ -105,17 +116,24 @@ jobs:
               hangs=$((hangs + 1))
               echo "::group::HANG $hangs in iteration $n: cmake pid $pid, winpid $(cat /proc/$pid/winpid)"
               echo "--- last output"; tail -5 /tmp/out; tail -5 /tmp/err
+              winpid=$(cat /proc/$pid/winpid)
               echo "--- ps"; ps -ef
+              echo "--- ps -W (Windows processes too)"; ps -efW
               echo "--- fds"; ls -l /proc/$pid/fd
+              echo "--- handles of cmake (winpid $winpid)"; $H -nobanner -a -p $winpid 2>&1
+              echo "--- named pipes in all processes"; $H -nobanner -a -v 2>&1 | grep -i "namedpipe"
+              if [ $MODE = configure-trace ]; then
+                echo "--- last trace lines"; tail -5 /tmp/trace.json | cut -c1-600
+              fi
               echo "--- gdb"
-              gdb -batch -nx -ex "set pagination off" -ex "info threads" -ex "thread apply all bt" -p $pid 2>&1 | head -300
+              gdb -batch -nx -ex "set pagination off" -ex "set debuginfod enabled on" -ex "info threads" -ex "thread apply all bt" -p $pid 2>&1 | head -400
               echo "::endgroup::"
               kill -9 $pid
               [ $hangs -ge 3 ] && break
             else
               wait $pid
               ret=$?
-              if [ $((n % 25)) -eq 1 ] || [ ${MODE%[23]} = configure ]; then
+              if [ $((n % 25)) -eq 1 ] || [ ${MODE%%[-23]*} = configure ]; then
                 echo "iteration $n: exit $ret after $(($(date +%s) - start)) s $(tail -1 /tmp/out | cut -c1-80)"
               fi
             fi
