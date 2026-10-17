@@ -1,5 +1,6 @@
 name: msys2-hang-repro
 on:
+  workflow_dispatch:
   push:
     branches:
       - msys2-hang-repro
