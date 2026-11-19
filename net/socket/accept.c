@@ -148,7 +148,7 @@ int psock_accept(FAR struct socket *psock, FAR struct sockaddr *addr,
     }
 
   ret = psock->s_sockif->si_accept(psock, addr, addrlen, newsock, flags);
-  if (ret >= 0)
+  if (ret >= 0 && !psock_connstate(newsock))
     {
       /* Mark the new socket as connected. */
 
